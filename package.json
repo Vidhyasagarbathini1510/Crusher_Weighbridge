@@ -1,0 +1,106 @@
+{
+  "name": "noris-cctv-desktop",
+  "version": "1.0.1"
+,
+  "description": "NORIS Weighbridge Desktop Application",
+  "main": "electron/main.js",
+  "author": "Noris Solutions",
+  "license": "MIT",
+
+  "scripts": {
+    "dev:vite": "vite --host",
+    "dev": "concurrently -k \"npm:dev:vite\" \"wait-on tcp:5173 && electron .\"",
+    "build": "vite build",
+    "start": "electron .",
+
+    "dist": "npm run build && electron-builder",
+
+    "dist:win": "npm run build && electron-builder --win",
+
+    "dist:portable": "npm run build && electron-builder --win portable",
+
+    "dist:nsis": "npm run build && electron-builder --win nsis"
+  },
+
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "bootstrap": "^5.3.3",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.26.0",
+    "serialport": "^13.0.0",
+    "sql.js": "^1.14.1"
+  },
+
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.1",
+    "concurrently": "^8.2.2",
+    "electron": "^31.0.0",
+    "electron-builder": "^26.15.3",
+    "vite": "^5.4.0",
+    "wait-on": "^7.2.0"
+  },
+
+  "build": {
+    "appId": "com.norissolutions.weighbridge",
+
+    "productName": "Crusher Weighbridge",
+
+    "npmRebuild": false,
+
+    "copyright": "Copyright © Noris Solutions",
+
+    "directories": {
+      "output": "release",
+      "buildResources": "assets"
+    },
+
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json",
+      "node_modules/**/*"
+    ],
+
+    "extraResources": [
+      {
+        "from": "assets/",
+        "to": "assets/",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "ffmpeg.exe",
+        "to": "ffmpeg/ffmpeg.exe"
+      }
+    ],
+
+    "asar": true,
+
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "assets/icon.ico"
+    },
+
+    "nsis": {
+      "oneClick": false,
+      "allowElevation": true,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Crusher Weighbridge",
+      "deleteAppDataOnUninstall": false,
+      "installerIcon": "assets/icon.ico",
+      "uninstallerIcon": "assets/icon.ico",
+      "installerHeaderIcon": "assets/icon.ico"
+    }
+  }
+}
