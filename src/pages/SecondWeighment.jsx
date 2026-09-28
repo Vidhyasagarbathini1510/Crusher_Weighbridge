@@ -2,9 +2,11 @@ import React, { useState, useEffect } from 'react';
 import { api } from '../api/client.js';
 import CameraPlayer from '../components/CameraPlayer.jsx';
 import Loader from '../components/Loader.jsx';
+import SearchableSelect from '../components/SearchableSelect.jsx';
 
 import { captureCameraSnapshot } from '../utils/cameraSnapshot.js';
 import { useAuth } from '../context/AuthContext.jsx';
+import { printTicket, getDcPrintTemplate } from '../utils/printHelper.js';
 
 export default function SecondWeighment() {
   const { user } = useAuth();
@@ -14,6 +16,11 @@ export default function SecondWeighment() {
   const [party, setParty] = useState('');
   const [material, setMaterial] = useState('');
   const [qty, setQty] = useState('');
+  const [stationary, setStationary] = useState('');
+
+  // 1st Weighment Lookup & Auto-fill state
+  const [pendingFirstWeighments, setPendingFirstWeighments] = useState([]);
+  const [selectedRecord, setSelectedRecord] = useState(null);
 
   // Weights
   const [grossVal, setGrossVal] = useState('');
@@ -25,10 +32,105 @@ export default function SecondWeighment() {
   const [msg, setMsg] = useState('');
   const [msgType, setMsgType] = useState('success');
 
+  const loadPendingFirstWeighments = async () => {
+    if (!api.firstWeighments) return;
+    try {
+      const [firsts, seconds] = await Promise.all([
+        api.firstWeighments().catch(() => []),
+        api.secondWeighments ? api.secondWeighments().catch(() => []) : Promise.resolve([])
+      ]);
+      const firstsArr = Array.isArray(firsts) ? firsts : [];
+      const secondsArr = Array.isArray(seconds) ? seconds : [];
+
+      const completedIds = new Set();
+      const completedDcs = new Set();
+      secondsArr.forEach(s => {
+        if (s.first_weighment_id) completedIds.add(s.first_weighment_id);
+        if (s.dc_num) completedDcs.add((s.dc_num || '').trim().toUpperCase());
+      });
+
+      const pending = firstsArr.filter(f => {
+        const isIdDone = f.uuid && completedIds.has(f.uuid);
+        const isDcDone = f.dc_num && completedDcs.has((f.dc_num || '').trim().toUpperCase());
+        return !isIdDone && !isDcDone;
+      });
+
+      setPendingFirstWeighments(pending);
+    } catch (err) {
+      console.error('[SecondWeighment] Error loading pending weighments:', err);
+    }
+  };
+
   useEffect(() => {
     api.cameras().then(setCameras).catch(() => setCameras([]));
-    setSerialNo(`SN-${Math.floor(100000 + Math.random() * 900000)}`);
+    loadPendingFirstWeighments();
+
+    const handleFocus = () => loadPendingFirstWeighments();
+    window.addEventListener('focus', handleFocus);
+    return () => window.removeEventListener('focus', handleFocus);
   }, []);
+
+  const pendingVehicleOptions = Array.from(
+    new Set(pendingFirstWeighments.map(r => (r.vehicle_no || r.vehicle || '').trim().toUpperCase()).filter(Boolean))
+  );
+
+  const pendingTicketOptions = Array.from(
+    new Set(pendingFirstWeighments.map(r => (r.dc_num || r.dcNum || '').trim().toUpperCase()).filter(Boolean))
+  );
+
+  // Helper to auto-fill form fields from a selected 1st Weighment record
+  const applyFirstWeighmentRecord = (record) => {
+    if (!record) {
+      setSelectedRecord(null);
+      setSerialNo('');
+      setVehicle('');
+      setParty('');
+      setMaterial('');
+      setQty('');
+      setTareVal('');
+      setStationary('');
+      return;
+    }
+    setSelectedRecord(record);
+    setSerialNo(record.dc_num || record.dcNum || '');
+    setVehicle(record.vehicle_no || record.vehicle || '');
+    setParty(record.party || record.contractor || '');
+    setMaterial(record.material || record.product || '');
+    setTareVal(String(record.gross || record.tare || record.weight || '0'));
+    if (record.stationary || record.stationary_no) {
+      setStationary(record.stationary || record.stationary_no || '');
+    }
+    if (record.units_val || record.unitsVal || record.qty) {
+      setQty(String(record.units_val || record.unitsVal || record.qty));
+    }
+    setMsgType('info');
+    setMsg(`✔ Auto-filled 1st Weighment details for Vehicle ${record.vehicle_no || record.vehicle} (Ticket #${record.dc_num})`);
+  };
+
+  const handleTicketChange = (val) => {
+    setSerialNo(val);
+    if (!val) return;
+    const cleanVal = val.trim().toUpperCase();
+    const match = pendingFirstWeighments.find(r => (r.dc_num || r.dcNum || '').trim().toUpperCase() === cleanVal);
+    if (match) {
+      applyFirstWeighmentRecord(match);
+    }
+  };
+
+  const handleVehicleChange = (val) => {
+    setVehicle(val);
+    if (!val) return;
+    const cleanInput = val.trim().toUpperCase();
+    const cleanVehAlpha = cleanInput.replace(/[\s\-\.]/g, '');
+    const match = pendingFirstWeighments.find(r => {
+      const v = (r.vehicle_no || r.vehicle || '').toUpperCase().replace(/[\s\-\.]/g, '');
+      const s = (r.dc_num || r.dcNum || '').toUpperCase();
+      return v === cleanVehAlpha || s === cleanInput;
+    });
+    if (match) {
+      applyFirstWeighmentRecord(match);
+    }
+  };
 
   // Listen to scale
   useEffect(() => {
@@ -72,7 +174,7 @@ export default function SecondWeighment() {
     const finalTare = Math.min(g, t).toString();
 
     const txData = {
-      dc_num: serialNo,
+      dc_num: serialNo || (selectedRecord ? selectedRecord.dc_num : `SN-${Math.floor(100000 + Math.random() * 900000)}`),
       date_time: new Date().toLocaleString(),
       vehicle_no: cleanVehicle,
       party: party ? party.toUpperCase() : '',
@@ -80,6 +182,12 @@ export default function SecondWeighment() {
       gross: finalGross,
       tare: finalTare,
       net: nettVal,
+      qty: qty || nettVal,
+      units_val: qty || nettVal,
+      stationary: stationary || '',
+      first_weighment_id: selectedRecord ? selectedRecord.uuid : '',
+      tare_date: selectedRecord ? (selectedRecord.tare_date || selectedRecord.date_time || '') : '',
+      tare_time: selectedRecord ? (selectedRecord.tare_time || '') : '',
       operator: user?.username || 'Operator'
     };
 
@@ -90,18 +198,58 @@ export default function SecondWeighment() {
       setMsgType('success');
       setMsg('Second Weighment Saved successfully!');
       setTimeout(() => setMsg(''), 4000);
-      setSerialNo(`SN-${Math.floor(100000 + Math.random() * 900000)}`);
+      setSerialNo('');
       setVehicle('');
       setParty('');
       setMaterial('');
       setQty('');
+      setStationary('');
       setGrossVal('');
       setTareVal('');
+      setSelectedRecord(null);
+
+      // Refresh 1st weighment list
+      loadPendingFirstWeighments();
     } catch (err) {
       console.error('[SecondWeighment] Error saving:', err);
       setMsgType('danger');
       setMsg('Error saving second weighment into database.');
     }
+  };
+
+  const handlePrint = () => {
+    const cleanVehicle = vehicle.trim().toUpperCase();
+    if (!cleanVehicle) {
+      setMsgType('warning');
+      setMsg('Please enter a vehicle number before printing.');
+      return;
+    }
+    const g = parseFloat(grossVal) || 0;
+    const t = parseFloat(tareVal) || 0;
+    const finalGross = Math.max(g, t).toString();
+    const finalTare = Math.min(g, t).toString();
+    const ticketData = {
+      dcNum: serialNo || '1',
+      serial_no: serialNo || '1',
+      vehicle: cleanVehicle,
+      vehicle_no: cleanVehicle,
+      party: party ? party.toUpperCase() : '',
+      material: material ? material.toUpperCase() : '',
+      gross: finalGross,
+      tare: finalTare,
+      net: nettVal,
+      nett: nettVal,
+      qty: qty || nettVal,
+      units_val: qty || nettVal,
+      stationary: stationary || '',
+      date: new Date().toLocaleDateString('en-GB'),
+      time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      date_time: new Date().toLocaleString(),
+      tare_date: selectedRecord ? (selectedRecord.tare_date || selectedRecord.date_time || '') : '',
+      tare_time: selectedRecord ? (selectedRecord.tare_time || '') : '',
+      operator: user?.username || 'Operator'
+    };
+    printTicket(ticketData, getDcPrintTemplate(), 'DC');
   };
 
   if (!cameras) return <Loader label="Loading weighbridge cameras..." />;
@@ -186,28 +334,52 @@ export default function SecondWeighment() {
           <div className="saas-card">
             <div className="saas-header">
               <span className="saas-title">Second Weighment Form</span>
+              <span className="badge bg-primary bg-opacity-10 text-primary border border-primary border-opacity-25 px-2 py-1" style={{ fontSize: '0.72rem' }}>
+                {pendingFirstWeighments.length} Pending 1st Weighment(s)
+              </span>
             </div>
 
             <form onSubmit={handleSave} className="row g-2">
               <div className="col-md-6">
-                <label className="saas-label">Serial No</label>
-                <input type="text" className="form-control saas-input saas-input-readonly fw-semibold" value={serialNo} readOnly />
+                <label className="saas-label">Serial No / Ticket #</label>
+                <SearchableSelect
+                  className="saas-input fw-semibold"
+                  value={serialNo}
+                  onChange={handleTicketChange}
+                  options={pendingTicketOptions}
+                  placeholder="Type or select Ticket #"
+                  allowCustom={true}
+                />
               </div>
+
               <div className="col-md-6">
-                <label className="saas-label">Vehicle</label>
-                <input type="text" className="form-control saas-input" value={vehicle} onChange={(e) => setVehicle(e.target.value)} required />
+                <label className="saas-label">Vehicle No</label>
+                <SearchableSelect
+                  className="saas-input text-uppercase fw-semibold"
+                  value={vehicle}
+                  onChange={handleVehicleChange}
+                  options={pendingVehicleOptions}
+                  placeholder="Type or select vehicle number..."
+                  allowCustom={true}
+                  required
+                />
               </div>
+
               <div className="col-md-6">
-                <label className="saas-label">Party</label>
-                <input type="text" className="form-control saas-input" value={party} onChange={(e) => setParty(e.target.value)} />
+                <label className="saas-label">Party / Contractor</label>
+                <input type="text" className="form-control saas-input" value={party} onChange={(e) => setParty(e.target.value)} placeholder="Party Name" />
               </div>
               <div className="col-md-6">
                 <label className="saas-label">Material</label>
-                <input type="text" className="form-control saas-input" value={material} onChange={(e) => setMaterial(e.target.value)} />
+                <input type="text" className="form-control saas-input" value={material} onChange={(e) => setMaterial(e.target.value)} placeholder="Material Name" />
               </div>
               <div className="col-md-6">
                 <label className="saas-label">Qty</label>
-                <input type="number" className="form-control saas-input" value={qty} onChange={(e) => setQty(e.target.value)} />
+                <input type="number" className="form-control saas-input" value={qty} onChange={(e) => setQty(e.target.value)} placeholder="Quantity (leave blank for Net Weight)" />
+              </div>
+              <div className="col-md-6">
+                <label className="saas-label">Stationary No</label>
+                <input type="text" className="form-control saas-input" value={stationary} onChange={(e) => setStationary(e.target.value)} placeholder="Stationary No" />
               </div>
 
               {/* Weight Grid */}
@@ -230,7 +402,7 @@ export default function SecondWeighment() {
 
               {/* Action Buttons */}
               <div className="col-12 d-flex gap-2 mt-2 justify-content-end">
-                <button type="button" className="saas-btn-print">PRINT</button>
+                <button type="button" className="saas-btn-print" onClick={handlePrint}>PRINT</button>
                 <button type="submit" className="saas-btn-save">SAVE</button>
               </div>
             </form>

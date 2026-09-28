@@ -36,7 +36,8 @@ const TEMPLATE_CATALOGUE = [
   { id: 'IMAGE-5', name: 'Thermal Receipt', detail: 'For 80mm thermal printers', paper: '80mm' },
   { id: 'IMAGE-6', name: 'Quarry Dispatch Pass', detail: 'Gate pass layout', paper: 'A5' },
   { id: 'IMAGE-7', name: 'Executive Tax Invoice', detail: 'Invoice with tax summary', paper: 'A4' },
-  { id: 'RAW', name: 'Dot-Matrix Slip', detail: 'ESC/P text, 5in continuous form, auto form feed', paper: 'RAW' }
+  { id: 'RAW', name: 'Dot-Matrix Slip', detail: 'ESC/P text, 5in continuous form, auto form feed', paper: 'RAW' },
+  { id: 'RAW_LARGE', name: 'Dot-Matrix Slip (Large Text)', detail: 'ESC/P text, enlarged font size for high visibility', paper: 'RAW' }
 ];
 
 const BAUD_RATES = ['110', '300', '1200', '2400', '4800', '9600', '19200', '38400', '57600', '115200', '230400', '460800', '921600'];
@@ -45,9 +46,9 @@ const BAUD_RATES = ['110', '300', '1200', '2400', '4800', '9600', '19200', '3840
 // sees on screen is exactly what the test page prints.
 const PREVIEW_TICKET = {
   dcNum: '270', vehicle: 'TN20DM3666', material: 'CRF SAND', party: 'SRI SRINIVASA', destination: 'CHENNAI',
-  source: 'CRUSHER', gross: '59260', tare: '14900', net: '44360', transporter: 'GSM INFRA',
-  driver: 'ASHOK', gstin: '33AAAAA0000A1Z5', siteAddress: 'CHENNAI', billType: 'GST',
-  date: '13-08-2026', time: '18:26', tareDate: '12-08-2026', tareTime: '17:57'
+  source: 'CRUSHER', gross: '59260', tare: '14900', net: '44360', qty: '44360', units_val: '44360',
+  stationary: 'STN-1001', transporter: 'GSM INFRA', driver: 'ASHOK', gstin: '33AAAAA0000A1Z5',
+  siteAddress: 'CHENNAI', billType: 'GST', date: '13-08-2026', time: '18:26', tareDate: '12-08-2026', tareTime: '17:57'
 };
 
 // Lets the browser actually paint before we hand control to a blocking call
@@ -202,16 +203,40 @@ export default function Settings() {
   });
   const [netTestStatus, setNetTestStatus] = useState(null);
 
-  // nChat Alert Settings state
-  const [nchatReceiverNumber, setNchatReceiverNumber] = useState('9959608198');
+  // nChat Alert Settings state (Up to 5 receiver numbers)
+  const [nchatReceiverNumbers, setNchatReceiverNumbers] = useState(['7075118213']);
   const [nchatAlertsEnabled, setNchatAlertsEnabled] = useState(true);
   const [isSendingTestAlert, setIsSendingTestAlert] = useState(false);
 
+  const handleReceiverChange = (index, value) => {
+    const updated = [...nchatReceiverNumbers];
+    updated[index] = value;
+    setNchatReceiverNumbers(updated);
+  };
+
+  const handleAddReceiver = () => {
+    if (nchatReceiverNumbers.length < 5) {
+      setNchatReceiverNumbers([...nchatReceiverNumbers, '']);
+    }
+  };
+
+  const handleRemoveReceiver = (index) => {
+    if (nchatReceiverNumbers.length > 1) {
+      setNchatReceiverNumbers(nchatReceiverNumbers.filter((_, i) => i !== index));
+    }
+  };
+
   const handleSaveNChatSettings = async () => {
     try {
-      await api.saveSetting('nchat_receiver_number', nchatReceiverNumber);
+      const validNumbers = nchatReceiverNumbers.map(n => n.trim()).filter(Boolean);
+      if (validNumbers.length === 0) {
+        setMsg('Please provide at least 1 valid Receiver Phone Number.');
+        return;
+      }
+      const combined = validNumbers.join(', ');
+      await api.saveSetting('nchat_receiver_number', combined);
       await api.saveSetting('nchat_alerts_enabled', String(nchatAlertsEnabled));
-      setMsg(`nChat Alert settings saved! Receiver Number: ${nchatReceiverNumber}`);
+      setMsg(`nChat Alert settings saved! Configured Receivers (${validNumbers.length}): ${combined}`);
     } catch (e) {
       setMsg('Error saving nChat Alert settings: ' + e.message);
     }
@@ -222,16 +247,28 @@ export default function Settings() {
       setMsg('Test alert is only supported in Electron runtime.');
       return;
     }
+    const validNumbers = nchatReceiverNumbers.map(n => n.trim()).filter(Boolean);
+    if (validNumbers.length === 0) {
+      setMsg('Please provide at least 1 valid Receiver Phone Number before sending a test alert.');
+      return;
+    }
     setIsSendingTestAlert(true);
-    setMsg('Sending test alert via nChat API...');
+    setMsg(`Sending test alert via nChat API to ${validNumbers.length} receiver(s)...`);
     try {
-      const res = await window.electronAPI.sendNChatTestAlert(nchatReceiverNumber);
+      const res = await window.electronAPI.sendNChatTestAlert(validNumbers.join(', '));
       if (res && res.success) {
-        setMsg(`✔ Test Alert sent successfully to ${nchatReceiverNumber}!`);
+        setMsg(`✔ Test Alert sent successfully to all ${res.recipientCount || validNumbers.length} receiver(s)!`);
+      } else if (res && res.partialSuccess) {
+        const failedItems = res.results ? res.results.filter(r => !r.success) : [];
+        const failedInfo = failedItems.map(r => `${r.receiver} (${r.error || 'Failed'})`).join(', ');
+        setMsg(`⚠️ Test Alert sent to ${res.successfulCount}/${res.recipientCount} receiver(s). Failed for: ${failedInfo}`);
+      } else if (res && res.results) {
+        const errDetails = res.results.map(r => `${r.receiver}: ${r.error || 'Failed'}`).join(' | ');
+        setMsg(`❌ Failed to send Test Alert: ${errDetails}`);
       } else if (res && res.queued) {
-        setMsg(`Notice: Delivery pending, alert queued locally (${res.error || 'Server offline'}).`);
+        setMsg(`Notice: Delivery pending, alert queued locally for ${validNumbers.length} receiver(s) (${res.error || 'Server offline'}).`);
       } else {
-        setMsg(`Error sending Test Alert: ${res?.error || res?.reason || 'Failed'}`);
+        setMsg(`❌ Error sending Test Alert: ${res?.error || res?.reason || 'Failed'}`);
       }
     } catch (e) {
       setMsg('Error sending Test Alert: ' + e.message);
@@ -345,7 +382,8 @@ export default function Settings() {
           masterSyncUrl: s.master_sync_url || 'https://crusher.norissolutions.com/backend/api/weighbridge/pending',
           boulderSyncUrl: s.boulder_sync_url || 'https://crusher.norissolutions.com/backend/api/weighbridge/boulders',
           salesSyncUrl: s.sales_sync_url || 'https://crusher.norissolutions.com/backend/api/weighbridge/sales',
-          yardSyncUrl: s.yard_sync_url || 'https://crusher.norissolutions.com/backend/api/weighbridge/yard'
+          yardSyncUrl: s.yard_sync_url || 'https://crusher.norissolutions.com/backend/api/weighbridge/yard',
+          secondWeighmentSyncUrl: s.second_weighment_sync_url || 'https://crusher.norissolutions.com/backend/api/weighbridge/second-weighment'
         });
 
         const activePort = s.comPort || 'COM7';
@@ -374,7 +412,13 @@ export default function Settings() {
         });
 
         if (s.nchat_receiver_number) {
-          setNchatReceiverNumber(s.nchat_receiver_number);
+          const loadedNums = String(s.nchat_receiver_number)
+            .split(',')
+            .map(n => n.trim())
+            .filter(Boolean);
+          if (loadedNums.length > 0) {
+            setNchatReceiverNumbers(loadedNums);
+          }
         }
         if (s.nchat_alerts_enabled !== undefined) {
           setNchatAlertsEnabled(String(s.nchat_alerts_enabled) !== 'false');
@@ -431,6 +475,7 @@ export default function Settings() {
       await api.saveSetting('boulder_sync_url', syncSettings.boulderSyncUrl);
       await api.saveSetting('sales_sync_url', syncSettings.salesSyncUrl);
       await api.saveSetting('yard_sync_url', syncSettings.yardSyncUrl);
+      await api.saveSetting('second_weighment_sync_url', syncSettings.secondWeighmentSyncUrl);
       setMsg(`Server & Sync settings updated! Company ID: ${syncSettings.companyId}`);
       if (syncSettings.companyId) {
         setIsCompanyIdSaved(true);
@@ -516,6 +561,7 @@ export default function Settings() {
     contractor: ''
   });
   const [rfidList, setRfidList] = useState([]);
+  const [contractorsList, setContractorsList] = useState([]);
 
   // 5. Transporter Vehicles State
   const [transporterForm, setTransporterForm] = useState({ transporter: '', vehicleNo: '', capacity: '' });
@@ -739,9 +785,31 @@ export default function Settings() {
     }
   };
 
+  // Load Contractors from local SQLite database
+  const loadContractorsFromDb = async () => {
+    try {
+      if (api.getContractors) {
+        const list = await api.getContractors();
+        if (Array.isArray(list)) {
+          const names = list
+            .map(c => typeof c === 'string' ? c : (c.contractorName || c.contractor || c.name || c.title))
+            .filter(Boolean);
+          setContractorsList([...new Set(names)]);
+        }
+      }
+    } catch (e) {
+      console.error('[Settings] Error loading contractors from local DB:', e);
+    }
+  };
+
+  useEffect(() => {
+    loadContractorsFromDb();
+  }, []);
+
   useEffect(() => {
     if (activeTab === 'rfid') {
       loadRfidCardsFromDb();
+      loadContractorsFromDb();
     }
   }, [activeTab]);
 
@@ -1072,18 +1140,60 @@ export default function Settings() {
                   </div>
 
                   <div className="mb-3">
-                    <label className="form-label fw-semibold text-dark" style={{ fontSize: '0.82rem' }}>Receiver Phone Number:</label>
-                    <input
-                      type="text"
-                      className="form-control form-control-sm border-secondary-subtle"
-                      value={nchatReceiverNumber}
-                      onChange={(e) => setNchatReceiverNumber(e.target.value)}
-                      placeholder="e.g. 9959608198"
-                      required
-                      style={{ fontSize: '0.85rem' }}
-                    />
-                    <div className="form-text" style={{ fontSize: '0.75rem' }}>
-                      Mobile number to receive automatic WhatsApp/SMS alert notifications whenever a system issue occurs.
+                    <div className="d-flex justify-content-between align-items-center mb-1">
+                      <label className="form-label fw-semibold text-dark m-0" style={{ fontSize: '0.82rem' }}>
+                        Receiver Phone Numbers (Up to 5 Members):
+                      </label>
+                      <span className="badge bg-light text-dark border fw-normal" style={{ fontSize: '0.75rem' }}>
+                        {nchatReceiverNumbers.length} / 5 Numbers
+                      </span>
+                    </div>
+
+                    <div className="d-flex flex-column gap-2">
+                      {nchatReceiverNumbers.map((num, idx) => (
+                        <div key={idx} className="d-flex gap-2 align-items-center">
+                          <span className="badge bg-secondary-subtle text-secondary border px-2 py-1.5" style={{ fontSize: '0.75rem', minWidth: '95px', textAlign: 'center' }}>
+                            {idx === 0 ? 'Member 1 (Primary)' : `Member ${idx + 1}`}
+                          </span>
+                          <input
+                            type="text"
+                            className="form-control form-control-sm border-secondary-subtle"
+                            value={num}
+                            onChange={(e) => handleReceiverChange(idx, e.target.value)}
+                            placeholder={idx === 0 ? 'e.g. 7075118213' : 'e.g. 9959608198'}
+                            required={idx === 0}
+                            style={{ fontSize: '0.85rem' }}
+                          />
+                          {nchatReceiverNumbers.length > 1 && (
+                            <button
+                              type="button"
+                              className="btn btn-sm btn-outline-danger px-2 py-1"
+                              title="Remove number"
+                              onClick={() => handleRemoveReceiver(idx)}
+                              style={{ fontSize: '0.75rem', whitespace: 'nowrap' }}
+                            >
+                              🗑️ Remove
+                            </button>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+
+                    {nchatReceiverNumbers.length < 5 && (
+                      <div className="mt-2">
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-outline-primary fw-semibold px-2 py-1"
+                          onClick={handleAddReceiver}
+                          style={{ fontSize: '0.78rem' }}
+                        >
+                          ➕ Add Member Number ({nchatReceiverNumbers.length}/5)
+                        </button>
+                      </div>
+                    )}
+
+                    <div className="form-text mt-2" style={{ fontSize: '0.75rem' }}>
+                      Mobile numbers to receive automatic WhatsApp/SMS alert notifications whenever a system issue occurs. Alerts will be broadcasted to all specified numbers.
                     </div>
                   </div>
 
@@ -2429,9 +2539,15 @@ export default function Settings() {
                     onChange={(e) => setRfidForm({ ...rfidForm, contractor: e.target.value })}
                   >
                     <option value="">Select Contractor</option>
-                    <option value="RAO CONTRACTS">RAO CONTRACTS</option>
-                    <option value="SAI BUILDERS">SAI BUILDERS</option>
-                    <option value="VK INFRA">VK INFRA</option>
+                    {(() => {
+                      const list = [...contractorsList];
+                      if (rfidForm.contractor && !list.includes(rfidForm.contractor)) {
+                        list.unshift(rfidForm.contractor);
+                      }
+                      return list.map((cName, idx) => (
+                        <option key={idx} value={cName}>{cName}</option>
+                      ));
+                    })()}
                   </select>
                 </div>
 

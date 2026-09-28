@@ -20,6 +20,7 @@ const DEFAULT_SYNC_URL = 'https://crusher.norissolutions.com/backend/api/weighbr
 const DEFAULT_BOULDER_SYNC_URL = 'https://crusher.norissolutions.com/backend/api/weighbridge/boulders';
 const DEFAULT_SALES_SYNC_URL = 'https://crusher.norissolutions.com/backend/api/weighbridge/sales';
 const DEFAULT_YARD_SYNC_URL = 'https://crusher.norissolutions.com/backend/api/weighbridge/yard';
+const DEFAULT_SECOND_WEIGHMENT_SYNC_URL = 'https://crusher.norissolutions.com/backend/api/weighbridge/second-weighment';
 
 function injectCompanyId(urlStr, companyId) {
   if (!urlStr || typeof urlStr !== 'string') return urlStr;
@@ -92,6 +93,7 @@ async function runSyncCycle() {
     const boulderSyncUrl = injectCompanyId(settings.boulder_sync_url || settings.sync_server_url || DEFAULT_BOULDER_SYNC_URL, companyId);
     const salesSyncUrl = injectCompanyId(settings.sales_sync_url || DEFAULT_SALES_SYNC_URL, companyId);
     const yardSyncUrl = injectCompanyId(settings.yard_sync_url || DEFAULT_YARD_SYNC_URL, companyId);
+    const secondWeighmentSyncUrl = injectCompanyId(settings.second_weighment_sync_url || DEFAULT_SECOND_WEIGHMENT_SYNC_URL, companyId);
 
     // 1. Fetch PENDING/FAILED items from sync_queue (Strict FIFO order)
     const queueItems = db.getPendingSyncQueue ? db.getPendingSyncQueue(30) : [];
@@ -126,8 +128,8 @@ async function runSyncCycle() {
         continue;
       }
 
-      // First weighment and second weighment are stored in local DB only (no remote server endpoint)
-      if (item.table_name === 'first_weighment' || item.table_name === 'second_weighment' || item.table_name === 'first_weighments' || item.table_name === 'second_weighments') {
+      // First weighments are stored in local DB only (no remote server endpoint)
+      if (item.table_name === 'first_weighment' || item.table_name === 'first_weighments') {
         if (db.updateSyncQueueStatus) db.updateSyncQueueStatus(item.id, 'COMPLETED');
         continue;
       }
@@ -136,7 +138,9 @@ async function runSyncCycle() {
 
       // Select specific target endpoint per record type / table
       let targetSyncUrl = boulderSyncUrl;
-      if (item.table_name === 'sales_units' || item.table_name === 'sales_weighment_units') {
+      if (item.table_name === 'second_weighment' || item.table_name === 'second_weighments') {
+        targetSyncUrl = secondWeighmentSyncUrl;
+      } else if (item.table_name === 'sales_units' || item.table_name === 'sales_weighment_units') {
         targetSyncUrl = salesSyncUrl;
       } else if (item.table_name === 'yard' || item.table_name === 'yard_weighments') {
         targetSyncUrl = yardSyncUrl;
@@ -472,7 +476,40 @@ function uploadRecord(syncUrl, record) {
       const formattedTareDateTimeStr = formatTo24Hr(rawTareDateTime) || formattedDateTime;
       const formattedTareDateTime = toSqlDateTime(formattedTareDateTimeStr);
 
+      const rawGrossDate = (record.gross_date || record.grossDate || '').trim();
+      const rawGrossTime = (record.gross_time || record.grossTime || '').trim();
+
+      const cleanTareDate = (rawTareDate ? rawTareDate.split(' ')[0] : (formattedTareDateTimeStr ? formattedTareDateTimeStr.split(' ')[0] : '')).substring(0, 10);
+      const cleanTareTime = (rawTareTime || (rawTareDate.includes(' ') ? rawTareDate.split(' ')[1] : '') || (formattedTareDateTimeStr ? formattedTareDateTimeStr.split(' ')[1] : '')).substring(0, 8);
+      const cleanGrossDate = (rawGrossDate ? rawGrossDate.split(' ')[0] : (formattedDateTime ? formattedDateTime.split(' ')[0] : '')).substring(0, 10);
+      const cleanGrossTime = (rawGrossTime || (rawGrossDate.includes(' ') ? rawGrossDate.split(' ')[1] : '') || (formattedDateTime ? formattedDateTime.split(' ')[1] : '')).substring(0, 8);
+
+      const serialNoStr = String(record.dc_num || record.dcNum || record.token || record.your_dc || '');
+      const tareValStr = String(record.tare !== undefined && record.tare !== null ? record.tare : (record.tareVal || 0));
+      const grossValStr = String(record.gross !== undefined && record.gross !== null ? record.gross : (record.grossVal || 0));
+      const nettValStr = String(record.net !== undefined && record.net !== null ? record.net : (record.nettVal || record.net_weight || 0));
+
       const payload = JSON.stringify({
+        // Exact custom mapped fields
+        ID: String(record.id || recordUuid),
+        SerialNo: serialNoStr,
+        Vehicle: vehicleNo,
+        Material: validMat,
+        Tare: tareValStr,
+        TareDate: cleanTareDate,
+        TareTime: cleanTareTime,
+        FirstDateTime: formattedTareDateTimeStr ? formattedTareDateTimeStr.replace(/[\s\-\:]/g, '') : '',
+        Gross: grossValStr,
+        GrossDate: cleanGrossDate,
+        GrossTime: cleanGrossTime,
+        Nett: nettValStr,
+        Qty: String(record.units_val || record.unitsVal || record.qty || nettValStr),
+        Amount: record.amount !== undefined ? record.amount : null,
+        Charges: record.charges !== undefined ? record.charges : null,
+        Party: record.party || record.contractor || null,
+        SecondDateTime: formattedDateTime ? formattedDateTime.replace(/[\s\-\:]/g, '') : '',
+
+        // Standard API backwards-compatibility fields
         company_id: companyId,
         companyId: companyId,
         uuid: recordUuid,
@@ -481,11 +518,11 @@ function uploadRecord(syncUrl, record) {
         tare_datetime: formattedTareDateTime,
         vehicleNo: vehicleNo,
         vehicle_no: vehicleNo,
-        dc_num: record.dc_num || record.dcNum || record.token || record.your_dc || '',
-        dcNum: record.dc_num || record.dcNum || record.token || record.your_dc || '',
-        dc_no: record.dc_num || record.dcNum || record.token || record.your_dc || '',
-        dcNo: record.dc_num || record.dcNum || record.token || record.your_dc || '',
-        dc: record.dc_num || record.dcNum || record.token || record.your_dc || '',
+        dc_num: serialNoStr,
+        dcNum: serialNoStr,
+        dc_no: serialNoStr,
+        dcNo: serialNoStr,
+        dc: serialNoStr,
         your_dc: record.your_dc ?? record.yourDc ?? '',
         yourDc: record.your_dc ?? record.yourDc ?? '',
         party: record.party || record.contractor || '',
@@ -496,9 +533,9 @@ function uploadRecord(syncUrl, record) {
         contractor_material: validMat,
         contractor_material_name: validMat,
         contractorMaterial: validMat,
-        gross: record.gross !== undefined && record.gross !== null ? Number(record.gross) : Number(record.grossVal || 0),
-        tare: record.tare !== undefined && record.tare !== null ? Number(record.tare) : Number(record.tareVal || 0),
-        net: record.net !== undefined && record.net !== null ? Number(record.net) : Number(record.nettVal || record.net_weight || 0),
+        gross: Number(grossValStr),
+        tare: Number(tareValStr),
+        net: Number(nettValStr),
         driver: record.driver || '',
         transporter: record.transporter || '',
         destination: record.destination || '',
@@ -668,8 +705,8 @@ function uploadRecord(syncUrl, record) {
         phone: record.phone || '',
         royalty_type: record.royalty_type || record.royaltyType || 'None',
         royaltyType: record.royalty_type || record.royaltyType || 'None',
-        royalty_amount: Number(record.royalty_amount || record.royaltyAmount || record.discount || 0),
-        royaltyAmount: Number(record.royalty_amount || record.royaltyAmount || record.discount || 0),
+        royalty_amount: Number(record.royalty_amount || record.royaltyAmount || 0),
+        royaltyAmount: Number(record.royalty_amount || record.royaltyAmount || 0),
         bill_type: record.bill_type || record.billType || 'NON-GST',
         billType: record.bill_type || record.billType || 'NON-GST',
         grand_total: Math.max(0, Number(Number(record.grand_total || record.grandTotal || record.amount || 0).toFixed(2))),

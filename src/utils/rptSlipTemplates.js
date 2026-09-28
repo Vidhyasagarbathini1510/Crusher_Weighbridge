@@ -19,8 +19,11 @@ export const RPT_TEMPLATE_CATALOGUE = [
   { id: 'RPT-SALESBILL1', name: 'Weighment Slip (Boxed)', detail: 'SalesBill1.rpt — boxed, amount + driver', paper: 'A5 L' },
   { id: 'RPT-SALESBILLSR', name: 'Weighment (Ruled)', detail: 'SalesBillSR.rpt — operator + receiver sign', paper: 'A5 L' },
   { id: 'RPT-SALESBILL2', name: 'Weighment 4-Up', detail: 'SalesBill2.rpt — four slips per page', paper: 'A4' },
+  { id: 'RPT-SALESBILL2-3UP', name: 'Weighment 3-Up', detail: 'SalesBill2.rpt — three slips per A4 page', paper: 'A4' },
+  { id: 'RPT-SALESBILL2-2UP', name: 'Weighment 2-Up', detail: 'SalesBill2.rpt — two slips per A4 page', paper: 'A4' },
   { id: 'RPT-SALESBILL2-NOGATEPASS', name: 'Weighment 4-Up (No Gate Pass)', detail: 'SalesBill2.rpt — four slips per page without Gate Pass box', paper: 'A4' },
   { id: 'RPT-SALESBILL9', name: 'Delivery Challan Slip', detail: 'SalesBill9.rpt — customer + GSTIN', paper: 'A5 L' },
+  { id: 'RPT-SALESBILL9-2UP', name: 'Delivery Challan Slip 2-Up (A4)', detail: 'SalesBill9.rpt — two Delivery Challan slips on one A4 page', paper: 'A4' },
   { id: 'RPT-SLIPPRINT', name: 'Loading Slip 2-Up', detail: 'SlipPrint.rpt — slip + loading DC', paper: 'A5 L' },
   { id: 'RPT-SLIPPRINT2', name: 'Delivery Challan 2-Up', detail: 'SlipPrint2.rpt — with RST number', paper: 'A5 L' },
   { id: 'RPT-CHALLAN-A4', name: 'Delivery Challan (Full)', detail: 'HSN table + weighment slip', paper: 'A4' },
@@ -38,6 +41,7 @@ export const RPT_TEMPLATE_CATALOGUE = [
 export const RPT_TEMPLATE_IDS = RPT_TEMPLATE_CATALOGUE.map(t => t.id);
 
 import { renderRptPageHeader, getCompanyHeaderLines } from './rptPageHeader.js';
+import { getCompanyDetails } from './classicReportPrinter.js';
 
 function esc(value) {
   if (value === null || value === undefined) return '';
@@ -92,54 +96,62 @@ function fields(d = {}) {
   const tareVal = wt(pick('tare'));
   let tareDate = pick('tareDate', 'tare_date');
   let tareTime = pick('tareTime', 'tare_time');
-  if (!tareDate && tareVal) tareDate = grossDate;
-  if (!tareTime && tareVal) tareTime = grossTime;
+  const nettVal = wt(pick('net', 'nett', 'net_weight', 'netWeight', 'nettVal', 'netVal'));
+  const rawQty = pick('qty', 'units_val', 'unitsVal', 'quantity', 'quantityVal');
+  const computedQty = (rawQty && String(rawQty).trim() !== '' && String(rawQty).trim() !== '0')
+    ? String(rawQty).trim()
+    : (nettVal || '0');
 
-  return {
-    ...d,
-    dcNum: pick('dcNum', 'dc_num', 'token', 'serial_no'),
-    rstNum: pick('rstNum', 'rst_num', 'rst', 'dcNum', 'dc_num'),
-    slNum: pick('slNum', 'sl_num', 'dcNum', 'dc_num'),
-    vehicle: pick('vehicle', 'vehicle_no', 'vehicleNo').toUpperCase(),
-    material: pick('material', 'product'),
-    party: pick('party', 'customer', 'customerName'),
-    destination: pick('destination') || 'OUT',
-    source: pick('source', 'quarry'),
-    transporter: pick('transporter', 'transporterName'),
-    driver: pick('driver', 'driverName'),
-    phone: pick('phone', 'mobileNo', 'mobile'),
-    gross: wt(pick('gross')),
-    tare: tareVal,
-    nett: wt(pick('net', 'nett')),
-    // The same three figures with no thousands separator. The challan slip
-    // prints them plain — 59260, not 59,260 — the way the weighbridge reads.
-    grossRaw: pick('gross').replace(/,/g, ''),
-    tareRaw: tareVal.replace(/,/g, ''),
-    nettRaw: pick('net', 'nett').replace(/,/g, ''),
-    amount: pick('amount', 'grand_total', 'grandTotal'),
-    grossDate: grossDate,
-    grossTime: grossTime,
-    tareDate: tareDate,
-    tareTime: tareTime,
-    outTime: pick('outTime', 'time', 'grossTime') || grossTime,
-    inTime: pick('inTime', 'tareTime', 'tare_time') || tareTime || grossTime,
-    gstin: pick('gstin', 'gstIn'),
-    address1: pick('address1', 'companyName'),
-    address2: pick('address2'),
-    address3: pick('address3'),
-    siteAddress: pick('siteAddress', 'site_address'),
+  const stationaryVal = pick('stationary', 'stationary_no', 'stationaryNo', 'stnNo', 'stn_no', 'stationary_num', 'stationaryNum');
+
+    const companyDetails = getCompanyDetails();
+    const defaultCompanyName = (companyDetails && (companyDetails.companyName || companyDetails.address1)) || '';
+
+    return {
+      ...d,
+      dcNum: pick('dcNum', 'dc_num', 'token', 'serial_no', 'dc_no', 'dcNo', 'dc'),
+      rstNum: pick('rstNum', 'rst_num', 'rst', 'dcNum', 'dc_num'),
+      slNum: pick('slNum', 'sl_num', 'dcNum', 'dc_num'),
+      vehicle: pick('vehicle', 'vehicle_no', 'vehicleNo').toUpperCase(),
+      material: pick('material', 'product'),
+      party: pick('party', 'customer', 'customerName'),
+      destination: pick('destination') || 'OUT',
+      source: pick('source', 'quarry'),
+      transporter: pick('transporter', 'transporterName'),
+      driver: pick('driver', 'driverName'),
+      phone: pick('phone', 'mobileNo', 'mobile'),
+      gross: wt(pick('gross')),
+      tare: tareVal,
+      nett: nettVal,
+      // The same three figures with no thousands separator. The challan slip
+      // prints them plain — 59260, not 59,260 — the way the weighbridge reads.
+      grossRaw: pick('gross').replace(/,/g, ''),
+      tareRaw: tareVal.replace(/,/g, ''),
+      nettRaw: nettVal.replace(/,/g, ''),
+      amount: pick('amount', 'grand_total', 'grandTotal'),
+      grossDate: grossDate,
+      grossTime: grossTime,
+      tareDate: tareDate,
+      tareTime: tareTime,
+      outTime: pick('outTime', 'time', 'grossTime') || grossTime,
+      inTime: pick('inTime', 'tareTime', 'tare_time') || tareTime || grossTime,
+      gstin: pick('gstin', 'gstIn'),
+      address1: pick('address1', 'companyName') || defaultCompanyName,
+      address2: pick('address2'),
+      address3: pick('address3'),
+      siteAddress: pick('siteAddress', 'site_address'),
     // The customer's own address, kept apart from address1 — that one is the
     // company header and must never print on the customer line.
     customerAddress: pick('customerAddress', 'customer_address', 'partyAddress', 'party_address'),
     remarks: pick('remarks'),
     consignee: pick('consignee', 'party', 'customer'),
     customerPO: pick('customerPO', 'po_number', 'poNumber'),
-    stationary: pick('stationary'),
+    stationary: stationaryVal,
     item: pick('item', 'material', 'product'),
     hsn: pick('hsn') || '2517',
     units: pick('units', 'unit_type', 'unitType') || 'Tonnes',
-    qty: pick('qty', 'units_val', 'unitsVal'),
-    quantity: pick('quantity', 'qty', 'units_val', 'unitsVal') || '0',
+    qty: computedQty,
+    quantity: computedQty,
     contact: pick('phone', 'mobileNo', 'mobile', 'contact'),
     img1: pick('image_base64', 'image_path', 'imageBase64', 'imagePath', 'image1'),
     img2: pick('image_base64_2', 'image_path_2', 'imageBase64_2', 'imagePath_2', 'image2'),
@@ -285,9 +297,23 @@ function salesBillSR(f) {
 // The same nine stops as SalesBill1, minus the frame — this is the same form
 // printed several times down a sheet so the supervisor can tear one off per
 // load, and the two forms have to read as the same document.
-function salesBill2Block(f, showGatePass = true) {
+function salesBill2Block(f, showGatePass = true, upCount = 4) {
+  let containerStyle = 'padding:2px 0 28px; position:relative;';
+  let signMargin = 'margin-top:14px;';
+  let borderMargin = 'margin-top:5px;';
+
+  if (upCount === 3) {
+    containerStyle = 'padding:14px 0 65px; position:relative;';
+    signMargin = 'margin-top:28px;';
+    borderMargin = 'margin-top:10px;';
+  } else if (upCount === 2) {
+    containerStyle = 'padding:30px 0 135px; position:relative;';
+    signMargin = 'margin-top:50px;';
+    borderMargin = 'margin-top:16px;';
+  }
+
   return `
-    <div style="padding:2px 0 30px; position:relative;">
+    <div style="${containerStyle}">
       ${showGatePass ? `
       <div style="display:flex; justify-content:flex-end; margin-bottom:4px; padding-right:4px;">
         <div style="border:1.5px solid #000; padding:4px 12px; text-align:center; display:inline-block; min-width:130px;">
@@ -306,20 +332,28 @@ function salesBill2Block(f, showGatePass = true) {
         ${billWeightRow('TARE', f.tare, 'DATE', f.tareDate, 'TIME', f.tareTime)}
         ${billWeightRow('NETT', f.nett, '', '', '', '')}
       </table>
-      <div style="display:flex;justify-content:space-between;align-items:center;font-size:12px;margin-top:14px;padding:0 7px;font-weight:600;">
+      <div style="display:flex;justify-content:space-between;align-items:center;font-size:12px;${signMargin}padding:0 7px;font-weight:600;">
         <span>Sign Of Supervisor</span>
         <span>Authorised Signature</span>
       </div>
-      <div style="border-bottom:1px solid #000;margin-top:5px;"></div>
+      <div style="border-bottom:1px solid #000;${borderMargin}"></div>
     </div>`;
 }
 
 function salesBill2(f) {
-  return wrap(salesBill2Block(f, true).repeat(4), { data: f });
+  return wrap(salesBill2Block(f, true, 4).repeat(4), { data: f });
+}
+
+function salesBill2ThreeUp(f) {
+  return wrap(salesBill2Block(f, true, 3).repeat(3), { data: f });
+}
+
+function salesBill2TwoUp(f) {
+  return wrap(salesBill2Block(f, true, 2).repeat(2), { data: f });
 }
 
 function salesBill2NoGatePass(f) {
-  return wrap(salesBill2Block(f, false).repeat(4), { data: f });
+  return wrap(salesBill2Block(f, false, 4).repeat(4), { data: f });
 }
 
 // ---- SalesBill9.rpt : DELIVERY CHALLAN SLIP --------------------------------
@@ -339,13 +373,13 @@ const DC_COLS = `
     <col style="width:14%"><col style="width:20%">
   </colgroup>`;
 
-function salesBill9(f) {
-  const pad = 'padding:5px 5px;';
+function salesBill9Block(f) {
+  const pad = 'padding:4px 5px;';
   const nw = `${pad}white-space:nowrap;`;
 
   const dcBand = text => `
     <tr>
-      <td colspan="7" style="background:${BAND};${INK}text-align:center;font-weight:bold;letter-spacing:1px;padding:5px 0;">
+      <td colspan="7" style="background:${BAND};${INK}text-align:center;font-weight:bold;letter-spacing:1px;padding:4px 0;">
         ${esc(spaced(text))}
       </td>
     </tr>`;
@@ -373,15 +407,15 @@ function salesBill9(f) {
 
   const sign = caption => `
     <td style="width:33.33%;padding:0 12px;">
-      <div style="border-top:1px solid #000;padding-top:6px;text-align:center;">${esc(caption)}</div>
+      <div style="border-top:1px solid #000;padding-top:4px;text-align:center;">${esc(caption)}</div>
     </td>`;
 
-  return wrap(`
-    <div style="text-align:center;font-family:'Times New Roman',Times,serif;font-weight:bold;letter-spacing:1.2px;font-size:17px;margin-bottom:10px;">
+  return `
+    <div style="text-align:center;font-family:'Times New Roman',Times,serif;font-weight:bold;letter-spacing:1.2px;font-size:16px;margin-bottom:6px;">
       DELIVERY CHALLAN SLIP
     </div>
 
-    <table style="width:100%;border-collapse:collapse;table-layout:fixed;margin-bottom:5px;">
+    <table style="width:100%;border-collapse:collapse;table-layout:fixed;margin-bottom:4px;">
       <tr>
         <td style="width:55%;text-align:right;white-space:nowrap;padding:0 12px 0 0;">WB Slip Number :</td>
         <td style="font-weight:bold;">${esc(f.dcNum)}</td>
@@ -413,15 +447,30 @@ function salesBill9(f) {
       ${pairRow('Site Address', f.siteAddress, '', '')}
     </table>
 
-    <div style="margin-top:10px;">Remarks :&nbsp;&nbsp;${esc(f.remarks)}</div>
+    <div style="margin-top:6px;font-size:12px;">Remarks :&nbsp;&nbsp;${esc(f.remarks)}</div>
 
-    <table style="width:100%;border-collapse:collapse;table-layout:fixed;margin-top:34px;">
+    <table style="width:100%;border-collapse:collapse;table-layout:fixed;margin-top:22px;font-size:12px;">
       <tr>
         ${sign("Operator's Signature")}
         ${sign('Driver Signature')}
         ${sign('Receiving Signature')}
       </tr>
-    </table>
+    </table>`;
+}
+
+function salesBill9(f) {
+  return wrap(salesBill9Block(f), { data: f });
+}
+
+function salesBill9TwoUp(f) {
+  return wrap(`
+    <div style="padding-bottom:8px;">
+      ${salesBill9Block(f)}
+    </div>
+    <div style="border-top:1.5px dashed #475569;margin:14px 0 18px 0;position:relative;"></div>
+    <div style="padding-top:4px;">
+      ${salesBill9Block(f)}
+    </div>
   `, { data: f });
 }
 
@@ -629,7 +678,7 @@ function challanA4(f) {
               <td colspan="6" style="${td}height:80px;vertical-align:bottom;padding:10px 12px;">
                 <div style="display:flex;justify-content:space-between;align-items:flex-end;width:100%;font-size:13px;font-weight:bold;">
                   <div>${esc(f.consignee || f.party)}</div>
-                  <div>${esc(f.address1 || 'KALKI BHAGAVAN METAL INDUSTRIES')}</div>
+                  <div>${esc(f.address1 || f.companyName || (getCompanyDetails() && getCompanyDetails().companyName) || '')}</div>
                 </div>
               </td>
             </tr>
@@ -966,9 +1015,7 @@ function weighSlipCctvA4(f) {
     <div style="padding-bottom:12px;">
       ${weighSlipCctvA4Block(f)}
     </div>
-    <div style="border-top:1.5px dashed #475569;margin:10px 0 14px 0;position:relative;text-align:center;">
-      <span style="position:absolute;top:-9px;background:#fff;padding:0 8px;font-size:9.5px;color:#64748b;font-weight:600;">✂ CUT HERE</span>
-    </div>
+    <div style="border-top:1.5px dashed #475569;margin:10px 0 14px 0;position:relative;"></div>
     <div style="padding-top:2px;">
       ${weighSlipCctvA4Block(f)}
     </div>
@@ -981,8 +1028,11 @@ const BUILDERS = {
   'RPT-SALESBILL1': salesBill1,
   'RPT-SALESBILLSR': salesBillSR,
   'RPT-SALESBILL2': salesBill2,
+  'RPT-SALESBILL2-3UP': salesBill2ThreeUp,
+  'RPT-SALESBILL2-2UP': salesBill2TwoUp,
   'RPT-SALESBILL2-NOGATEPASS': salesBill2NoGatePass,
   'RPT-SALESBILL9': salesBill9,
+  'RPT-SALESBILL9-2UP': salesBill9TwoUp,
   'RPT-SLIPPRINT': slipPrint,
   'RPT-SLIPPRINT2': slipPrint2,
   'RPT-CHALLAN-A4': challanA4,

@@ -81,12 +81,17 @@ function postToNChat(payload) {
       let body = '';
       res.on('data', (chunk) => { body += chunk; });
       res.on('end', () => {
-        if (res.statusCode >= 200 && res.statusCode < 300) {
+        let parsed = null;
+        try { parsed = JSON.parse(body); } catch (e) {}
+
+        const apiSuccess = parsed && parsed.success !== undefined ? parsed.success : true;
+        if (res.statusCode >= 200 && res.statusCode < 300 && apiSuccess) {
           console.log(`[AlertService] nChat API success (${res.statusCode}):`, body);
-          resolve({ success: true, statusCode: res.statusCode, body });
+          resolve({ success: true, statusCode: res.statusCode, body, data: parsed });
         } else {
-          console.warn(`[AlertService] nChat API HTTP error (${res.statusCode}):`, body);
-          reject(new Error(`nChat API returned HTTP ${res.statusCode}`));
+          const errorDetail = (parsed && (parsed.message || parsed.error)) || body || `HTTP ${res.statusCode}`;
+          console.warn(`[AlertService] nChat API error (${res.statusCode}):`, body);
+          reject(new Error(errorDetail));
         }
       });
     });
@@ -117,23 +122,61 @@ async function dispatchAlert(content, customReceiver = null) {
     return { success: false, reason: 'disabled' };
   }
 
-  const payload = {
-    SenderNumber: senderNumber,
-    ReceiverNumber: customReceiver || receiverNumber,
-    Content: content,
-    ContentType: 'Text'
-  };
-
-  try {
-    const res = await postToNChat(payload);
-    return res;
-  } catch (err) {
-    console.warn('[AlertService] Direct nChat delivery failed, queuing alert locally:', err.message);
-    if (db.queueOfflineAlert) {
-      db.queueOfflineAlert(payload);
-    }
-    return { success: false, queued: true, error: err.message };
+  let targets = [];
+  if (customReceiver) {
+    targets = Array.isArray(customReceiver)
+      ? customReceiver.map(n => String(n).trim()).filter(Boolean)
+      : String(customReceiver).split(',').map(n => n.trim()).filter(Boolean);
+  } else {
+    targets = String(receiverNumber).split(',').map(n => n.trim()).filter(Boolean);
   }
+  if (targets.length === 0) {
+    targets = [DEFAULT_RECEIVER];
+  }
+
+  const results = [];
+  for (let i = 0; i < targets.length; i++) {
+    const num = targets[i];
+    const payload = {
+      SenderNumber: senderNumber,
+      ReceiverNumber: num,
+      Content: content,
+      ContentType: 'Text'
+    };
+
+    if (i > 0) {
+      // Small 300ms delay between consecutive requests to avoid API rate limiting
+      await new Promise(r => setTimeout(r, 300));
+    }
+
+    try {
+      const res = await postToNChat(payload);
+      results.push({ receiver: num, success: true, ...res });
+    } catch (err) {
+      console.warn(`[AlertService] Direct nChat delivery to ${num} failed:`, err.message);
+      const isValidationError = err.message && (err.message.includes('not a valid phone number') || err.message.includes('400'));
+      let queued = false;
+
+      if (!isValidationError && db.queueOfflineAlert) {
+        db.queueOfflineAlert(payload);
+        queued = true;
+      }
+      results.push({ receiver: num, success: false, queued, error: err.message });
+    }
+  }
+
+  const successfulCount = results.filter(r => r.success).length;
+  const allSuccess = results.length > 0 && results.every(r => r.success);
+  const partialSuccess = successfulCount > 0 && !allSuccess;
+
+  return {
+    success: allSuccess,
+    partialSuccess,
+    successfulCount,
+    failedCount: results.length - successfulCount,
+    recipientCount: targets.length,
+    results
+  };
 }
 
 /**
@@ -149,13 +192,24 @@ async function processOfflineAlertQueue() {
     for (const item of pending) {
       try {
         const payload = JSON.parse(item.payload_json);
-        await postToNChat(payload);
+        const numbers = String(payload.ReceiverNumber || '').split(',').map(n => n.trim()).filter(Boolean);
+        const targetList = numbers.length > 0 ? numbers : [DEFAULT_RECEIVER];
+        
+        for (const num of targetList) {
+          await postToNChat({ ...payload, ReceiverNumber: num });
+        }
+
         if (db.markOfflineAlertCompleted) {
           db.markOfflineAlertCompleted(item.id);
         }
       } catch (err) {
         console.warn(`[AlertService] Retry failed for offline alert ID ${item.id}:`, err.message);
-        if (db.incrementOfflineAlertRetry) {
+        if (err.message && err.message.includes('400')) {
+          // HTTP 400 means client request validation failed (e.g. malformed payload); mark done to clear queue
+          if (db.markOfflineAlertCompleted) {
+            db.markOfflineAlertCompleted(item.id);
+          }
+        } else if (db.incrementOfflineAlertRetry) {
           db.incrementOfflineAlertRetry(item.id, err.message);
         }
         break; // Stop pass if server still unreachable
@@ -271,15 +325,20 @@ function stopAlertService() {
  */
 async function sendTestAlert(targetNumber = null) {
   const { senderNumber, receiverNumber } = getAlertConfig();
+  const rawTarget = targetNumber || receiverNumber;
+  const targets = Array.isArray(rawTarget)
+    ? rawTarget.map(n => String(n).trim()).filter(Boolean)
+    : String(rawTarget).split(',').map(n => n.trim()).filter(Boolean);
+
   const testMsg = `🔔 NCHAT TEST ALERT
 
 Sender (Company ID): ${senderNumber}
-Receiver: ${targetNumber || receiverNumber}
+Receivers (${targets.length}): ${targets.join(', ')}
 Status: Communication OK
 
 This is a test notification from the Weighbridge Application Issue Detection System.`;
 
-  return dispatchAlert(testMsg, targetNumber || receiverNumber);
+  return dispatchAlert(testMsg, targets);
 }
 
 module.exports = {

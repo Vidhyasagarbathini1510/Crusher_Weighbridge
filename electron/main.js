@@ -413,6 +413,8 @@ function registerDatabaseHandlers() {
   });
 }
 
+let mainWindow = null;
+
 function createWindow() {
   const win = new BrowserWindow({
     width: 1400,
@@ -428,8 +430,24 @@ function createWindow() {
     },
   });
 
+  mainWindow = win;
+
   win.maximize();
 
+  // Handle renderer crash / out-of-memory after long multi-day continuous runtime
+  win.webContents.on('render-process-gone', (event, details) => {
+    console.error('[Main] Renderer process gone (crash/OOM):', details.reason);
+    reportApplicationError(`Renderer process gone: ${details.reason}`);
+    if (details.reason !== 'clean-exit' && !win.isDestroyed()) {
+      console.log('[Main] Reloading application window to recover from renderer crash...');
+      win.reload();
+    }
+  });
+
+  win.on('unresponsive', () => {
+    console.error('[Main] Window became unresponsive!');
+    reportApplicationError('Window became unresponsive');
+  });
 
   // Dynamic scale reader setup
   let activeReader = null;
@@ -585,6 +603,7 @@ function createWindow() {
   startRfidReader();
 
   win.on('closed', () => {
+    mainWindow = null;
     if (restartTimeout) {
       clearTimeout(restartTimeout);
     }
@@ -619,46 +638,83 @@ function createWindow() {
   startAiService(win);
 }
 
-app.whenReady().then(async () => {
-  // Without this Windows groups the taskbar button under "Electron" and shows
-  // the default Electron icon instead of the installed shortcut's icon.
-  if (process.platform === 'win32') {
-    app.setAppUserModelId('com.norissolutions.weighbridge');
-  }
-  nativeTheme.themeSource = 'light';
-  // Disable default menu bar (File, Edit, etc.)
-  Menu.setApplicationMenu(null);
+// Single Instance Lock: Prevents duplicate instances running in Task Manager
+const gotTheLock = app.requestSingleInstanceLock();
 
-  // Carry data over from the pre-rename folder, before anything reads the disk.
-  migrateLegacyUserData();
+if (!gotTheLock) {
+  console.log('[Main] Another instance of Crusher Weighbridge is already running. Quitting duplicate instance...');
+  app.quit();
+} else {
+  app.on('second-instance', (event, commandLine, workingDirectory) => {
+    console.log('[Main] Second instance launched. Bringing existing window to focus...');
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      if (!mainWindow.isVisible()) mainWindow.show();
+      mainWindow.focus();
+    }
+  });
 
-  // Initialize Database schemas & seed data
-  await db.init();
-  
-  // Register DB IPC handlers
-  registerDatabaseHandlers();
-  
-  // Start LAN Network API Server if configured in HOST mode
-  const netConfig = dbAdapter.getNetworkConfig();
-  if (netConfig.mode === 'HOST') {
-    networkServer.startServer(netConfig.hostPort).catch(err => {
-      console.error('[Main] Failed to start LAN Network Server on boot:', err);
-    });
-  }
+  app.whenReady().then(async () => {
+    // Without this Windows groups the taskbar button under "Electron" and shows
+    // the default Electron icon instead of the installed shortcut's icon.
+    if (process.platform === 'win32') {
+      app.setAppUserModelId('com.norissolutions.weighbridge');
+    }
+    nativeTheme.themeSource = 'light';
+    // Disable default menu bar (File, Edit, etc.)
+    Menu.setApplicationMenu(null);
 
-  // Start Background Sync Poller (if HOST)
-  if (netConfig.mode === 'HOST') {
-    startSyncService();
-  }
+    // Carry data over from the pre-rename folder, before anything reads the disk.
+    try {
+      migrateLegacyUserData();
+    } catch (e) {
+      console.error('[Main] User data migration error:', e);
+    }
 
-  // Start Automated Daily Retention / Cleanup Service
-  autoCleanupService.start();
+    // Initialize Database schemas & seed data
+    try {
+      await db.init();
+    } catch (e) {
+      console.error('[Main] Database init error:', e);
+    }
 
-  // Start Issue Detection & Health Monitoring Service
-  startHealthMonitorService();
+    // Register DB IPC handlers
+    try {
+      registerDatabaseHandlers();
+    } catch (e) {
+      console.error('[Main] Register DB handlers error:', e);
+    }
 
-  createWindow();
-});
+    // Start LAN Network API Server if configured in HOST mode
+    try {
+      const netConfig = dbAdapter.getNetworkConfig();
+      if (netConfig.mode === 'HOST') {
+        networkServer.startServer(netConfig.hostPort).catch(err => {
+          console.error('[Main] Failed to start LAN Network Server on boot:', err);
+        });
+        startSyncService();
+      }
+    } catch (e) {
+      console.error('[Main] Network config / Sync start error:', e);
+    }
+
+    // Start Automated Daily Retention / Cleanup Service
+    try {
+      autoCleanupService.start();
+    } catch (e) {
+      console.error('[Main] Auto cleanup service error:', e);
+    }
+
+    // Start Issue Detection & Health Monitoring Service
+    try {
+      startHealthMonitorService();
+    } catch (e) {
+      console.error('[Main] Health monitor service error:', e);
+    }
+
+    createWindow();
+  });
+}
 
 app.on('window-all-closed', () => {
   stopHealthMonitorService();

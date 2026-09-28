@@ -53,10 +53,25 @@ function performSave() {
     if (blockedMs > 150) {
       console.warn(`[SQLite] export() blocked the main process for ${blockedMs}ms (${(buffer.length / 1048576).toFixed(1)} MB)`);
     }
-    fs.writeFile(dbPath, buffer, (err) => {
+
+    const tmpPath = dbPath + '.tmp';
+    const bakPath = dbPath + '.bak';
+
+    // Atomic save pattern: Write to .tmp first, back up existing .db to .bak, then copy .tmp to .db
+    fs.writeFile(tmpPath, buffer, (err) => {
       isSaving = false;
       if (err) {
-        console.error('[SQLite] Error persisting database to disk (async):', err);
+        console.error('[SQLite] Error persisting database to temp file (async):', err);
+      } else {
+        try {
+          if (fs.existsSync(dbPath)) {
+            fs.copyFileSync(dbPath, bakPath);
+          }
+          fs.copyFileSync(tmpPath, dbPath);
+          try { fs.unlinkSync(tmpPath); } catch (_) {}
+        } catch (copyErr) {
+          console.error('[SQLite] Error during atomic DB file replacement:', copyErr);
+        }
       }
       if (pendingSave) {
         pendingSave = false;
@@ -79,29 +94,76 @@ function saveToDiskSync() {
     const startedAt = Date.now();
     const data = dbInstance.export();
     const buffer = Buffer.from(data);
-    fs.writeFileSync(dbPath, buffer);
+    const tmpPath = dbPath + '.tmp';
+    const bakPath = dbPath + '.bak';
+
+    fs.writeFileSync(tmpPath, buffer);
+    if (fs.existsSync(dbPath)) {
+      fs.copyFileSync(dbPath, bakPath);
+    }
+    fs.copyFileSync(tmpPath, dbPath);
+    try { fs.unlinkSync(tmpPath); } catch (_) {}
     console.log(`[SQLite] Synchronous database save completed in ${Date.now() - startedAt}ms (${(buffer.length / 1048576).toFixed(1)} MB).`);
   } catch (err) {
     console.error('[SQLite] Error persisting database synchronously:', err);
   }
 }
 
+function isValidSqliteHeader(buffer) {
+  if (!buffer || buffer.length < 100) return false;
+  const magic = buffer.toString('utf8', 0, 16);
+  return magic.startsWith('SQLite format 3');
+}
+
 async function init() {
   console.log('[SQLite] Initializing WASM database at:', dbPath);
   const SQL = await initSqlJs();
+  const bakPath = dbPath + '.bak';
 
-  if (fs.existsSync(dbPath)) {
+  let loadedSuccessfully = false;
+
+  const tryLoadFromPath = (targetPath) => {
     try {
-      const filebuffer = fs.readFileSync(dbPath);
-      dbInstance = new SQL.Database(filebuffer);
-      console.log('[SQLite] Database loaded successfully from disk.');
+      if (!fs.existsSync(targetPath)) return false;
+      const filebuffer = fs.readFileSync(targetPath);
+      if (!isValidSqliteHeader(filebuffer)) {
+        console.warn(`[SQLite] File at ${targetPath} lacks valid SQLite header signature (length: ${filebuffer.length})`);
+        return false;
+      }
+      const testDb = new SQL.Database(filebuffer);
+      // Validate that database is executable and not corrupted
+      testDb.exec('SELECT 1;');
+      dbInstance = testDb;
+      console.log(`[SQLite] Database loaded successfully from ${targetPath}.`);
+      return true;
     } catch (err) {
-      console.error('[SQLite] Error reading database file, starting clean:', err);
-      dbInstance = new SQL.Database();
+      console.error(`[SQLite] Error opening database at ${targetPath}:`, err.message);
+      return false;
     }
-  } else {
+  };
+
+  // 1. Try primary database file
+  if (tryLoadFromPath(dbPath)) {
+    loadedSuccessfully = true;
+  } else if (tryLoadFromPath(bakPath)) {
+    // 2. Try loading backup file (.bak) if primary is corrupt
+    console.log('[SQLite] Successfully recovered database from backup (.bak)!');
+    loadedSuccessfully = true;
+    try {
+      fs.copyFileSync(bakPath, dbPath);
+    } catch (_) {}
+  }
+
+  if (!loadedSuccessfully) {
+    if (fs.existsSync(dbPath)) {
+      const corruptBackupPath = dbPath + '.corrupt_' + Date.now();
+      console.warn(`[SQLite] Moving corrupted database file to ${corruptBackupPath}`);
+      try {
+        fs.renameSync(dbPath, corruptBackupPath);
+      } catch (_) {}
+    }
     dbInstance = new SQL.Database();
-    console.log('[SQLite] New database instance created.');
+    console.log('[SQLite] Created new clean database instance.');
   }
 
   // Enable WAL mode and busy_timeout for high-performance concurrent reads/writes
@@ -2027,7 +2089,7 @@ function addSalesWeighmentUnits(tx, base64Image) {
     Number(tx.destination_rate || tx.destinationRate || tx.party_transport_rate || tx.partyTransportRate || 0),
     Number(tx.destination_amount || tx.destinationAmount || tx.party_transport_amount || tx.partyTransportAmount || 0),
     tx.royalty_type || tx.royaltyType || 'None',
-    Number(tx.royalty_amount || tx.royaltyAmount || tx.discount || 0)
+    Number(tx.royalty_amount || tx.royaltyAmount || 0)
   ]);
 
   pushToSyncQueue('sales_units', uuid);
@@ -2383,7 +2445,9 @@ function addSecondWeighment(tx, base64Image) {
     tx.tare_time || tx.tareTime || ''
   ]);
 
-  // Second weighments are stored in local DB only (no remote server endpoint)
+  // Push second weighment to sync_queue for real-time dispatch to server API
+  pushToSyncQueue('second_weighments', uuid);
+
   saveToDisk();
   return { uuid, ...tx };
 }
@@ -3165,6 +3229,7 @@ function normalizeDcModule(mod) {
   if (m === 'boulder' || m === 'boulders') return 'boulders';
   if (m === 'yard' || m === 'yards') return 'yard';
   if (m === 'loading' || m === 'loadingslip' || m === 'loading_slip') return 'loading';
+  if (m === 'first' || m === 'firstweighment' || m === 'first_weighment') return 'first_weighment';
   return 'sales';
 }
 
@@ -3181,6 +3246,7 @@ function getMaxExistingDcNumber(normModule, normType, currentCycle) {
   else if (normModule === 'boulders') tables.push('boulders');
   else if (normModule === 'yard') tables.push('yard_weighments');
   else if (normModule === 'loading') tables.push('loading_slips', 'transactions');
+  else if (normModule === 'first_weighment') tables.push('first_weighments');
 
   let maxSeq = 0;
 
@@ -3242,16 +3308,17 @@ function peekNextDcNumber(type = 'NON-GST', prefix = 'DC-', moduleKey = 'sales')
       seq = maxExisting + 1;
     }
 
-    return `${pfx}${seq}`;
+    const seqStr = pfx === 'SN-' ? String(seq).padStart(2, '0') : String(seq);
+    return `${pfx}${seqStr}`;
   } catch (err) {
     console.error('[SQLite] Error in peekNextDcNumber:', err);
-    return `${pfx}1`;
+    return `${pfx}01`;
   }
 }
 
 /**
  * Atomic Host DC allocation and increment.
- * Generates next DC number (unpadded DC-1, DC-2, etc.), increments sequence counter, and saves DB.
+ * Generates next DC number (unpadded DC-1 or padded SN-01), increments sequence counter, and saves DB.
  */
 function getAndAssignDc(type = 'NON-GST', prefix = 'DC-', moduleKey = 'sales') {
   if (!dbInstance) return 'DC-1';
@@ -3280,7 +3347,8 @@ function getAndAssignDc(type = 'NON-GST', prefix = 'DC-', moduleKey = 'sales') {
       cycleMatched = true;
     }
 
-    const assignedDc = `${pfx}${currentSeq}`;
+    const seqStr = pfx === 'SN-' ? String(currentSeq).padStart(2, '0') : String(currentSeq);
+    const assignedDc = `${pfx}${seqStr}`;
     const nextSeq = currentSeq + 1;
 
     dbInstance.run('INSERT OR REPLACE INTO dc_sequences (module_key, type_key, seq_value, cycle_value) VALUES (?, ?, ?, ?)', [normModule, normType, nextSeq, currentCycle]);
@@ -3289,7 +3357,7 @@ function getAndAssignDc(type = 'NON-GST', prefix = 'DC-', moduleKey = 'sales') {
     return assignedDc;
   } catch (err) {
     console.error('[SQLite] Error in getAndAssignDc:', err);
-    return `${pfx}1`;
+    return `${pfx}01`;
   }
 }
 

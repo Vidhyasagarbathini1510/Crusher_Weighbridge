@@ -5,6 +5,7 @@ import Loader from '../components/Loader.jsx';
 
 import { captureCameraSnapshot } from '../utils/cameraSnapshot.js';
 import { useAuth } from '../context/AuthContext.jsx';
+import { getNextDcNumber, incrementDcNumber } from '../utils/dcHelper.js';
 
 export default function FirstWeighment() {
   const { user } = useAuth();
@@ -21,9 +22,18 @@ export default function FirstWeighment() {
   const [msg, setMsg] = useState('');
   const [msgType, setMsgType] = useState('success');
 
+  const fetchNextSerialNo = async () => {
+    try {
+      const val = await getNextDcNumber('NON-GST', 'SN-', 'first_weighment');
+      if (val) setSerialNo(val);
+    } catch (e) {
+      setSerialNo('SN-01');
+    }
+  };
+
   useEffect(() => {
     api.cameras().then(setCameras).catch(() => setCameras([]));
-    setSerialNo(`SN-${Math.floor(100000 + Math.random() * 900000)}`);
+    fetchNextSerialNo();
   }, []);
 
   // Listen to scale
@@ -55,8 +65,12 @@ export default function FirstWeighment() {
       return;
     }
     const base64Img = captureCameraSnapshot();
+
+    const assignedSn = await incrementDcNumber('NON-GST', 'SN-', 'first_weighment');
+    const finalSn = assignedSn || serialNo || 'SN-01';
+
     const txData = {
-      dc_num: serialNo,
+      dc_num: finalSn,
       date_time: new Date().toLocaleString(),
       vehicle_no: cleanVehicle,
       party: party ? party.toUpperCase() : '',
@@ -72,14 +86,14 @@ export default function FirstWeighment() {
         await api.addFirstWeighment(txData, base64Img);
       }
       setMsgType('success');
-      setMsg('First Weighment Saved successfully!');
+      setMsg(`First Weighment Saved successfully! Ticket #${finalSn}`);
       setTimeout(() => setMsg(''), 4000);
-      setSerialNo(`SN-${Math.floor(100000 + Math.random() * 900000)}`);
       setVehicle('');
       setParty('');
       setMaterial('');
       setQty('');
       setWeight('');
+      fetchNextSerialNo();
     } catch (err) {
       console.error('[FirstWeighment] Error saving:', err);
       setMsgType('danger');

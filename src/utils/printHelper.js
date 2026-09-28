@@ -18,7 +18,8 @@ export const PRINTER_TEMPLATES = [
   'IMAGE-5',
   'IMAGE-6',
   'IMAGE-7',
-  'RAW'
+  'RAW',
+  'RAW_LARGE'
 ];
 
 export const TEMPLATE_STORAGE_KEY = 'noris_selected_printer_template';
@@ -1127,9 +1128,7 @@ export function generateSlipHtml(data = {}, template = getSelectedTemplate()) {
         </div>
 
         <!-- Middle Divider Line -->
-        <div style="border-top: 1.5px dashed #475569; margin: 12px 0 16px 0; position: relative; text-align: center;">
-          <span style="position: absolute; top: -9px; background: #ffffff; padding: 0 10px; font-size: 10px; color: #64748b; font-weight: 600;">✂ CUT HERE</span>
-        </div>
+        <div style="border-top: 1.5px dashed #475569; margin: 12px 0 16px 0; position: relative;"></div>
 
         <!-- Bottom Slip (Duplicate Copy) -->
         <div style="padding-top: 4px;">
@@ -1206,6 +1205,73 @@ export function generateSlipHtml(data = {}, template = getSelectedTemplate()) {
     `;
   }
 
+  // 11. RAW_LARGE (Dot-Matrix High-Speed Slip Format - Large Text Format)
+  if (template === 'RAW_LARGE' || template === 'RAW - LARGE TEXT') {
+    const esc = text => String(text == null ? '' : text)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+
+    const RIGHT_COL = 36;
+    const divider = '-'.repeat(68);
+
+    const activeDriver = data.driver || data.driverName || driverName || 'ASHOK';
+
+    const line0 = divider;
+    const line1Left = `SERIAL NO   :    ${esc(dcNum)}`;
+    const line1Right = `VEHICLE     : ${esc(vehicle)}`;
+    const line1 = `${line1Left.padEnd(RIGHT_COL)}${line1Right}`;
+
+    const line2Left = `PARTY       : ${esc(party)}`;
+    const line2Right = `MATERIAL    : ${esc(material)}`;
+    const line2 = `${line2Left.padEnd(RIGHT_COL)}${line2Right}`;
+
+    const line3Left = `SOURCE      : ${esc(source)}`;
+    const line3Right = `DESTINATION : ${esc(destination)}`;
+    const line3 = `${line3Left.padEnd(RIGHT_COL)}${line3Right}`;
+
+    const line3Mid = divider;
+
+    const grossRight = `DATE:${esc(date)}   TIME:${esc(time)}`;
+    const grossGap = Math.max(1, RIGHT_COL - 16 - gross.length);
+    const line4 = `GROSS       :   <b><span style="font-size: 18px; letter-spacing: 2px;">${esc(gross)}</span></b>${' '.repeat(grossGap)}${grossRight}`;
+
+    const tareRight = tareDate || date ? `DATE:${esc(tareDate || date)}   TIME:${esc(tareTime || time)}` : '';
+    const tareGap = Math.max(1, RIGHT_COL - 16 - tare.length);
+    const line5 = `TARE        :   <b><span style="font-size: 18px; letter-spacing: 2px;">${esc(tare)}</span></b>${' '.repeat(tareGap)}${tareRight}`;
+
+    const nettRight = `DRIVER      : ${esc(activeDriver)}`;
+    const nettGap = Math.max(1, RIGHT_COL - 16 - nett.length);
+    const line6 = `NETT        :   <b><span style="font-size: 18px; letter-spacing: 2px;">${esc(nett)}</span></b>${' '.repeat(nettGap)}${nettRight}`;
+
+    const line7 = divider;
+    const line8 = `${esc(activeDriver).padEnd(RIGHT_COL)}${esc(party)}`;
+
+    const previewLines = [
+      line0,
+      line1,
+      line2,
+      line3,
+      line3Mid,
+      line4,
+      line5,
+      line6,
+      line7,
+      '',
+      line8
+    ];
+
+    return `
+      <div style="font-family: 'Courier New', Courier, monospace; font-size: 16px; line-height: 1.8; max-width: 740px; margin: 0 auto; padding: 22px; background: #fff; border: 2px solid #000; border-radius: 6px; color: #000; box-sizing: border-box;">
+        <div style="font-size: 12px; font-weight: 800; color: #000; margin-bottom: 12px; border-bottom: 1.5px dashed #000; padding-bottom: 6px; display: flex; justify-content: space-between;">
+          <span>⚡ Dot-Matrix ESC/P Slip Preview (LARGE TEXT)</span>
+          <span>80 Columns • Continuous Form</span>
+        </div>
+        <pre style="font-family: inherit; font-size: 16px; line-height: 1.8; margin: 0; white-space: pre; color: #000; font-weight: 800;">${previewLines.join('\n')}</pre>
+      </div>
+    `;
+  }
+
   return '';
 }
 
@@ -1219,10 +1285,11 @@ export function generateSlipHtml(data = {}, template = getSelectedTemplate()) {
 // 2. We also set hardware line length (ESC C n) so any Form Feed respects the 4-inch boundary.
 export const ESCP_LINE_WIDTH = 80;
 
-export function generateEscpSlipText(data = {}) {
+export function generateEscpSlipText(data = {}, template = '') {
   const config = getPrinterConfig();
   const formLines = Math.max(12, Math.min(100, Number(config.formLines) || 24));
   const feedMode = config.feedMode || 'EXACT_LINES';
+  const isLarge = template === 'RAW_LARGE' || template === 'RAW - LARGE TEXT';
 
   const pick = (...keys) => {
     for (const k of keys) {
@@ -1254,8 +1321,8 @@ export function generateEscpSlipText(data = {}) {
 
   const ESC = '\x1B';
   const INIT = `${ESC}@`;                                                   // Reset printer
-  const LINE_SPACING_6_LPI = `${ESC}2`;                                     // 1/6 inch line spacing (6 LPI)
-  const PICA_10_CPI = `${ESC}P`;                                            // 10 CPI Pica pitch
+  const LINE_SPACING_6_LPI = isLarge ? `${ESC}3\x24` : `${ESC}2`;           // Line spacing
+  const PICA_10_CPI = isLarge ? `${ESC}!\x10` : `${ESC}P`;                  // Double height for large text
   const PAGE_LENGTH_LINES = `${ESC}C${String.fromCharCode(formLines)}`;     // Page length in lines
   const formInches = Math.max(1, Math.round(formLines / 6));
   const PAGE_LENGTH_INCHES = `${ESC}C\x00${String.fromCharCode(formInches)}`; // Page length in inches
@@ -1602,7 +1669,7 @@ export async function printTicket(data = {}, template = getSelectedTemplate(), c
   // operator asks for the dot matrix, so it goes down the raw path whatever the
   // output mode says — printing it through the driver would render the text as
   // graphics and lose the form feed that lands the next slip on its own form.
-  const isDotMatrixTemplate = template === 'RAW';
+  const isDotMatrixTemplate = template === 'RAW' || template === 'RAW_LARGE' || template === 'RAW - LARGE TEXT';
 
   // DIALOG mode never reaches the silent path: the whole point is that nothing
   // is sent to the printer until the operator has confirmed the settings.
@@ -1624,7 +1691,7 @@ export async function printTicket(data = {}, template = getSelectedTemplate(), c
         });
       } else {
         // Default: ESC/P High Speed Plain Text for RAW dot-matrix template
-        const rawText = generateEscpSlipText(data);
+        const rawText = generateEscpSlipText(data, template);
         for (let i = 0; i < (config.copies || 1); i++) {
           await window.electronAPI.printRaw({
             printerName: targetPrinter,

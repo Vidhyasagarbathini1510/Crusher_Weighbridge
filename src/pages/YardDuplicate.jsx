@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../api/client.js';
 import CameraPlayer from '../components/CameraPlayer.jsx';
+import Loader from '../components/Loader.jsx';
 import { printTicket, getDcPrintTemplate, getGatePassTemplate } from '../utils/printHelper.js';
 
 export default function YardDuplicate() {
