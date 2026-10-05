@@ -247,13 +247,13 @@ function checkWeighbridgeWatchdog() {
 }
 
 /**
- * Watchdog: Check Network Reachability (nChat / Server)
+ * Watchdog: Check Network Reachability (Internet Reachability)
  */
 function checkNetworkWatchdog() {
   if (isNetworkChecking) return;
   isNetworkChecking = true;
 
-  const req = https.get('https://nchat.norissolutions.com/backend/api/erp.php?action', { timeout: 8000 }, (res) => {
+  const req = https.get('https://www.google.com', { timeout: 8000 }, (res) => {
     isNetworkChecking = false;
     if (networkIssueActive) {
       networkIssueActive = false;

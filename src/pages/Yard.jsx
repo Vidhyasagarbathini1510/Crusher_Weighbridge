@@ -9,6 +9,8 @@ import { printTicket } from '../utils/printHelper.js';
 import { captureCameraSnapshot } from '../utils/cameraSnapshot.js';
 import { useScale } from '../context/ScaleContext.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
+import { getVehicleOptionMode, filterVehiclesBySetting, cleanupVehicleOnWeighmentCompletion } from '../utils/vehicleFilterUtil.js';
+
 
 export default function Yard() {
   const { user } = useAuth();
@@ -65,6 +67,14 @@ export default function Yard() {
     const onRefresh = () => handleResetForm();
     window.addEventListener('page-refresh', onRefresh);
 
+    loadMasterData();
+
+    return () => {
+      window.removeEventListener('page-refresh', onRefresh);
+    };
+  }, []);
+
+  const loadMasterData = () => {
     // Load available vehicles and materials
     Promise.all([
       api.getVehicles ? api.getVehicles().catch(() => []) : Promise.resolve([]),
@@ -72,14 +82,17 @@ export default function Yard() {
       api.getVehicleTares ? api.getVehicleTares().catch(() => []) : Promise.resolve([])
     ]).then(([vehiclesData, materialsData, vehicleTaresData]) => {
       // Compile unique vehicle list with ownership
-      if (vehiclesData && vehiclesData.length > 0) {
-        const uniqueVehicles = [...new Set(vehiclesData.map(v => v.vehicleNo || v.vehicle))].filter(Boolean);
-        setVehiclesList(uniqueVehicles);
-        setVehicleDetails(vehiclesData);
-      } else if (vehicleTaresData && vehicleTaresData.length > 0) {
-        const uniqueVehicles = [...new Set(vehicleTaresData.map(v => v.vehicle))].filter(Boolean);
-        setVehiclesList(uniqueVehicles);
-        setVehicleDetails(vehicleTaresData);
+      const rawVehicles = (vehiclesData && vehiclesData.length > 0) ? vehiclesData : (vehicleTaresData || []);
+      if (rawVehicles.length > 0) {
+        Promise.all([
+          getVehicleOptionMode(),
+          api.transactions ? api.transactions().catch(() => []) : Promise.resolve([])
+        ]).then(([mode, txs]) => {
+          const filteredObjs = filterVehiclesBySetting(rawVehicles, txs, mode);
+          const uniqueVehicles = [...new Set(filteredObjs.map(v => v.vehicleNo || v.vehicle))].filter(Boolean);
+          setVehiclesList(uniqueVehicles);
+          setVehicleDetails(filteredObjs);
+        });
       }
 
       // Compile unique material list with party context
@@ -91,11 +104,7 @@ export default function Yard() {
         setSelectedMaterialIndex(0);
       }
     }).catch(console.error);
-
-    return () => {
-      window.removeEventListener('page-refresh', onRefresh);
-    };
-  }, []);
+  };
 
   // Listen to Netron Weight Scale
   useEffect(() => {
@@ -328,6 +337,8 @@ export default function Yard() {
       // main process is still finishing the database write, which makes the app
       // look frozen. Boulders and Sales both use this Notice banner instead.
       setMsg('Yard Weighment Saved Successfully!');
+      await cleanupVehicleOnWeighmentCompletion(vehicle, 'OTHERS');
+      loadMasterData();
       setTimeout(() => setMsg(''), 4000);
 
       // Update bottom bar

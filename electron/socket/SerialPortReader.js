@@ -3,12 +3,14 @@
 const { EventEmitter } = require('events');
 const { SerialPort } = require('serialport');
 const healthMonitorService = require('../services/healthMonitorService');
+const { getProtocolDelimiter, parseIndicatorFrame } = require('./IndicatorParsers');
 
 class SerialPortReader extends EventEmitter {
-  constructor(comPort = 'COM7', baudRate = 9600) {
+  constructor(comPort = 'COM7', baudRate = 9600, protocol = 'Weitex') {
     super();
     this.comPort = comPort;
     this.baudRate = Number(baudRate) || 9600;
+    this.protocol = protocol || 'Weitex';
     this.port = null;
     this.isReading = false;
     this.isConnecting = false;
@@ -20,7 +22,7 @@ class SerialPortReader extends EventEmitter {
   start() {
     if (this.isReading) return;
     this.isReading = true;
-    console.log(`[SerialPort] Starting serial port reader on ${this.comPort} (${this.baudRate} baud)...`);
+    console.log(`[SerialPort] Starting serial port reader on ${this.comPort} (${this.baudRate} baud, protocol: ${this.protocol})...`);
     this._connect();
   }
 
@@ -138,21 +140,35 @@ class SerialPortReader extends EventEmitter {
   _setupListeners() {
     if (!this.port) return;
     let buffer = '';
+    const delimiter = getProtocolDelimiter(this.protocol);
 
     this.port.on('data', (data) => {
       this._armStaleTimer();
-      buffer += data.toString('utf8');
-      const lines = buffer.split(/[\r\n]+/);
-      buffer = lines.pop();
+      const chunkStr = data.toString('utf8');
+      buffer += chunkStr;
 
-      for (const line of lines) {
-        const cleaned = line.trim();
-        if (cleaned) {
-          const numeric = cleaned.replace(/[^0-9.-]/g, '');
-          if (numeric) {
-            this.emit('data', { value: numeric });
-            healthMonitorService.reportWeightReading({ value: numeric });
-          }
+      // Prevent buffer memory bloat if delimiter does not match or port baud is mismatched
+      if (buffer.length > 2048) {
+        buffer = buffer.slice(-512);
+      }
+
+      const chunks = buffer.split(delimiter);
+      // The last element is potentially incomplete, keep it in buffer
+      buffer = chunks.pop();
+
+      for (const rawChunk of chunks) {
+        if (!rawChunk || !rawChunk.trim()) continue;
+
+        const result = parseIndicatorFrame(rawChunk, this.protocol);
+        if (result && result.value !== null) {
+          const payload = {
+            value: result.value,
+            raw: result.raw,
+            isStable: result.isStable !== undefined ? result.isStable : true,
+            protocol: this.protocol
+          };
+          this.emit('data', payload);
+          healthMonitorService.reportWeightReading({ value: result.value });
         }
       }
     });

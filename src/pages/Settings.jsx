@@ -14,6 +14,8 @@ import {
   getRptHeaderGap, setRptHeaderGap, getCompanyHeaderLines
 } from '../utils/rptPageHeader.js';
 import { useScale } from '../context/ScaleContext.jsx';
+import { VEHICLE_OPTION_MODES, getVehicleOptionMode, setVehicleOptionMode } from '../utils/vehicleFilterUtil.js';
+
 
 // Display names for the slip templates. The `id` is the value stored in
 // localStorage and handed to generateSlipHtml/printTicket — it must stay
@@ -36,6 +38,7 @@ const TEMPLATE_CATALOGUE = [
   { id: 'IMAGE-5', name: 'Thermal Receipt', detail: 'For 80mm thermal printers', paper: '80mm' },
   { id: 'IMAGE-6', name: 'Quarry Dispatch Pass', detail: 'Gate pass layout', paper: 'A5' },
   { id: 'IMAGE-7', name: 'Executive Tax Invoice', detail: 'Invoice with tax summary', paper: 'A4' },
+  { id: 'IMAGE-8', name: 'Delivery Challan Dual A5 (Photo Exact Match)', detail: 'Twin side-by-side Delivery Challan slips on A5 paper matching printed sample photo', paper: 'A5' },
   { id: 'RAW', name: 'Dot-Matrix Slip', detail: 'ESC/P text, 5in continuous form, auto form feed', paper: 'RAW' },
   { id: 'RAW_LARGE', name: 'Dot-Matrix Slip (Large Text)', detail: 'ESC/P text, enlarged font size for high visibility', paper: 'RAW' }
 ];
@@ -67,7 +70,7 @@ const waitForPaint = () => new Promise((resolve) => {
 const NOTICE_TIMEOUT_MS = 4000;
 
 export default function Settings() {
-  const { card } = useScale();
+  const { card, gross, isConnected } = useScale() || {};
   const [activeTab, setActiveTab] = useState('printer');
   const [msg, setMsg] = useState('');
   const [printCategory, setPrintCategory] = useState('PRINT'); // 'PRINT' | 'DC' | 'GATE_PASS'
@@ -183,6 +186,9 @@ export default function Settings() {
   const [showUnlock, setShowUnlock] = useState(false);
   const [unlockPassword, setUnlockPassword] = useState('');
 
+  // Footer display visibility state ('show' | 'hide')
+  const [footerVisibility, setFooterVisibility] = useState('show');
+
   // Royalty Rates state
   const [govRoyaltyRate, setGovRoyaltyRate] = useState(localStorage.getItem('noris_royalty_gov_rate') || '0');
   const [genRoyaltyRate, setGenRoyaltyRate] = useState(localStorage.getItem('noris_royalty_gen_rate') || '0');
@@ -203,79 +209,27 @@ export default function Settings() {
   });
   const [netTestStatus, setNetTestStatus] = useState(null);
 
-  // nChat Alert Settings state (Up to 5 receiver numbers)
-  const [nchatReceiverNumbers, setNchatReceiverNumbers] = useState(['7075118213']);
-  const [nchatAlertsEnabled, setNchatAlertsEnabled] = useState(true);
-  const [isSendingTestAlert, setIsSendingTestAlert] = useState(false);
+  // Vehicle Option Type Settings State
+  const [vehicleOptionMode, setVehicleOptionModeState] = useState(VEHICLE_OPTION_MODES.STAY_ALL);
 
-  const handleReceiverChange = (index, value) => {
-    const updated = [...nchatReceiverNumbers];
-    updated[index] = value;
-    setNchatReceiverNumbers(updated);
+  useEffect(() => {
+    getVehicleOptionMode().then(mode => {
+      if (mode) setVehicleOptionModeState(mode);
+    });
+  }, []);
+
+  const handleSaveVehicleOptionMode = async (mode) => {
+    await setVehicleOptionMode(mode);
+    setVehicleOptionModeState(mode);
+    const labels = {
+      [VEHICLE_OPTION_MODES.STAY_ALL]: 'Show All (Stay)',
+      [VEHICLE_OPTION_MODES.HIDE_COMPLETED_EMPTY]: 'Hide Empty Completed',
+      [VEHICLE_OPTION_MODES.QUARRY_STAY_OTHERS_HIDE]: 'Quarry/Own Stay, Others Hide'
+    };
+    setMsg(`Vehicle Option Type updated to "${labels[mode] || mode}"`);
   };
 
-  const handleAddReceiver = () => {
-    if (nchatReceiverNumbers.length < 5) {
-      setNchatReceiverNumbers([...nchatReceiverNumbers, '']);
-    }
-  };
 
-  const handleRemoveReceiver = (index) => {
-    if (nchatReceiverNumbers.length > 1) {
-      setNchatReceiverNumbers(nchatReceiverNumbers.filter((_, i) => i !== index));
-    }
-  };
-
-  const handleSaveNChatSettings = async () => {
-    try {
-      const validNumbers = nchatReceiverNumbers.map(n => n.trim()).filter(Boolean);
-      if (validNumbers.length === 0) {
-        setMsg('Please provide at least 1 valid Receiver Phone Number.');
-        return;
-      }
-      const combined = validNumbers.join(', ');
-      await api.saveSetting('nchat_receiver_number', combined);
-      await api.saveSetting('nchat_alerts_enabled', String(nchatAlertsEnabled));
-      setMsg(`nChat Alert settings saved! Configured Receivers (${validNumbers.length}): ${combined}`);
-    } catch (e) {
-      setMsg('Error saving nChat Alert settings: ' + e.message);
-    }
-  };
-
-  const handleSendTestAlert = async () => {
-    if (!window.electronAPI || !window.electronAPI.sendNChatTestAlert) {
-      setMsg('Test alert is only supported in Electron runtime.');
-      return;
-    }
-    const validNumbers = nchatReceiverNumbers.map(n => n.trim()).filter(Boolean);
-    if (validNumbers.length === 0) {
-      setMsg('Please provide at least 1 valid Receiver Phone Number before sending a test alert.');
-      return;
-    }
-    setIsSendingTestAlert(true);
-    setMsg(`Sending test alert via nChat API to ${validNumbers.length} receiver(s)...`);
-    try {
-      const res = await window.electronAPI.sendNChatTestAlert(validNumbers.join(', '));
-      if (res && res.success) {
-        setMsg(`✔ Test Alert sent successfully to all ${res.recipientCount || validNumbers.length} receiver(s)!`);
-      } else if (res && res.partialSuccess) {
-        const failedItems = res.results ? res.results.filter(r => !r.success) : [];
-        const failedInfo = failedItems.map(r => `${r.receiver} (${r.error || 'Failed'})`).join(', ');
-        setMsg(`⚠️ Test Alert sent to ${res.successfulCount}/${res.recipientCount} receiver(s). Failed for: ${failedInfo}`);
-      } else if (res && res.results) {
-        const errDetails = res.results.map(r => `${r.receiver}: ${r.error || 'Failed'}`).join(' | ');
-        setMsg(`❌ Failed to send Test Alert: ${errDetails}`);
-      } else if (res && res.queued) {
-        setMsg(`Notice: Delivery pending, alert queued locally for ${validNumbers.length} receiver(s) (${res.error || 'Server offline'}).`);
-      } else {
-        setMsg(`❌ Error sending Test Alert: ${res?.error || res?.reason || 'Failed'}`);
-      }
-    } catch (e) {
-      setMsg('Error sending Test Alert: ' + e.message);
-    } finally {
-      setIsSendingTestAlert(false);
-    }
-  };
 
   useEffect(() => {
     if (window.electronAPI && window.electronAPI.getNetworkConfig) {
@@ -411,18 +365,11 @@ export default function Settings() {
           rfIdNo: s.rfIdNo || 'RFID-01'
         });
 
-        if (s.nchat_receiver_number) {
-          const loadedNums = String(s.nchat_receiver_number)
-            .split(',')
-            .map(n => n.trim())
-            .filter(Boolean);
-          if (loadedNums.length > 0) {
-            setNchatReceiverNumbers(loadedNums);
-          }
+        if (s.footer_visibility) {
+          setFooterVisibility(s.footer_visibility);
         }
-        if (s.nchat_alerts_enabled !== undefined) {
-          setNchatAlertsEnabled(String(s.nchat_alerts_enabled) !== 'false');
-        }
+
+
       }
     }).catch(err => console.error('[Settings] Error fetching settings:', err));
   }, []);
@@ -482,6 +429,18 @@ export default function Settings() {
       }
     } catch (e) {
       setMsg('Error saving sync settings: ' + e.message);
+    }
+  };
+
+  const handleSaveFooterSetting = async () => {
+    try {
+      await api.saveSetting('footer_visibility', footerVisibility);
+      window.dispatchEvent(new CustomEvent('footer-visibility-changed', {
+        detail: { visibility: footerVisibility }
+      }));
+      setMsg(`Footer display setting saved: ${footerVisibility === 'hide' ? 'Hidden' : 'Shown'}`);
+    } catch (e) {
+      setMsg('Error saving footer display setting: ' + e.message);
     }
   };
 
@@ -875,9 +834,29 @@ export default function Settings() {
   const [dcPrefix, setDcPrefix] = useState('DC-');
   const [dcStartingNumber, setDcStartingNumber] = useState('1');
   const [dcPreview, setDcPreview] = useState('DC-1');
+  const [dcResetTime, setDcResetTime] = useState('07:00');
   const [isDcLoading, setIsDcLoading] = useState(false);
 
+  const formatTime12Hour = (timeStr) => {
+    if (!timeStr) return '7:00 AM';
+    const parts = String(timeStr).split(':');
+    let h = parseInt(parts[0], 10);
+    const m = parts[1] ? String(parts[1]).padStart(2, '0') : '00';
+    if (isNaN(h)) return '7:00 AM';
+    const ampm = h >= 12 ? 'PM' : 'AM';
+    h = h % 12 || 12;
+    return `${h}:${m} ${ampm}`;
+  };
+
   const loadDcSequenceInfo = async (mod = dcModule, typ = dcType, pfx = dcPrefix) => {
+    try {
+      if (api.getSettings) {
+        const s = await api.getSettings();
+        if (s && s.dc_reset_time) {
+          setDcResetTime(s.dc_reset_time);
+        }
+      }
+    } catch (_) {}
     if (window.electronAPI && window.electronAPI.peekNextDcNumber) {
       try {
         setIsDcLoading(true);
@@ -907,6 +886,9 @@ export default function Settings() {
       return;
     }
     try {
+      if (api.saveSetting) {
+        await api.saveSetting('dc_reset_time', dcResetTime || '07:00');
+      }
       const startNum = Math.max(1, parseInt(dcStartingNumber, 10) || 1);
       const res = await window.electronAPI.setDcSequence({
         type: dcType,
@@ -916,7 +898,7 @@ export default function Settings() {
       });
 
       if (res && res.success) {
-        setMsg(`✔ DC Sequence for ${dcModule.toUpperCase()} (${dcType}) set to ${res.dcNumber || `${dcPrefix}${startNum}`}`);
+        setMsg(`✔ DC Sequence for ${dcModule.toUpperCase()} (${dcType}) set to ${res.dcNumber || `${dcPrefix}${startNum}`} (Daily Reset: ${formatTime12Hour(dcResetTime)})`);
         await loadDcSequenceInfo(dcModule, dcType, dcPrefix);
       } else {
         setMsg(`Error setting DC Sequence: ${res?.error || 'Unknown error'}`);
@@ -928,8 +910,8 @@ export default function Settings() {
   };
 
   const tabs = [
+    { id: 'vehicle_options', label: '🚚 Vehicle Options' },
     { id: 'network', label: '🌐 Network & Multi-PC' },
-    { id: 'nchat_alerts', label: '🔔 nChat Alerts' },
     { id: 'dc_sequence', label: '🔢 DC Sequence' },
     { id: 'comm', label: 'Communication' },
     { id: 'royalty', label: '👑 Royalty Rates' },
@@ -984,6 +966,102 @@ export default function Settings() {
           <button type="button" className="btn-close py-2" onClick={() => setMsg('')}></button>
         </div>
       )}
+
+      {/* TAB: Vehicle Option Type Settings */}
+      {activeTab === 'vehicle_options' && (
+        <div className="card shadow-sm border-0 mb-4" style={{ borderRadius: '8px', overflow: 'hidden', background: '#ffffff', border: '1px solid var(--line)' }}>
+          <div className="card-header border-0 py-3 px-3 d-flex justify-content-between align-items-center" style={{ backgroundColor: 'var(--surface-2)', borderBottom: '1.5px solid var(--line-soft)' }}>
+            <div>
+              <span className="fw-bold fs-6" style={{ color: 'var(--ink)' }}>🚚 Vehicle Option Type & Empty Completion Settings</span>
+              <p className="text-muted mb-0 small">Configure how vehicles are displayed in selection dropdowns once an empty weighment or exit trip is completed.</p>
+            </div>
+            <span className="badge bg-primary-subtle text-primary border border-primary-subtle px-2 py-1" style={{ fontSize: '0.75rem' }}>
+              Active Mode: {vehicleOptionMode}
+            </span>
+          </div>
+          <div className="card-body p-4">
+            <div className="row g-3">
+
+              {/* Mode 1: Stay All */}
+              <div className="col-12 col-md-4">
+                <div 
+                  className={`p-3 rounded-3 border transition-all h-100 ${vehicleOptionMode === VEHICLE_OPTION_MODES.STAY_ALL ? 'border-primary bg-primary-subtle text-dark shadow-sm' : 'border-secondary-subtle bg-light text-secondary'}`}
+                  style={{ cursor: 'pointer' }}
+                  onClick={() => handleSaveVehicleOptionMode(VEHICLE_OPTION_MODES.STAY_ALL)}
+                >
+                  <div className="d-flex align-items-center gap-2 mb-2">
+                    <input 
+                      type="radio" 
+                      name="vehOptMode" 
+                      id="opt_stay_all"
+                      checked={vehicleOptionMode === VEHICLE_OPTION_MODES.STAY_ALL} 
+                      onChange={() => handleSaveVehicleOptionMode(VEHICLE_OPTION_MODES.STAY_ALL)} 
+                    />
+                    <label htmlFor="opt_stay_all" className="fw-bold mb-0 cursor-pointer" style={{ fontSize: '0.92rem' }}>
+                      📌 Show All (Stay)
+                    </label>
+                  </div>
+                  <p className="mb-0 text-muted" style={{ fontSize: '0.8rem', lineHeight: '1.4' }}>
+                    Completed empty vehicles remain in the vehicle selection dropdown at all times for repeated entry.
+                  </p>
+                </div>
+              </div>
+
+              {/* Mode 2: Hide Empty Completed */}
+              <div className="col-12 col-md-4">
+                <div 
+                  className={`p-3 rounded-3 border transition-all h-100 ${vehicleOptionMode === VEHICLE_OPTION_MODES.HIDE_COMPLETED_EMPTY ? 'border-warning bg-warning-subtle text-dark shadow-sm' : 'border-secondary-subtle bg-light text-secondary'}`}
+                  style={{ cursor: 'pointer' }}
+                  onClick={() => handleSaveVehicleOptionMode(VEHICLE_OPTION_MODES.HIDE_COMPLETED_EMPTY)}
+                >
+                  <div className="d-flex align-items-center gap-2 mb-2">
+                    <input 
+                      type="radio" 
+                      name="vehOptMode" 
+                      id="opt_hide_empty"
+                      checked={vehicleOptionMode === VEHICLE_OPTION_MODES.HIDE_COMPLETED_EMPTY} 
+                      onChange={() => handleSaveVehicleOptionMode(VEHICLE_OPTION_MODES.HIDE_COMPLETED_EMPTY)} 
+                    />
+                    <label htmlFor="opt_hide_empty" className="fw-bold mb-0 cursor-pointer" style={{ fontSize: '0.92rem' }}>
+                      🚫 Hide &amp; Delete Completed
+                    </label>
+                  </div>
+                  <p className="mb-0 text-muted" style={{ fontSize: '0.8rem', lineHeight: '1.4' }}>
+                    Automatically delete &amp; remove vehicles from database tare records and selection dropdowns once weighment is completed.
+                  </p>
+                </div>
+              </div>
+
+              {/* Mode 3: Quarry/Own Stay, Others Hide */}
+              <div className="col-12 col-md-4">
+                <div 
+                  className={`p-3 rounded-3 border transition-all h-100 ${vehicleOptionMode === VEHICLE_OPTION_MODES.QUARRY_STAY_OTHERS_HIDE ? 'border-success bg-success-subtle text-dark shadow-sm' : 'border-secondary-subtle bg-light text-secondary'}`}
+                  style={{ cursor: 'pointer' }}
+                  onClick={() => handleSaveVehicleOptionMode(VEHICLE_OPTION_MODES.QUARRY_STAY_OTHERS_HIDE)}
+                >
+                  <div className="d-flex align-items-center gap-2 mb-2">
+                    <input 
+                      type="radio" 
+                      name="vehOptMode" 
+                      id="opt_quarry_stay"
+                      checked={vehicleOptionMode === VEHICLE_OPTION_MODES.QUARRY_STAY_OTHERS_HIDE} 
+                      onChange={() => handleSaveVehicleOptionMode(VEHICLE_OPTION_MODES.QUARRY_STAY_OTHERS_HIDE)} 
+                    />
+                    <label htmlFor="opt_quarry_stay" className="fw-bold mb-0 cursor-pointer" style={{ fontSize: '0.92rem' }}>
+                      🏗️ Quarry Stay, Others Delete
+                    </label>
+                  </div>
+                  <p className="mb-0 text-muted" style={{ fontSize: '0.8rem', lineHeight: '1.4' }}>
+                    Quarry &amp; Own fleet vehicles stay in database; third-party/Other vehicles auto-delete after weighment completion.
+                  </p>
+                </div>
+              </div>
+
+            </div>
+          </div>
+        </div>
+      )}
+
 
       {/* TAB 0: Network & Multi-PC Setup */}
       {activeTab === 'network' && (
@@ -1114,136 +1192,7 @@ export default function Settings() {
         </div>
       )}
 
-      {/* TAB: nChat Alerts */}
-      {activeTab === 'nchat_alerts' && (
-        <div className="row g-3">
-          <div className="col-12 col-lg-8">
-            <div className="card shadow-sm border-0" style={{ borderRadius: '8px', background: '#ffffff', border: '1px solid var(--line)' }}>
-              <div className="card-header border-0 py-2.5 px-3" style={{ backgroundColor: 'var(--surface-2)', borderBottom: '1.5px solid var(--line-soft)' }}>
-                <span className="fw-bold" style={{ color: 'var(--ink)', fontSize: '0.88rem' }}>🔔 Automatic Application Issue Detection & nChat Alerts</span>
-              </div>
-              <div className="card-body p-4">
-                <form onSubmit={(e) => { e.preventDefault(); handleSaveNChatSettings(); }}>
-                  <div className="mb-3">
-                    <label className="form-label fw-semibold text-secondary" style={{ fontSize: '0.82rem' }}>Sender Number (Company ID):</label>
-                    <input
-                      type="text"
-                      className="form-control form-control-sm bg-light fw-bold text-dark"
-                      value={syncSettings.companyId || 'CRUSHER-3080'}
-                      readOnly
-                      disabled
-                      style={{ fontSize: '0.85rem' }}
-                    />
-                    <div className="form-text" style={{ fontSize: '0.75rem' }}>
-                      Automatically populated from active Company ID setting. Sent in <code>SenderNumber</code> nChat API payload.
-                    </div>
-                  </div>
 
-                  <div className="mb-3">
-                    <div className="d-flex justify-content-between align-items-center mb-1">
-                      <label className="form-label fw-semibold text-dark m-0" style={{ fontSize: '0.82rem' }}>
-                        Receiver Phone Numbers (Up to 5 Members):
-                      </label>
-                      <span className="badge bg-light text-dark border fw-normal" style={{ fontSize: '0.75rem' }}>
-                        {nchatReceiverNumbers.length} / 5 Numbers
-                      </span>
-                    </div>
-
-                    <div className="d-flex flex-column gap-2">
-                      {nchatReceiverNumbers.map((num, idx) => (
-                        <div key={idx} className="d-flex gap-2 align-items-center">
-                          <span className="badge bg-secondary-subtle text-secondary border px-2 py-1.5" style={{ fontSize: '0.75rem', minWidth: '95px', textAlign: 'center' }}>
-                            {idx === 0 ? 'Member 1 (Primary)' : `Member ${idx + 1}`}
-                          </span>
-                          <input
-                            type="text"
-                            className="form-control form-control-sm border-secondary-subtle"
-                            value={num}
-                            onChange={(e) => handleReceiverChange(idx, e.target.value)}
-                            placeholder={idx === 0 ? 'e.g. 7075118213' : 'e.g. 9959608198'}
-                            required={idx === 0}
-                            style={{ fontSize: '0.85rem' }}
-                          />
-                          {nchatReceiverNumbers.length > 1 && (
-                            <button
-                              type="button"
-                              className="btn btn-sm btn-outline-danger px-2 py-1"
-                              title="Remove number"
-                              onClick={() => handleRemoveReceiver(idx)}
-                              style={{ fontSize: '0.75rem', whitespace: 'nowrap' }}
-                            >
-                              🗑️ Remove
-                            </button>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-
-                    {nchatReceiverNumbers.length < 5 && (
-                      <div className="mt-2">
-                        <button
-                          type="button"
-                          className="btn btn-sm btn-outline-primary fw-semibold px-2 py-1"
-                          onClick={handleAddReceiver}
-                          style={{ fontSize: '0.78rem' }}
-                        >
-                          ➕ Add Member Number ({nchatReceiverNumbers.length}/5)
-                        </button>
-                      </div>
-                    )}
-
-                    <div className="form-text mt-2" style={{ fontSize: '0.75rem' }}>
-                      Mobile numbers to receive automatic WhatsApp/SMS alert notifications whenever a system issue occurs. Alerts will be broadcasted to all specified numbers.
-                    </div>
-                  </div>
-
-                  <div className="mb-3 form-check form-switch">
-                    <input
-                      type="checkbox"
-                      className="form-check-input"
-                      id="nchatEnabledCheck"
-                      checked={nchatAlertsEnabled}
-                      onChange={(e) => setNchatAlertsEnabled(e.target.checked)}
-                    />
-                    <label className="form-check-label fw-semibold text-dark" htmlFor="nchatEnabledCheck" style={{ fontSize: '0.82rem' }}>
-                      Enable Automatic Issue Alert Notifications
-                    </label>
-                  </div>
-
-                  <div className="d-flex gap-2 pt-2 border-top">
-                    <button type="submit" className="btn btn-sm btn-primary px-3 fw-semibold">
-                      Save Alert Settings
-                    </button>
-                    <button
-                      type="button"
-                      className="btn btn-sm btn-outline-success px-3 fw-semibold"
-                      onClick={handleSendTestAlert}
-                      disabled={isSendingTestAlert}
-                    >
-                      {isSendingTestAlert ? 'Sending Test...' : '🧪 Send Test Alert'}
-                    </button>
-                  </div>
-                </form>
-              </div>
-            </div>
-          </div>
-
-          <div className="col-12 col-lg-4">
-            <div className="card shadow-sm border-0 bg-light p-3" style={{ borderRadius: '8px', border: '1px solid var(--line)' }}>
-              <h6 className="fw-bold mb-2 text-dark" style={{ fontSize: '0.85rem' }}>Monitored Components</h6>
-              <ul className="list-unstyled mb-0" style={{ fontSize: '0.8rem', lineHeight: '1.7' }}>
-                <li>✅ <strong>Weighbridge:</strong> Serial disconnect, timeout, stale weight (&gt;15s)</li>
-                <li>✅ <strong>Printer:</strong> Disconnected, paper out, spooler errors</li>
-                <li>✅ <strong>Sync:</strong> Server unreachable, pending queue buildup</li>
-                <li>✅ <strong>Network:</strong> Internet disconnect (Weighing operates offline)</li>
-                <li>✅ <strong>SQLite DB:</strong> Write/read errors, database locks</li>
-                <li>✅ <strong>App Errors:</strong> Process crashes, renderer exceptions</li>
-                <li>✅ <strong>Transactions:</strong> Stuck pending approval (&gt;30 mins)</li>
-              </ul>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* TAB: DC Sequence Settings */}
       {activeTab === 'dc_sequence' && (
@@ -1261,7 +1210,7 @@ export default function Settings() {
 
                 <div className="row g-3">
                   {/* Select Module */}
-                  <div className="col-12 col-md-4">
+                  <div className="col-12 col-md-3">
                     <label className="form-label fw-semibold text-secondary mb-1" style={{ fontSize: '0.78rem' }}>Operational Module</label>
                     <select 
                       className="form-select form-select-sm border-secondary-subtle fw-semibold"
@@ -1275,20 +1224,35 @@ export default function Settings() {
                   </div>
 
                   {/* Select Reset Type */}
-                  <div className="col-12 col-md-4">
+                  <div className="col-12 col-md-3">
                     <label className="form-label fw-semibold text-secondary mb-1" style={{ fontSize: '0.78rem' }}>Sequence Reset Type</label>
                     <select 
                       className="form-select form-select-sm border-secondary-subtle fw-semibold"
                       value={dcType}
                       onChange={(e) => setDcType(e.target.value)}
                     >
-                      <option value="NON-GST">NON-GST (Resets Daily at 7:00 AM)</option>
-                      <option value="GST">GST (Resets Financial Year - April 1)</option>
+                      <option value="NON-GST">NON-GST (Daily Shift Reset)</option>
+                      <option value="GST">GST (Financial Year - April 1)</option>
                     </select>
                   </div>
 
+                  {/* Daily Reset Time Option */}
+                  <div className="col-12 col-md-3">
+                    <label className="form-label fw-semibold text-secondary mb-1 d-flex justify-content-between align-items-center" style={{ fontSize: '0.78rem' }}>
+                      <span>Daily Reset Time</span>
+                      <span className="badge bg-light text-primary border" style={{ fontSize: '0.65rem' }}>{formatTime12Hour(dcResetTime)}</span>
+                    </label>
+                    <input 
+                      type="time" 
+                      className="form-control form-control-sm border-secondary-subtle fw-bold"
+                      value={dcResetTime}
+                      onChange={(e) => setDcResetTime(e.target.value)}
+                      title="Daily shift start time when NON-GST sequence resets to starting number"
+                    />
+                  </div>
+
                   {/* Prefix Format */}
-                  <div className="col-12 col-md-4">
+                  <div className="col-12 col-md-3">
                     <label className="form-label fw-semibold text-secondary mb-1" style={{ fontSize: '0.78rem' }}>Custom Prefix / Format</label>
                     <input 
                       type="text" 
@@ -1363,8 +1327,15 @@ export default function Settings() {
               </div>
               <div className="card-body p-3 d-flex flex-column gap-2" style={{ fontSize: '0.8rem' }}>
                 <div className="p-2.5 bg-light rounded border mb-1">
-                  <strong className="d-block text-dark mb-1">🌅 NON-GST Sequence</strong>
-                  <span className="text-secondary">Resets daily at 7:00 AM shift start. Ticket sequence will start from your configured starting number each operational day.</span>
+                  <div className="d-flex justify-content-between align-items-center mb-1">
+                    <strong className="text-dark">🌅 NON-GST Sequence</strong>
+                    <span className="badge bg-primary-subtle text-primary border border-primary-subtle font-monospace" style={{ fontSize: '0.72rem' }}>
+                      {formatTime12Hour(dcResetTime)} Shift
+                    </span>
+                  </div>
+                  <span className="text-secondary">
+                    Resets daily at <b>{formatTime12Hour(dcResetTime)}</b> shift start. Ticket sequence will start from your configured starting number each operational day.
+                  </span>
                 </div>
                 <div className="p-2.5 bg-light rounded border mb-1">
                   <strong className="d-block text-dark mb-1">💼 GST Sequence</strong>
@@ -1437,11 +1408,21 @@ export default function Settings() {
                 <div>
                   <label className="form-label fw-semibold text-secondary mb-1" style={{ fontSize: '0.78rem' }}>Indicator Brand / Protocol</label>
                   <select className="form-select form-select-sm border-secondary-subtle" value={commSettings.company || 'Weitex'} onChange={(e) => setCommSettings({ ...commSettings, company: e.target.value })}>
-                    <option value="Weitex">Weitex</option>
-                    <option value="Icom">Icom</option>
-                    <option value="Avery">Avery</option>
+                    <option value="Weitex">Weitex (z-delimited continuous stream / 2400 baud)</option>
+                    <option value="Icom">Icom (: delimited, /10 scale)</option>
+                    <option value="Eassey">Eassey / Essae (: delimited, deduplicated)</option>
+                    <option value="Avery">Avery (Standard ASCII CR/LF)</option>
+                    <option value="Generic">Generic ASCII (CR/LF)</option>
                   </select>
                 </div>
+
+                <div className="p-2 rounded bg-dark text-white font-monospace d-flex justify-content-between align-items-center" style={{ fontSize: '0.80rem' }}>
+                  <span className="text-secondary small">Live Scale:</span>
+                  <span className={`fw-bold ${isConnected ? 'text-warning' : 'text-danger'}`}>
+                    {isConnected ? `${gross || '0'} kg` : 'Offline'}
+                  </span>
+                </div>
+
                 <div className="mt-auto pt-2">
                   <button className="btn btn-sm btn-primary w-100 fw-semibold py-1.5" onClick={handleSaveSerialSettings}>
                     💾 Save Serial Port
@@ -1505,9 +1486,11 @@ export default function Settings() {
                 <div>
                   <label className="form-label fw-semibold text-secondary mb-1" style={{ fontSize: '0.78rem' }}>Indicator Brand / Protocol</label>
                   <select className="form-select form-select-sm border-secondary-subtle" value={unmannedSettings.company || 'Icom'} onChange={(e) => setUnmannedSettings({ ...unmannedSettings, company: e.target.value })}>
-                    <option value="Icom">Icom</option>
-                    <option value="Weitex">Weitex</option>
-                    <option value="Avery">Avery</option>
+                    <option value="Weitex">Weitex (z-delimited continuous stream / 2400 baud)</option>
+                    <option value="Icom">Icom (: delimited, /10 scale)</option>
+                    <option value="Eassey">Eassey / Essae (: delimited, deduplicated)</option>
+                    <option value="Avery">Avery (Standard ASCII CR/LF)</option>
+                    <option value="Generic">Generic ASCII (CR/LF)</option>
                   </select>
                 </div>
                 <div className="mt-auto pt-2">
@@ -1666,6 +1649,52 @@ export default function Settings() {
                       💾 Save Cloud Sync Settings
                     </button>
                   )}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Card 5: Footer Bar Display Settings */}
+          <div className="col-12 col-md-4">
+            <div className="card h-100 shadow-sm border-0" style={{ borderRadius: '8px', overflow: 'hidden', background: '#ffffff', border: '1px solid var(--line)' }}>
+              <div className="card-header border-0 py-2.5 px-3 d-flex justify-content-between align-items-center" style={{ backgroundColor: 'var(--surface-2)', borderBottom: '1.5px solid var(--line-soft)' }}>
+                <span className="fw-bold" style={{ color: 'var(--ink)', fontSize: '0.88rem' }}>📏 Footer Bar Visibility</span>
+                <span className={`badge ${footerVisibility === 'show' ? 'bg-success-subtle text-success border border-success-subtle' : 'bg-secondary-subtle text-secondary border border-secondary-subtle'}`} style={{ fontSize: '0.68rem' }}>
+                  {footerVisibility === 'show' ? 'Visible' : 'Hidden'}
+                </span>
+              </div>
+              <div className="card-body p-3 d-flex flex-column gap-3">
+                <div>
+                  <label className="form-label fw-semibold text-secondary mb-1" style={{ fontSize: '0.78rem' }}>
+                    Footer Bar Option (Show / Hide)
+                  </label>
+                  <select 
+                    className="form-select form-select-sm border-secondary-subtle fw-semibold"
+                    value={footerVisibility}
+                    onChange={(e) => setFooterVisibility(e.target.value)}
+                  >
+                    <option value="show">👁️ Show Footer</option>
+                    <option value="hide">🙈 Hide Footer</option>
+                  </select>
+                </div>
+
+                <div className="p-2.5 rounded bg-light border" style={{ fontSize: '0.78rem' }}>
+                  <div className="fw-semibold text-dark mb-1">Status & Behavior:</div>
+                  <div className="text-secondary" style={{ lineHeight: 1.4 }}>
+                    {footerVisibility === 'show' 
+                      ? 'The bottom scale weight console (Card, Vehicle, Gross, Tare, Nett, Signals) is displayed across all pages.'
+                      : 'The bottom footer bar is hidden to maximize workspace screen area.'}
+                  </div>
+                </div>
+
+                <div className="mt-auto pt-2">
+                  <button 
+                    type="button"
+                    className="btn btn-sm btn-primary w-100 fw-semibold py-1.5" 
+                    onClick={handleSaveFooterSetting}
+                  >
+                    💾 Save Footer Setting
+                  </button>
                 </div>
               </div>
             </div>

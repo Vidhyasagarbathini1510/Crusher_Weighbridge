@@ -1,7 +1,6 @@
 // Utility for Printer Templates & Ticket Printing
 import { generateRptSlipHtml, RPT_TEMPLATE_IDS, RPT_TEMPLATE_CATALOGUE } from './rptSlipTemplates.js';
-import { getCompanyDetails } from './classicReportPrinter.js';
-import { renderRptPageHeader } from './rptPageHeader.js';
+import { renderRptPageHeader, getCompanyHeaderLines, getRptHeaderMode, getRptHeaderGap } from './rptPageHeader.js';
 
 export const PRINTER_TEMPLATES = [
   ...RPT_TEMPLATE_IDS,
@@ -18,6 +17,7 @@ export const PRINTER_TEMPLATES = [
   'IMAGE-5',
   'IMAGE-6',
   'IMAGE-7',
+  'IMAGE-8',
   'RAW',
   'RAW_LARGE'
 ];
@@ -95,11 +95,20 @@ export function setPrinterConfig(config = {}) {
   if (config.a5FeedMode !== undefined) localStorage.setItem(PRINTER_A5_FEED_KEY, String(config.a5FeedMode));
 }
 
+export const cleanAddress = (str) => {
+  return String(str || '')
+    .replace(/\s+,/g, ', ')
+    .replace(/,\s*/g, ', ')
+    .trim();
+};
+
 export function generateSlipHtml(data = {}, template = getSelectedTemplate()) {
   // The Crystal Reports layouts render their fields exactly as the .rpt files
   // did, so they are matched before any of the app's own sample-filled designs.
   const rptHtml = generateRptSlipHtml(data, template);
   if (rptHtml) return rptHtml;
+  if (template === 'IMAGE-8') return generateRptSlipHtml(data, 'RPT-CHALLAN-DUAL-A5');
+
 
   const dcNum = data.dcNum || data.dc_num || 'WB2505170001';
   const vehicle = (data.vehicle || data.vehicle_no || 'TS 09 AB 1234').toUpperCase();
@@ -1138,6 +1147,56 @@ export function generateSlipHtml(data = {}, template = getSelectedTemplate()) {
     `;
   }
 
+  // Helper to format company header for Dot-Matrix continuous slip
+  const esc = text => String(text == null ? '' : text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+
+  const resolveDotMatrixHeader = (dataObj) => {
+    const headerMode = dataObj.headerOverride || getRptHeaderMode();
+    let showCompany = headerMode === 'COMPANY';
+    if (headerMode === 'AUTO_GST') {
+      const gstin = String(dataObj.gstin  || dataObj.gstIn || dataObj.gst_no || dataObj.gstNo || dataObj.partyGstin || '').trim();
+      const billTypeRaw = String(dataObj.billType || dataObj.bill_type || dataObj.billtype || '').toUpperCase();
+      const isExplicitNonGst = billTypeRaw.includes('NON-GST') || billTypeRaw.includes('NON GST') || billTypeRaw === 'NON';
+      showCompany = (gstin && gstin !== 'null' && gstin !== 'undefined') || (billTypeRaw.includes('GST') && !isExplicitNonGst);
+    }
+
+    let headerHtml = '';
+    if (showCompany) {
+      let companyLines = getCompanyHeaderLines();
+      if (dataObj.companyName || dataObj.company_name) {
+        const explicitName = String(dataObj.companyName || dataObj.company_name).trim();
+        if (explicitName) {
+          companyLines = [explicitName, ...companyLines.slice(1)];
+        }
+      }
+      if (companyLines.length > 0) {
+        const [compName, ...compAddrs] = companyLines;
+        const addrsHtml = compAddrs
+          .map(a => cleanAddress(a))
+          .filter(Boolean)
+          .map(a => `<div style="font-size: 11.5px; font-weight: 600; color: #334155; margin-top: 1px;">${esc(a)}</div>`)
+          .join('');
+
+        headerHtml = `
+          <div style="text-align: center; margin: 2px 0 10px 0; font-family: 'Courier New', Courier, monospace; line-height: 1.35;">
+            <div style="font-size: 16px; font-weight: 800; letter-spacing: 1.5px; text-transform: uppercase; color: #000;">
+              ${esc(compName)}
+            </div>
+            ${addrsHtml}
+          </div>
+        `;
+      }
+    } else if (headerMode === 'EMPTY') {
+      const blankHeight = Math.max(20, Math.min(150, Math.round(getRptHeaderGap())));
+      headerHtml = `<div style="height: ${blankHeight}px;"></div>`;
+    }
+
+    return { showCompany, headerMode, headerHtml };
+  };
+
   // 10. RAW (Dot-Matrix High-Speed Slip Format - Photo Match)
   if (template === 'RAW') {
     const esc = text => String(text == null ? '' : text)
@@ -1149,6 +1208,7 @@ export function generateSlipHtml(data = {}, template = getSelectedTemplate()) {
     const divider = '-'.repeat(68);
 
     const activeDriver = data.driver || data.driverName || driverName || 'ASHOK';
+    const headerResult = resolveDotMatrixHeader(data);
 
     const line0 = divider;
     const line1Left = `SERIAL NO   :    ${esc(dcNum)}`;
@@ -1200,6 +1260,7 @@ export function generateSlipHtml(data = {}, template = getSelectedTemplate()) {
           <span>⚡ Dot-Matrix ESC/P Slip Preview</span>
           <span>80 Columns • Continuous Form</span>
         </div>
+        ${headerResult.headerHtml}
         <pre style="font-family: inherit; font-size: 13px; line-height: 1.6; margin: 0; white-space: pre; color: #111827; font-weight: 500;">${previewLines.join('\n')}</pre>
       </div>
     `;
@@ -1216,6 +1277,46 @@ export function generateSlipHtml(data = {}, template = getSelectedTemplate()) {
     const divider = '-'.repeat(68);
 
     const activeDriver = data.driver || data.driverName || driverName || 'ASHOK';
+
+    let headerHtml = '';
+    const headerMode = data.headerOverride || getRptHeaderMode();
+    let showCompany = headerMode === 'COMPANY';
+    if (headerMode === 'AUTO_GST') {
+      const gstin = String(data.gstin || data.gstIn || data.gst_no || data.gstNo || data.partyGstin || '').trim();
+      const billTypeRaw = String(data.billType || data.bill_type || data.billtype || '').toUpperCase();
+      const isExplicitNonGst = billTypeRaw.includes('NON-GST') || billTypeRaw.includes('NON GST') || billTypeRaw === 'NON';
+      showCompany = (gstin && gstin !== 'null' && gstin !== 'undefined') || (billTypeRaw.includes('GST') && !isExplicitNonGst);
+    }
+
+    if (showCompany) {
+      let companyLines = getCompanyHeaderLines();
+      if (data.companyName || data.company_name) {
+        const explicitName = String(data.companyName || data.company_name).trim();
+        if (explicitName) {
+          companyLines = [explicitName, ...companyLines.slice(1)];
+        }
+      }
+      if (companyLines.length > 0) {
+        const [compName, ...compAddrs] = companyLines;
+        const addrsHtml = compAddrs
+          .map(a => cleanAddress(a))
+          .filter(Boolean)
+          .map(a => `<div style="font-size: 13.5px; font-weight: 700; color: #000; margin-top: 2px;">${esc(a)}</div>`)
+          .join('');
+
+        headerHtml = `
+          <div style="text-align: center; margin: 2px 0 12px 0; font-family: 'Courier New', Courier, monospace; line-height: 1.4;">
+            <div style="font-size: 20px; font-weight: 900; letter-spacing: 2px; text-transform: uppercase; color: #000;">
+              ${esc(compName)}
+            </div>
+            ${addrsHtml}
+          </div>
+        `;
+      }
+    } else if (headerMode === 'EMPTY') {
+      const blankHeight = Math.max(20, Math.min(150, Math.round(getRptHeaderGap())));
+      headerHtml = `<div style="height: ${blankHeight}px;"></div>`;
+    }
 
     const line0 = divider;
     const line1Left = `SERIAL NO   :    ${esc(dcNum)}`;
@@ -1267,6 +1368,7 @@ export function generateSlipHtml(data = {}, template = getSelectedTemplate()) {
           <span>⚡ Dot-Matrix ESC/P Slip Preview (LARGE TEXT)</span>
           <span>80 Columns • Continuous Form</span>
         </div>
+        ${headerHtml}
         <pre style="font-family: inherit; font-size: 16px; line-height: 1.8; margin: 0; white-space: pre; color: #000; font-weight: 800;">${previewLines.join('\n')}</pre>
       </div>
     `;
@@ -1335,6 +1437,45 @@ export function generateEscpSlipText(data = {}, template = '') {
   const RIGHT_COL = 36;
   const divider = '-'.repeat(68);
 
+  const headerMode = data.headerOverride || getRptHeaderMode();
+  let showCompany = headerMode === 'COMPANY';
+  if (headerMode === 'AUTO_GST') {
+    const gstin = String(data.gstin || data.gstIn || data.gst_no || data.gstNo || data.partyGstin || '').trim();
+    const billTypeRaw = String(data.billType || data.bill_type || data.billtype || '').toUpperCase();
+    const isExplicitNonGst = billTypeRaw.includes('NON-GST') || billTypeRaw.includes('NON GST') || billTypeRaw === 'NON';
+    showCompany = (gstin && gstin !== 'null' && gstin !== 'undefined') || (billTypeRaw.includes('GST') && !isExplicitNonGst);
+  }
+
+  const companyHeaderEscp = [];
+  if (showCompany) {
+    let companyLines = getCompanyHeaderLines();
+    if (data.companyName || data.company_name) {
+      const explicitName = String(data.companyName || data.company_name).trim();
+      if (explicitName) {
+        companyLines = [explicitName, ...companyLines.slice(1)];
+      }
+    }
+    if (companyLines.length > 0) {
+      const [compName, ...compAddrs] = companyLines;
+      const dblName = compName.toUpperCase().trim();
+      const dblPad = Math.max(0, Math.floor((68 - (dblName.length * 2)) / 2));
+      companyHeaderEscp.push(`${' '.repeat(dblPad)}${ESC_DBL_ON}${ESC_BOLD_ON}${dblName}${ESC_BOLD_OFF}${ESC_DBL_OFF}`);
+      for (const addr of compAddrs) {
+        const cleanA = cleanAddress(addr);
+        if (cleanA) {
+          const aPad = Math.max(0, Math.floor((68 - cleanA.length) / 2));
+          companyHeaderEscp.push(`${' '.repeat(aPad)}${cleanA}`);
+        }
+      }
+      companyHeaderEscp.push('');
+    }
+  } else if (headerMode === 'EMPTY') {
+    const blankCount = Math.max(1, Math.min(8, Math.round(getRptHeaderGap() / 20)));
+    for (let i = 0; i < blankCount; i++) {
+      companyHeaderEscp.push('');
+    }
+  }
+
   // Line 0: Top Dashed Line
   const line0 = divider;
 
@@ -1384,6 +1525,7 @@ export function generateEscpSlipText(data = {}, template = '') {
   const line8 = `${driver.padEnd(RIGHT_COL)}${party}`;
 
   const printedLines = [
+    ...companyHeaderEscp,
     line0,
     line1,
     line2,

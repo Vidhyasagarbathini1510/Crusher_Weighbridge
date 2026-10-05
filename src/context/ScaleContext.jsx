@@ -1,8 +1,10 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
+import { api } from '../api/client.js';
 
 const ScaleContext = createContext();
 
 export function ScaleProvider({ children }) {
+  const [showFooter, setShowFooter] = useState(true);
   const [card, setCard] = useState('');
   const [vehicle, setVehicle] = useState('');
   const [gross, setGross] = useState('');
@@ -14,6 +16,27 @@ export function ScaleProvider({ children }) {
   const [signalGo, setSignalGo] = useState(false);
   const [signalStop, setSignalStop] = useState(true);
   const [signalAlert, setSignalAlert] = useState(false);
+
+  // Load footer visibility setting from DB/backend
+  useEffect(() => {
+    if (api && api.settings) {
+      api.settings().then(s => {
+        if (s && s.footer_visibility !== undefined) {
+          setShowFooter(s.footer_visibility !== 'hide' && s.footer_visibility !== 'false');
+        }
+      }).catch(err => console.error('[ScaleContext] Error loading footer visibility:', err));
+    }
+
+    const handleFooterChange = (e) => {
+      if (e && e.detail && e.detail.visibility !== undefined) {
+        setShowFooter(e.detail.visibility !== 'hide' && e.detail.visibility !== 'false');
+      }
+    };
+    window.addEventListener('footer-visibility-changed', handleFooterChange);
+    return () => {
+      window.removeEventListener('footer-visibility-changed', handleFooterChange);
+    };
+  }, []);
 
   // Auto calculate Nett when Gross or Tare changes (higher value - lower value = net)
   useEffect(() => {
@@ -94,6 +117,7 @@ export function ScaleProvider({ children }) {
 
   return (
     <ScaleContext.Provider value={{
+      showFooter, setShowFooter,
       card, setCard,
       vehicle, setVehicle,
       gross, setGross,

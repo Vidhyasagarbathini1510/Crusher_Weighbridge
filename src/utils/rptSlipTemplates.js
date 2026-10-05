@@ -29,7 +29,8 @@ export const RPT_TEMPLATE_CATALOGUE = [
   { id: 'RPT-CHALLAN-A4', name: 'Delivery Challan (Full)', detail: 'HSN table + weighment slip', paper: 'A4' },
   { id: 'RPT-SALESRECEIPT', name: 'Sales Receipt 2-Up', detail: 'Sl. Num, OUT / IN times', paper: 'A5 L' },
   { id: 'RPT-WEIGHSLIP2', name: 'Weighment Slip 2-Up', detail: 'Two slips, transporter + driver', paper: 'A4' },
-  { id: 'RPT-CCTV-A4', name: 'Weighment CCTV 2-Up (AMR)', detail: 'SlipPrintCCTV.rpt — A4 2-Up dual slip with CCTV camera images', paper: 'A4' }
+  { id: 'RPT-CCTV-A4', name: 'Weighment CCTV 2-Up (AMR)', detail: 'SlipPrintCCTV.rpt — A4 2-Up dual slip with CCTV camera images', paper: 'A4' },
+  { id: 'RPT-CHALLAN-DUAL-A5', name: 'Delivery Challan A5 Dual (2-Up)', detail: 'Twin side-by-side Delivery Challan slips on A5 paper with Operator Signature', paper: 'A5 L' }
 ];
 
 // The paper above is the sheet the site actually feeds for each form, not the
@@ -509,9 +510,7 @@ function slipPanel(f, { heading, headingRight = '', showRst = false, addresses =
 }
 
 // SlipPrint.rpt proper. The two halves are the same form with different
-// captions: the operator keeps the Loading Slip, the driver takes the Loading
-// DC. "Loadind DC" is spelt that way on the original report and is left alone —
-// the printed slip has to look like the one the site already files.
+// captions: the operator keeps the Loading Slip, the driver takes the Loading DC.
 //
 // Section by section, as the designer draws it:
 //   Report Header   ?Address1, centred over the panel
@@ -524,6 +523,12 @@ function loadingSlipPanel(f, { heading, signature, first }) {
   const col = 'padding:3px 2px;';
   const val = 'padding:3px 4px;';
   const end = 'padding:3px 4px;text-align:right;white-space:nowrap;';
+
+  // If a specific Party is present (credit/contract customer), hide Amount.
+  // If it's a Local Sale (or empty/cash), show Amount.
+  const partyUpper = String(f.party || '').trim().toUpperCase();
+  const isLocalSale = !partyUpper || partyUpper === 'LOCAL' || partyUpper === 'LOCAL SALE' || partyUpper === 'LOCAL SALES' || partyUpper === 'CASH' || partyUpper === 'CASH SALE' || partyUpper === 'CASH SALES';
+  const showAmount = isLocalSale;
 
   // One set of stops for both halves of the form, so GROSS lines up under
   // MATERIAL instead of only appearing to. DESTINATION is the widest caption on
@@ -581,7 +586,7 @@ function loadingSlipPanel(f, { heading, signature, first }) {
         ${weight('GROSS', f.gross)}
         ${weight('TARE', f.tare)}
         ${weight('NETT', f.nett)}
-        ${row('AMOUNT', f.amount, { bold: true, tail: f.phone })}
+        ${showAmount ? row('AMOUNT', f.amount, { bold: true, tail: f.phone }) : (f.phone ? `<tr><td style="${lbl}"></td><td style="${col}"></td><td style="${val}"></td><td style="${end}">${esc(f.phone)}</td></tr>` : '')}
       </table>
 
       ${rule}
@@ -596,7 +601,7 @@ function slipPrint(f) {
     <table style="width:100%;border-collapse:collapse;table-layout:fixed;">
       <tr>
         ${loadingSlipPanel(f, { heading: 'Loading Slip', signature: 'Operator Signature', first: true })}
-        ${loadingSlipPanel(f, { heading: 'Loadind DC', signature: 'Loading Operator Signature', first: false })}
+        ${loadingSlipPanel(f, { heading: 'Loading DC', signature: 'Loading Operator Signature', first: false })}
       </tr>
     </table>
   `, { width: '1040px', font: '12.5px', data: f });
@@ -1022,6 +1027,123 @@ function weighSlipCctvA4(f) {
   `, { width: '780px', font: '13px', data: f });
 }
 
+function deliveryChallanDualA5Block(f, isRightCopy = false) {
+  const companyDetails = getCompanyDetails() || {};
+  const phoneNo = f.phone || f.contact || companyDetails.phone || '9553333147';
+  const partyName = f.party || 'MEGA CITY [VENTURE]';
+  const dcNumber = f.dcNum || '8863';
+  const grossVal = f.grossRaw || f.gross || '0';
+  const tareVal = f.tareRaw || f.tare || '0';
+  const nettVal = f.nettRaw || f.nett || '0';
+  const amtVal = f.amount || '0';
+  const destVal = f.destination || 'CHILUKUR';
+  const vehVal = f.vehicle || '5508';
+  const matVal = f.material || 'M sand';
+  const dateVal = f.grossDate || f.date || '30-09-2026';
+  const timeVal = f.grossTime || f.time || '12:23';
+
+  return `
+    <div style="flex:1; display:flex; flex-direction:column; padding:0 8px; box-sizing:border-box;">
+      
+      <!-- Top Header Bar (Light grey shaded band without outer outline box) -->
+      <div style="display:flex; justify-content:space-between; align-items:center; background-color:#e0e0e0; ${INK} padding:4px 8px; margin-bottom:6px;">
+
+        <div style="display:flex; align-items:center; gap:8px;">
+          <span style="font-weight:bold; font-size:13.5px; color:#000;">Delivery Challan</span>
+          <span style="font-weight:bold; font-size:13.5px; color:#000; margin-left:12px;">${esc(dcNumber)}</span>
+        </div>
+        <div style="display:flex; align-items:center; font-weight:bold; font-size:12.5px; color:#000;">
+          <span>${esc(dateVal)}</span>
+        </div>
+      </div>
+
+      <!-- Main Fields Table -->
+      <table style="width:100%; border-collapse:collapse; margin-bottom:8px; font-size:13px; color:#000;">
+        <tr>
+          <td style="width:36%; padding:3px 2px; font-weight:bold; color:#000;">DC.No :</td>
+          <td style="padding:3px 2px; font-weight:bold; color:#000; font-size:13.5px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; width:100%;">
+              <span>${esc(dcNumber)}</span>
+              <span style="font-size:12.5px; font-weight:bold; color:#000;">${esc(timeVal)}</span>
+            </div>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:3px 2px; font-weight:bold; color:#000;">PARTY</td>
+          <td style="padding:3px 2px; font-weight:bold; color:#000; font-size:13.5px;">${esc(partyName)}</td>
+        </tr>
+        <tr>
+          <td style="padding:3px 2px; font-weight:bold; color:#000;">DESTINATION</td>
+          <td style="padding:3px 2px; font-weight:bold; color:#000; font-size:13.5px;">${esc(destVal)}</td>
+        </tr>
+        <tr>
+          <td style="padding:3px 2px; font-weight:bold; color:#000;">VEHICLE</td>
+          <td style="padding:3px 2px; font-weight:bold; color:#000; font-size:13.5px;">${esc(vehVal)}</td>
+        </tr>
+        <tr>
+          <td style="padding:3px 2px; font-weight:bold; color:#000;">MATERIAL</td>
+          <td style="padding:3px 2px; font-weight:bold; color:#000; font-size:13.5px;">${esc(matVal)}</td>
+        </tr>
+      </table>
+
+      <!-- Inside Line 1 (Under MATERIAL) -->
+      <div style="border-top:1px solid #000; margin:6px 0 8px 0;"></div>
+
+      <!-- Weights & Amount Table -->
+      <table style="width:100%; border-collapse:collapse; margin-bottom:8px; font-size:13px; color:#000;">
+        <tr>
+          <td style="width:36%; padding:3.5px 2px; font-weight:bold; color:#000; letter-spacing:0.5px;">GROSS</td>
+          <td style="padding:3.5px 2px; font-weight:bold; color:#000; font-size:13.5px;">${esc(grossVal)} Kgs</td>
+        </tr>
+        <tr>
+          <td style="padding:3.5px 2px; font-weight:bold; color:#000; letter-spacing:0.5px;">TARE</td>
+          <td style="padding:3.5px 2px; font-weight:bold; color:#000; font-size:13.5px;">${esc(tareVal)} Kgs</td>
+        </tr>
+        <tr>
+          <td style="padding:3.5px 2px; font-weight:bold; color:#000; letter-spacing:0.5px;">NETT</td>
+          <td style="padding:3.5px 2px; font-weight:bold; color:#000; font-size:13.5px;">${esc(nettVal)} Kgs</td>
+        </tr>
+        <tr>
+          <td style="padding:3.5px 2px; font-weight:bold; color:#000; letter-spacing:0.5px;">AMOUNT</td>
+          <td style="padding:3.5px 2px; font-weight:bold; color:#000; font-size:13.5px;">${esc(amtVal)}</td>
+        </tr>
+      </table>
+
+      <!-- Inside Line 2 (Under AMOUNT) -->
+      <div style="border-top:1px solid #000; margin:6px 0 10px 0;"></div>
+
+      <!-- Footer Section -->
+      <div style="margin-top:auto; font-size:12px; color:#000; font-weight:bold; padding:4px 2px 2px 2px;">
+        ${!isRightCopy ? `
+          <div style="margin-bottom:4px;">${esc(partyName)}</div>
+          <div>${esc(phoneNo)}</div>
+        ` : `
+          <div style="display:flex; justify-content:space-between; align-items:flex-end;">
+            <div style="padding-bottom:2px;">${esc(phoneNo)}</div>
+            <div style="text-align:center;">
+              <div style="border-top:1px solid #000; width:135px; margin-bottom:4px;"></div>
+              <div style="font-weight:bold; font-size:11.5px;">Operator Signature</div>
+            </div>
+          </div>
+        `}
+      </div>
+
+    </div>
+  `;
+}
+
+function deliveryChallanDualA5(f) {
+  return wrap(`
+    <div style="display:flex; gap:16px; width:100%; box-sizing:border-box; padding:4px; background:#fff;">
+      ${deliveryChallanDualA5Block(f, false)}
+      <div style="border-left:1px solid #000; height:auto; margin:0;"></div>
+      ${deliveryChallanDualA5Block(f, true)}
+    </div>
+  `, { width: '780px', font: '13px', data: f });
+}
+
+
+
 // ---- dispatch ---------------------------------------------------------------
 
 const BUILDERS = {
@@ -1038,7 +1160,8 @@ const BUILDERS = {
   'RPT-CHALLAN-A4': challanA4,
   'RPT-SALESRECEIPT': salesReceipt,
   'RPT-WEIGHSLIP2': weighSlip2,
-  'RPT-CCTV-A4': weighSlipCctvA4
+  'RPT-CCTV-A4': weighSlipCctvA4,
+  'RPT-CHALLAN-DUAL-A5': deliveryChallanDualA5
 };
 
 // Returns null when the id belongs to one of the app's own templates, so the

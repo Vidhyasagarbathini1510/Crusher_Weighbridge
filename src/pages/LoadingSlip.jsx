@@ -12,7 +12,7 @@ export default function LoadingSlip() {
   const [destination, setDestination] = useState('');
   const [source, setSource] = useState('');
   const [transporter, setTransporter] = useState('');
-  const [payment, setPayment] = useState('');
+  const [payment, setPayment] = useState('Credit');
   const [phone, setPhone] = useState('');
 
   useEffect(() => {
@@ -41,7 +41,7 @@ export default function LoadingSlip() {
       destination: destination || '',
       source: source || '',
       transporter: transporter || '',
-      payment: payment || '',
+      payment: (payment && payment.trim()) ? payment.trim() : 'Credit',
       phone: phone || '',
       weight: 'Pending'
     };
@@ -148,8 +148,17 @@ export default function LoadingSlip() {
                 <input type="text" className="form-control saas-input" placeholder="Transporter" value={transporter} onChange={(e) => setTransporter(e.target.value)} />
               </div>
               <div className="col-6">
-                <label className="saas-label">Payment</label>
-                <input type="text" className="form-control saas-input" placeholder="Cash / Credit" value={payment} onChange={(e) => setPayment(e.target.value)} />
+                <label className="saas-label">Payment Mode</label>
+                <select
+                  className="form-select saas-input"
+                  value={payment || 'Credit'}
+                  onChange={(e) => setPayment(e.target.value)}
+                >
+                  <option value="Credit">Credit (Default)</option>
+                  <option value="Cash">Cash</option>
+                  <option value="UPI">UPI</option>
+                  <option value="Pending">Pending</option>
+                </select>
               </div>
               <div className="col-6">
                 <label className="saas-label">Phone</label>

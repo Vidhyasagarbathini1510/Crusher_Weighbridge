@@ -9,6 +9,8 @@ import { printTicket } from '../utils/printHelper.js';
 import { captureCameraSnapshot } from '../utils/cameraSnapshot.js';
 import { useScale } from '../context/ScaleContext.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
+import { getVehicleOptionMode, filterVehiclesBySetting, cleanupVehicleOnWeighmentCompletion } from '../utils/vehicleFilterUtil.js';
+
 
 export default function Boulders() {
   const { user } = useAuth();
@@ -139,31 +141,35 @@ export default function Boulders() {
         return own === 'OWN' || own === 'QUARRY';
       };
 
-      let quarryVehicles = (vehicleTaresData || [])
-        .filter(isQuarryVeh)
-        .map(t => t.vehicle);
+      let quarryVehObjs = [
+        ...(vehicleTaresData || []).filter(isQuarryVeh)
+      ];
 
       const cached = localStorage.getItem('noris_vehicle_tares');
       if (cached) {
         try {
           const parsed = JSON.parse(cached);
-          const cachedVehs = parsed
-            .filter(isQuarryVeh)
-            .map(t => t.vehicle);
-          quarryVehicles = [...quarryVehicles, ...cachedVehs];
+          const cachedObjs = parsed.filter(isQuarryVeh);
+          quarryVehObjs = [...quarryVehObjs, ...cachedObjs];
         } catch (e) {}
       }
 
-      setSuggestions(prev => ({
-        ...prev,
-        vehicleNo: unique(quarryVehicles),
-        contractor: unique([...listContractors, ...txs.map(t => t.contractor || t.party)]).filter(c => c && c.trim().toUpperCase() !== 'OTHERS'),
-        quarry: unique([...listQuarries, ...txs.map(t => t.quarry || t.source)]),
-        material: unique([...listMaterials, ...txs.map(t => t.material || t.product)]),
-        driver: unique(txs.map(t => t.driver)),
-        transporter: unique([...listTransporters, ...txs.map(t => t.transporter)]),
-        destination: unique([...prev.destination, ...txs.map(t => t.destination)])
-      }));
+      getVehicleOptionMode().then(mode => {
+        const filteredObjs = filterVehiclesBySetting(quarryVehObjs, txs, mode);
+        const quarryVehicles = filteredObjs.map(t => t.vehicle);
+
+        setSuggestions(prev => ({
+          ...prev,
+          vehicleNo: unique(quarryVehicles),
+          contractor: unique([...listContractors, ...txs.map(t => t.contractor || t.party)]).filter(c => c && c.trim().toUpperCase() !== 'OTHERS'),
+          quarry: unique([...listQuarries, ...txs.map(t => t.quarry || t.source)]),
+          material: unique([...listMaterials, ...txs.map(t => t.material || t.product)]),
+          driver: unique(txs.map(t => t.driver)),
+          transporter: unique([...listTransporters, ...txs.map(t => t.transporter)]),
+          destination: unique([...prev.destination, ...txs.map(t => t.destination)])
+        }));
+      });
+
     } catch (e) {
       console.error(e);
     }
@@ -695,6 +701,9 @@ export default function Boulders() {
         tare_date: tareDate || nowDateFormatted,
         tare_time: tareTime || nowTimeFormatted
       });
+
+      await cleanupVehicleOnWeighmentCompletion(cleanVehicle, 'QUARRY');
+      await loadSourcedData();
 
       const txs = api.boulders ? await api.boulders() : await api.transactions();
       setTransactions(txs);

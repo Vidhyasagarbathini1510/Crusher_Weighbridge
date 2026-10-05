@@ -1821,6 +1821,14 @@ function deleteVehicleTare(id) {
   return true;
 }
 
+function deleteVehicleTareByNumber(vehicleNo) {
+  if (!dbInstance || !vehicleNo) return false;
+  const cleanVeh = vehicleNo.toString().trim().replace(/\s+/g, '').toUpperCase();
+  dbInstance.run('DELETE FROM vehicle_tares WHERE UPPER(REPLACE(vehicle, " ", "")) = ?', [cleanVeh]);
+  saveToDisk();
+  return true;
+}
+
 function getRfidCards() {
   if (!dbInstance) return [];
   try {
@@ -2059,7 +2067,7 @@ function addSalesWeighmentUnits(tx, base64Image) {
     tx.stationary || '',
     tx.po_number || tx.poNumber || '',
     tx.po_date || tx.poDate || '',
-    tx.payment || '',
+    tx.payment || 'Credit',
     Number(tx.gross || tx.grossVal || 0),
     Number(tx.tare || tx.tareVal || 0),
     Number(tx.net || tx.nettVal || 0),
@@ -2069,9 +2077,9 @@ function addSalesWeighmentUnits(tx, base64Image) {
     Number(tx.transport || 0),
     Number(tx.discount || 0),
     Number(tx.grand_total || tx.grandTotal || 0),
-    Number(tx.cash_amount || tx.cashAmount || 0),
-    Number(tx.upi_amount || tx.upiAmount || 0),
-    Number(tx.credit_amount || tx.creditAmount || 0),
+    String(tx.payment || '').trim().toLowerCase() === 'pending' ? 0 : Number(tx.cash_amount || tx.cashAmount || 0),
+    String(tx.payment || '').trim().toLowerCase() === 'pending' ? 0 : Number(tx.upi_amount || tx.upiAmount || 0),
+    String(tx.payment || '').trim().toLowerCase() === 'pending' ? 0 : Number(tx.credit_amount || tx.creditAmount || 0),
     tx.operator || 'Admin',
     imgPath,
     // Photo lives in the .jpg file; base64 is only kept if the file write failed.
@@ -2260,7 +2268,7 @@ function addLoadingSlip(tx, base64Image) {
     tx.destination || '',
     tx.source || '',
     tx.transporter || '',
-    tx.payment || '',
+    tx.payment || 'Credit',
     tx.phone || '',
     tx.weight || 'Pending',
     tx.operator || 'Admin',
@@ -3045,7 +3053,7 @@ function updateRecordFromPending(tableName, tx, options = {}) {
     const stationary = tx.stationary || (existing ? existing.stationary : '');
     const po_number = tx.po_number || tx.poNumber || (existing ? existing.po_number : '');
     const po_date = tx.po_date || tx.poDate || (existing ? existing.po_date : '');
-    const payment = tx.payment || (existing ? existing.payment : '');
+    const payment = tx.payment || (existing ? existing.payment : 'Credit');
     const gross = (tx.gross !== undefined && tx.gross !== null && Number(tx.gross) > 0) ? Number(tx.gross) : (existing ? existing.gross : 0);
     const tare = (tx.tare !== undefined && tx.tare !== null && Number(tx.tare) > 0) ? Number(tx.tare) : (existing ? existing.tare : 0);
     const net = (tx.net !== undefined && tx.net !== null && Number(tx.net) > 0) ? Number(tx.net) : (existing ? existing.net : (gross - tare));
@@ -3055,9 +3063,10 @@ function updateRecordFromPending(tableName, tx, options = {}) {
     const transport = (tx.transport !== undefined && tx.transport !== null) ? Number(tx.transport) : (existing ? existing.transport : 0);
     const discount = (tx.discount !== undefined && tx.discount !== null) ? Number(tx.discount) : (existing ? existing.discount : 0);
     const grand_total = (tx.grand_total !== undefined && tx.grand_total !== null && Number(tx.grand_total) > 0) ? Number(tx.grand_total) : (existing ? existing.grand_total : (amount + transport - discount));
-    const cash_amount = (tx.cash_amount !== undefined && tx.cash_amount !== null) ? Number(tx.cash_amount) : (existing ? existing.cash_amount : 0);
-    const upi_amount = (tx.upi_amount !== undefined && tx.upi_amount !== null) ? Number(tx.upi_amount) : (existing ? existing.upi_amount : 0);
-    const credit_amount = (tx.credit_amount !== undefined && tx.credit_amount !== null) ? Number(tx.credit_amount) : (existing ? existing.credit_amount : 0);
+    const isPendingPayment = String(payment).trim().toLowerCase() === 'pending';
+    const cash_amount = isPendingPayment ? 0 : ((tx.cash_amount !== undefined && tx.cash_amount !== null) ? Number(tx.cash_amount) : (existing ? existing.cash_amount : 0));
+    const upi_amount = isPendingPayment ? 0 : ((tx.upi_amount !== undefined && tx.upi_amount !== null) ? Number(tx.upi_amount) : (existing ? existing.upi_amount : 0));
+    const credit_amount = isPendingPayment ? 0 : ((tx.credit_amount !== undefined && tx.credit_amount !== null) ? Number(tx.credit_amount) : (existing ? existing.credit_amount : 0));
     const operator = tx.operator || (existing ? existing.operator : 'Admin');
     const { image_path, image_base64, image_path_2, image_base64_2 } = externalizeIncomingImages(uuid, tx, existing);
     const tare_date = tx.tare_date || tx.tareDate || (existing ? existing.tare_date : '');
@@ -3189,9 +3198,27 @@ function parseDateString(str) {
   return new Date();
 }
 
+function getDcResetShiftHoursAndMinutes() {
+  try {
+    if (!dbInstance) return { hours: 7, minutes: 0 };
+    const settings = getSettings ? getSettings() : {};
+    const timeStr = String(settings.dc_reset_time || '07:00').trim();
+    const parts = timeStr.split(':');
+    const hours = parseInt(parts[0], 10);
+    const minutes = parseInt(parts[1], 10);
+    return {
+      hours: isNaN(hours) ? 7 : Math.min(23, Math.max(0, hours)),
+      minutes: isNaN(minutes) ? 0 : Math.min(59, Math.max(0, minutes))
+    };
+  } catch (_) {
+    return { hours: 7, minutes: 0 };
+  }
+}
+
 function getDcBusinessDayDateStringForDate(dateInput) {
   const d = parseDateString(dateInput);
-  d.setHours(d.getHours() - 7);
+  const { hours, minutes } = getDcResetShiftHoursAndMinutes();
+  d.setHours(d.getHours() - hours, d.getMinutes() - minutes);
   const year = d.getFullYear();
   const month = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');
@@ -3208,7 +3235,8 @@ function getDcFinancialYearStringForDate(dateInput) {
 
 function getDcBusinessDayDateString() {
   const d = new Date();
-  d.setHours(d.getHours() - 7); // Subtract 7 hours to align 7:00 AM business day reset
+  const { hours, minutes } = getDcResetShiftHoursAndMinutes();
+  d.setHours(d.getHours() - hours, d.getMinutes() - minutes);
   const year = d.getFullYear();
   const month = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');
@@ -3521,6 +3549,7 @@ module.exports = {
   getVehicleTares,
   saveVehicleTare,
   deleteVehicleTare,
+  deleteVehicleTareByNumber,
   getRfidCards,
   saveRfidCard,
   deleteRfidCard,

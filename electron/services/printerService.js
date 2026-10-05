@@ -434,6 +434,7 @@ function buildPrintablePage(htmlContent, { pageSize = 'A4', landscape = false, m
       </style>
     </head>
     <body>
+    
       <div class="noris-sheet"><div class="noris-slip">${htmlContent}</div></div>
       <script>${FIT_TO_PAGE_SCRIPT}<\/script>
     </body>

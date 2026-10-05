@@ -2,6 +2,9 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../api/client';
 import SearchableSelect from '../components/SearchableSelect.jsx';
+import { getVehicleOptionMode, filterVehiclesBySetting, fetchAllTransactions } from '../utils/vehicleFilterUtil.js';
+
+
 
 export default function Vehicles() {
   const STORAGE_KEY = 'noris_vehicle_tares';
@@ -49,11 +52,17 @@ export default function Vehicles() {
   const [material, setMaterial] = useState('');
   const [weight, setWeight] = useState('');
   const [allMaterials, setAllMaterials] = useState([]);
+  const [transactions, setTransactions] = useState([]);
+  const [vehicleOptionMode, setVehicleOptionMode] = useState('STAY_ALL');
+
+  const displayTares = useMemo(() => {
+    return filterVehiclesBySetting(tares, transactions, vehicleOptionMode);
+  }, [tares, transactions, vehicleOptionMode]);
 
   const materialsList = allMaterials;
   const vehicleOptions = useMemo(() => {
-    return [...new Set((tares || []).map(t => t.vehicle).filter(Boolean))];
-  }, [tares]);
+    return [...new Set((displayTares || []).map(t => t.vehicle).filter(Boolean))];
+  }, [displayTares]);
   
   // Scale status states (bottom bar)
   const [bottomCard, setBottomCard] = useState('C-101');
@@ -75,10 +84,16 @@ export default function Vehicles() {
         const distinctMats = [...new Set(matsData.map(m => m.material))].filter(Boolean).sort();
         setAllMaterials(distinctMats);
       }
+      const txs = await fetchAllTransactions();
+      setTransactions(txs || []);
+      const mode = await getVehicleOptionMode();
+      setVehicleOptionMode(mode);
     } catch (e) {
-      console.error('[Vehicles] Error loading materials:', e);
+      console.error('[Vehicles] Error loading master data:', e);
     }
   };
+
+
 
   useEffect(() => {
     loadMasterData();
@@ -279,7 +294,7 @@ export default function Vehicles() {
                   <p className="text-muted small m-0">Recent vehicle weight history records</p>
                 </div>
                 <span className="badge bg-primary bg-opacity-10 text-primary border border-primary border-opacity-25 px-2.5 py-1.5 fw-bold">
-                  {tares.length} Total Logs
+                  {displayTares.length} Total Logs
                 </span>
               </div>
 
@@ -298,7 +313,7 @@ export default function Vehicles() {
                     </tr>
                   </thead>
                   <tbody>
-                    {tares.map((item) => (
+                    {displayTares.map((item) => (
                       <tr key={item.id}>
                         <td className="fw-bold text-dark font-monospace">{item.vehicle}</td>
                         <td><span className="text-secondary small">{item.vehicleType}</span></td>
@@ -324,11 +339,12 @@ export default function Vehicles() {
                         <td><span className="badge bg-light text-secondary border font-monospace">{item.token}</span></td>
                       </tr>
                     ))}
-                    {tares.length === 0 && (
+                    {displayTares.length === 0 && (
                       <tr>
                         <td colSpan="8" className="text-center py-5 text-muted">No vehicle weight records found</td>
                       </tr>
                     )}
+
                   </tbody>
                 </table>
               </div>

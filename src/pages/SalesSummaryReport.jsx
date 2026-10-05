@@ -400,7 +400,7 @@ export default function SalesSummaryReport() {
           t.party || 'LOCAL SALE',
           t.quarry || t.source || 'CRUSHER',
           t.product || t.material || 'N/A',
-          t.payment || 'Cash',
+          t.payment || 'Credit',
           Number(t.gross || 0).toLocaleString(),
           Number(t.tare || 0).toLocaleString(),
           Number(t.net || t.nettVal || 0).toLocaleString()
@@ -600,9 +600,10 @@ export default function SalesSummaryReport() {
                     emptyLabel="ALL PAYMENT MODES"
                     placeholder="Type to search payment mode..."
                     options={[
-                      { value: 'Cash', label: 'CASH' },
                       { value: 'Credit', label: 'CREDIT' },
+                      { value: 'Cash', label: 'CASH' },
                       { value: 'UPI', label: 'UPI' },
+                      { value: 'Pending', label: 'PENDING' },
                       { value: 'Paid', label: 'PAID' },
                       { value: 'To Pay', label: 'TO PAY' }
                     ]}
@@ -702,7 +703,7 @@ export default function SalesSummaryReport() {
                         <td>{t.product || t.material || 'N/A'}</td>
                         <td>
                           <span className="badge bg-light text-dark border" style={{ fontSize: '0.7rem' }}>
-                            {t.payment || 'Cash'}
+                            {t.payment || 'Credit'}
                           </span>
                         </td>
                         <td className="text-end text-secondary">{Number(t.gross || 0).toLocaleString()}</td>

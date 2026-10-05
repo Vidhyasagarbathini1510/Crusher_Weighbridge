@@ -9,6 +9,9 @@ import { printTicket, getSelectedTemplate, getDcPrintTemplate, getGatePassTempla
 import { captureCameraSnapshot } from '../utils/cameraSnapshot.js';
 import { useScale } from '../context/ScaleContext.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
+import { getVehicleOptionMode, filterVehiclesBySetting, fetchAllTransactions, cleanupVehicleOnWeighmentCompletion } from '../utils/vehicleFilterUtil.js';
+
+
 
 function todayForDateInput() {
   const d = new Date();
@@ -157,7 +160,7 @@ export default function SalesWeighmentUnits() {
 
   const loadMasterData = () => {
     Promise.all([
-      api.transactions().catch(() => []),
+      fetchAllTransactions(),
       api.getDebitors ? api.getDebitors().catch(() => []) : Promise.resolve([]),
       api.getMaterials ? api.getMaterials().catch(() => []) : Promise.resolve([]),
       api.getDestinations ? api.getDestinations().catch(() => []) : Promise.resolve([]),
@@ -170,22 +173,25 @@ export default function SalesWeighmentUnits() {
       setAllDebitors(debitorsData || []);
 
       // Vehicles
+      let tareObjs = [];
       const cachedTares = localStorage.getItem('noris_vehicle_tares');
-      let tareVehicles = [];
       if (cachedTares) {
         try {
           const parsed = JSON.parse(cachedTares);
-          tareVehicles = parsed
-            .filter(t => (t.ownership || '').toUpperCase() === 'OTHERS')
-            .map(t => t.vehicle);
+          tareObjs = parsed.filter(t => (t.ownership || '').toUpperCase() === 'OTHERS');
         } catch (e) {
           console.error(e);
         }
       }
-      const dbVehicles = (vehicleTaresData || [])
-        .filter(t => (t.ownership || '').toUpperCase() === 'OTHERS')
-        .map(t => t.vehicle);
-      setVehiclesList([...new Set([...tareVehicles, ...dbVehicles])].filter(Boolean));
+      const dbTareObjs = (vehicleTaresData || []).filter(t => (t.ownership || '').toUpperCase() === 'OTHERS');
+      const allOtherVehObjs = [...tareObjs, ...dbTareObjs];
+
+      getVehicleOptionMode().then(mode => {
+        const filteredObjs = filterVehiclesBySetting(allOtherVehObjs, txs, mode);
+        const vehNos = filteredObjs.map(t => t.vehicle || t.vehicleNo);
+        setVehiclesList([...new Set(vehNos)].filter(Boolean));
+      });
+
 
       // Parties strictly from debitors master data (synced from server endpoint) + LOCAL SALE
       const debitorsParties = (debitorsData || []).map(d => d.party).filter(Boolean);
@@ -286,8 +292,8 @@ export default function SalesWeighmentUnits() {
   // Dynamically update materials list strictly based on selected Party
   useEffect(() => {
     if (!party) {
-      setAvailableMaterials([]);
-      setMaterial('');
+      const allMatNames = [...new Set(allMaterials.map(m => m.material))].filter(Boolean);
+      setAvailableMaterials(allMatNames);
       return;
     }
 
@@ -311,21 +317,21 @@ export default function SalesWeighmentUnits() {
     setAvailableMaterials(matNames);
 
     if (matNames.length > 0) {
-      if (!matNames.includes(material)) {
+      const existingMatch = matNames.find(m => material && m.toUpperCase() === material.toUpperCase());
+      if (existingMatch) {
+        setMaterial(existingMatch);
+        const matchEntry = matchedMaterials.find(m => (m.material || '').toUpperCase() === existingMatch.toUpperCase());
+        if (matchEntry && matchEntry.rate !== undefined && matchEntry.rate !== null) {
+          setRate(matchEntry.rate.toString());
+        }
+      } else if (!material) {
         const firstMat = matNames[0];
         setMaterial(firstMat);
         const matchEntry = matchedMaterials.find(m => m.material === firstMat);
         if (matchEntry && matchEntry.rate !== undefined && matchEntry.rate !== null) {
           setRate(matchEntry.rate.toString());
         }
-      } else {
-        const matchEntry = matchedMaterials.find(m => m.material === material);
-        if (matchEntry && matchEntry.rate !== undefined && matchEntry.rate !== null) {
-          setRate(matchEntry.rate.toString());
-        }
       }
-    } else {
-      setMaterial('');
     }
   }, [party, allMaterials]);
 
@@ -517,18 +523,37 @@ export default function SalesWeighmentUnits() {
     const currentGrossNum = parseFloat(grossVal) || 0;
     const currentScaleWeight = liveWeightNum > 0 ? liveWeightNum : currentGrossNum;
 
-    if (matched && matched.weight) {
-      const rawSavedWeight = String(matched.weight).replace(/,/g, '');
-      const savedTareNum = parseFloat(rawSavedWeight) || 0;
-      setSavedWeight(rawSavedWeight);
+    if (matched) {
+      // Auto-fill material from vehicle tare record
+      if (matched.material && matched.material.trim()) {
+        const vehMat = matched.material.trim();
+        setMaterial(vehMat);
+        setAvailableMaterials(prev => {
+          const hasIt = prev.some(m => m.toUpperCase() === vehMat.toUpperCase());
+          return hasIt ? prev : [...prev, vehMat];
+        });
+        const matchEntry = allMaterials.find(m =>
+          (!party || (m.party || '').trim().toUpperCase() === (party || '').trim().toUpperCase()) &&
+          (m.material || '').trim().toUpperCase() === vehMat.toUpperCase()
+        );
+        if (matchEntry && matchEntry.rate !== undefined && matchEntry.rate !== null) {
+          setRate(matchEntry.rate.toString());
+        }
+      }
 
-      if (currentScaleWeight > 0) {
-        const high = Math.max(currentScaleWeight, savedTareNum).toString();
-        const low = Math.min(currentScaleWeight, savedTareNum).toString();
-        setGrossVal(high);
-        setTareVal(low);
-      } else {
-        setTareVal(rawSavedWeight);
+      if (matched.weight) {
+        const rawSavedWeight = String(matched.weight).replace(/,/g, '');
+        const savedTareNum = parseFloat(rawSavedWeight) || 0;
+        setSavedWeight(rawSavedWeight);
+
+        if (currentScaleWeight > 0) {
+          const high = Math.max(currentScaleWeight, savedTareNum).toString();
+          const low = Math.min(currentScaleWeight, savedTareNum).toString();
+          setGrossVal(high);
+          setTareVal(low);
+        } else {
+          setTareVal(rawSavedWeight);
+        }
       }
     } else {
       setSavedWeight('');
@@ -536,7 +561,7 @@ export default function SalesWeighmentUnits() {
         setGrossVal(currentScaleWeight.toString());
       }
     }
-  }, [vehicle, vehicleTares]);
+  }, [vehicle, vehicleTares, allMaterials, party]);
 
   // Listen to scale
   useEffect(() => {
@@ -591,11 +616,15 @@ export default function SalesWeighmentUnits() {
     const gtStr = gt.toFixed(2);
     setGrandTotal(gtStr);
 
-    const cashNum = parseFloat(cashAmount) || 0;
-    const upiNum = parseFloat(upiAmount) || 0;
-    const remaining = Math.max(0, gt - cashNum - upiNum);
-    setCreditAmount(remaining > 0 ? remaining.toFixed(2) : '0');
-  }, [rate, nettVal, unitsVal, unitType, transport, discount, royaltyAmount, cashAmount, upiAmount]);
+    if (payment === 'Pending') {
+      setCreditAmount('0');
+    } else {
+      const cashNum = parseFloat(cashAmount) || 0;
+      const upiNum = parseFloat(upiAmount) || 0;
+      const remaining = Math.max(0, gt - cashNum - upiNum);
+      setCreditAmount(remaining > 0 ? remaining.toFixed(2) : '0');
+    }
+  }, [rate, nettVal, unitsVal, unitType, transport, discount, royaltyAmount, cashAmount, upiAmount, payment]);
 
   const handleCashChange = (val) => {
     setCashAmount(val);
@@ -604,6 +633,9 @@ export default function SalesWeighmentUnits() {
     const gtNum = parseFloat(grandTotal) || 0;
     const remaining = Math.max(0, gtNum - cashNum - upiNum);
     setCreditAmount(remaining > 0 ? remaining.toFixed(2) : '0');
+    if (cashNum > 0 && upiNum === 0 && remaining === 0) {
+      setPayment('Cash');
+    }
   };
 
   const handleUpiChange = (val) => {
@@ -613,6 +645,9 @@ export default function SalesWeighmentUnits() {
     const gtNum = parseFloat(grandTotal) || 0;
     const remaining = Math.max(0, gtNum - cashNum - upiNum);
     setCreditAmount(remaining > 0 ? remaining.toFixed(2) : '0');
+    if (upiNum > 0 && cashNum === 0 && remaining === 0) {
+      setPayment('UPI');
+    }
   };
 
   const [partyGstin, setPartyGstin] = useState('');
@@ -879,7 +914,7 @@ export default function SalesWeighmentUnits() {
       royaltyAmount: Number(royaltyAmount || 0),
       po_number: poNumber || '',
       po_date: poDate || '',
-      payment: payment || 'Credit',
+      payment: (payment && payment.trim()) ? payment.trim() : 'Credit',
       gross: finalGross,
       grossVal: finalGross,
       tare: finalTare,
@@ -906,9 +941,9 @@ export default function SalesWeighmentUnits() {
       discount: discount || '0',
       grand_total: grandTotal || '0',
       grandTotal: grandTotal || '0',
-      cash_amount: cashAmount || '0',
-      upi_amount: upiAmount || '0',
-      credit_amount: creditAmount || '0',
+      cash_amount: (payment && payment.trim().toLowerCase() === 'pending') ? '0' : (cashAmount || '0'),
+      upi_amount: (payment && payment.trim().toLowerCase() === 'pending') ? '0' : (upiAmount || '0'),
+      credit_amount: (payment && payment.trim().toLowerCase() === 'pending') ? '0' : (creditAmount || '0'),
       operator: user?.username || 'Operator',
       tare_date: tareDate,
       tare_time: tareTime
@@ -961,7 +996,10 @@ export default function SalesWeighmentUnits() {
 
       setSavedTicket(ticketSnapshot);
       setIsSaved(true);
+      await cleanupVehicleOnWeighmentCompletion(cleanVehicle, 'OTHERS');
+      loadMasterData();
       setMsg('Sales Transaction (Units Mode) Saved successfully!');
+
       setTimeout(() => setMsg(''), 4000);
     } catch (err) {
       console.error('[SalesWeighmentUnits] Error saving transaction:', err);
@@ -1248,6 +1286,27 @@ export default function SalesWeighmentUnits() {
               <div className="col-6">
                 <label className="saas-label">PO Date</label>
                 <input type="date" className="form-control saas-input" value={poDate} onChange={(e) => setPoDate(e.target.value)} />
+              </div>
+              <div className="col-6">
+                <label className="saas-label">Payment Mode</label>
+                <select
+                  className="form-select saas-input"
+                  value={payment || 'Credit'}
+                  onChange={(e) => {
+                    const mode = e.target.value;
+                    setPayment(mode);
+                    if (mode === 'Pending') {
+                      setCashAmount('0');
+                      setUpiAmount('0');
+                      setCreditAmount('0');
+                    }
+                  }}
+                >
+                  <option value="Credit">Credit</option>
+                  <option value="Cash">Cash</option>
+                  <option value="UPI">UPI</option>
+                  <option value="Pending">Pending</option>
+                </select>
               </div>
 
             </form>

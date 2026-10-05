@@ -247,7 +247,7 @@ export const api = {
           royaltyAmount: Number(txData.royalty_amount || txData.royaltyAmount || 0),
           po_number: txData.po_number || txData.poNumber || 'N/A',
           po_date: txData.po_date || txData.poDate || 'N/A',
-          payment: txData.payment || 'CREDIT',
+          payment: txData.payment || 'Credit',
           gross: Number(txData.gross || 0),
           tare: Number(txData.tare || 0),
           net: Number(txData.net || 0),
@@ -265,9 +265,9 @@ export const api = {
           tamount: Number(txData.tamount || txData.transporter_amount || txData.transporterAmount || 0),
           discount: Number(txData.discount || 0),
           grand_total: Number(txData.grand_total || txData.grandTotal || txData.amount || 0),
-          cash_amount: Number(txData.cash_amount || txData.cashAmount || 0),
-          upi_amount: Number(txData.upi_amount || txData.upiAmount || 0),
-          credit_amount: Number(txData.credit_amount || txData.creditAmount || 0),
+          cash_amount: String(txData.payment || '').trim().toLowerCase() === 'pending' ? 0 : Number(txData.cash_amount || txData.cashAmount || 0),
+          upi_amount: String(txData.payment || '').trim().toLowerCase() === 'pending' ? 0 : Number(txData.upi_amount || txData.upiAmount || 0),
+          credit_amount: String(txData.payment || '').trim().toLowerCase() === 'pending' ? 0 : Number(txData.credit_amount || txData.creditAmount || 0),
           operator: txData.operator || 'Admin',
           image_url: 'snapshot.jpg',
           image_base64: base64Image || txData.base64Image || ''
@@ -314,7 +314,7 @@ export const api = {
           stationary: txData.stationary || 'N/A',
           po_number: txData.po_number || txData.poNumber || 'N/A',
           po_date: txData.po_date || txData.poDate || 'N/A',
-          payment: txData.payment || 'CREDIT',
+          payment: txData.payment || 'Credit',
           gross: Number(txData.gross || 0),
           tare: Number(txData.tare || 0),
           net: Number(txData.net || 0),
@@ -436,6 +436,13 @@ export const api = {
   deleteVehicleTare: async (id) => {
     if (window.electronAPI && window.electronAPI.deleteVehicleTare) {
       return window.electronAPI.deleteVehicleTare(id);
+    }
+    return true;
+  },
+
+  deleteVehicleTareByNumber: async (vehicleNo) => {
+    if (window.electronAPI && window.electronAPI.deleteVehicleTareByNumber) {
+      return window.electronAPI.deleteVehicleTareByNumber(vehicleNo);
     }
     return true;
   },

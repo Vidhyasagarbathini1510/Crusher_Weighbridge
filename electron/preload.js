@@ -83,6 +83,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getVehicleTares: () => ipcRenderer.invoke('db:getVehicleTares'),
   saveVehicleTare: (payload) => ipcRenderer.invoke('db:saveVehicleTare', payload),
   deleteVehicleTare: (id) => ipcRenderer.invoke('db:deleteVehicleTare', id),
+  deleteVehicleTareByNumber: (vehicleNo) => ipcRenderer.invoke('db:deleteVehicleTareByNumber', vehicleNo),
   getRfidCards: () => ipcRenderer.invoke('db:getRfidCards'),
   saveRfidCard: (payload) => ipcRenderer.invoke('db:saveRfidCard', payload),
   deleteRfidCard: (id) => ipcRenderer.invoke('db:deleteRfidCard', id),
@@ -118,9 +119,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   printRaw: (payload) => ipcRenderer.invoke('printer:print-raw', payload),
   printHtml: (payload) => ipcRenderer.invoke('printer:print-html', payload),
 
-  // ---- nChat alert operations ----
-  sendNChatTestAlert: (targetNumber) => ipcRenderer.invoke('nchat:send-test', targetNumber),
-  getNChatConfig: () => ipcRenderer.invoke('nchat:get-config'),
   reportAppError: (errStr) => ipcRenderer.invoke('app:report-error', errStr),
 
   // ---- RFID Reader operations ----

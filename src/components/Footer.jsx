@@ -3,6 +3,7 @@ import { useScale } from '../context/ScaleContext.jsx';
 
 export default function Footer() {
   const {
+    showFooter,
     card, setCard,
     vehicle, setVehicle,
     gross, setGross,
@@ -12,6 +13,10 @@ export default function Footer() {
     signalStop, setSignalStop,
     signalAlert, setSignalAlert
   } = useScale();
+
+  if (showFooter === false) {
+    return null;
+  }
 
   const handleGo = () => {
     setSignalGo(true);
@@ -29,9 +34,11 @@ export default function Footer() {
 
   return (
     <div 
-      className="d-flex align-items-center justify-content-start gap-3 w-100 border-top px-3 py-2 text-dark" 
+      className="d-flex align-items-center justify-content-start gap-3 w-100 px-3 py-2 text-dark" 
       style={{
-        backgroundColor: 'var(--surface-3)',
+        background: 'linear-gradient(180deg, #FDF7E7 0%, #F5E6BD 100%)',
+        borderTop: '2px solid #C9A227',
+        boxShadow: '0 -3px 12px rgba(138, 100, 19, 0.12)',
         fontSize: '0.9rem',
         zIndex: 100,
         height: '52px',
@@ -39,8 +46,7 @@ export default function Footer() {
       }}
     >
       <div className="d-flex align-items-center gap-1.5">
-        
-        <span className="fw-semibold me-3">Card</span>
+        <span className="fw-bold me-2" style={{ color: 'var(--ink)', fontSize: '0.85rem' }}>Card</span>
         <input 
           type="text" 
           className="form-control form-control-sm text-center bg-white fw-bold" 
@@ -51,8 +57,7 @@ export default function Footer() {
       </div>
 
       <div className="d-flex align-items-center gap-1.5">
-       
-        <span className="fw-semibold me-3">Vehicle</span>
+        <span className="fw-bold me-2" style={{ color: 'var(--ink)', fontSize: '0.85rem' }}>Vehicle</span>
          <input 
           type="text" 
           className="form-control form-control-sm text-center bg-white font-monospace fw-bold" 
@@ -63,8 +68,7 @@ export default function Footer() {
       </div>
 
       <div className="d-flex align-items-center gap-1.5">
-       
-        <span className="fw-semibold me-3">Gross</span>
+        <span className="fw-bold me-2" style={{ color: 'var(--ink)', fontSize: '0.85rem' }}>Gross</span>
          <input 
           type="number" 
           className="form-control form-control-sm text-center bg-white fw-bold" 
@@ -75,7 +79,7 @@ export default function Footer() {
       </div>
 
       <div className="d-flex align-items-center gap-1.5">
-        <span className="fw-semibold me-3">Tare</span>
+        <span className="fw-bold me-2" style={{ color: 'var(--ink)', fontSize: '0.85rem' }}>Tare</span>
         <input 
           type="number" 
           className="form-control form-control-sm text-center bg-white fw-bold" 
@@ -83,12 +87,10 @@ export default function Footer() {
           value={tare} 
           onChange={(e) => setTare(e.target.value)} 
         />
-       
       </div>
 
       <div className="d-flex align-items-center gap-1.5">
-        
-        <span className="fw-semibold me-4">Nett</span>
+        <span className="fw-bold me-2" style={{ color: 'var(--ink)', fontSize: '0.85rem' }}>Nett</span>
         <input 
           type="number" 
           className="form-control form-control-sm text-center bg-primary bg-opacity-10 fw-bold text-primary" 

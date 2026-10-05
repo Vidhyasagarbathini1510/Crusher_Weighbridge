@@ -39,7 +39,6 @@ const autoCleanupService = require('./services/autoCleanupService');
 const printerService = require('./services/printerService');
 const { startAiService, stopAiService } = require('./services/aiService');
 const { startHealthMonitorService, stopHealthMonitorService, reportApplicationError } = require('./services/healthMonitorService');
-const { sendTestAlert, getAlertConfig } = require('./services/alertService');
 
 process.on('uncaughtException', (err) => {
   console.error('[Main] Uncaught Exception:', err);
@@ -210,7 +209,7 @@ function registerDatabaseHandlers() {
   });
   ipcMain.handle('db:saveSetting', async (event, { key, value }) => {
     const result = await dbAdapter.call('saveSetting', key, value);
-    if (key === 'comPort' || key === 'baudRate' || key === 'scaleType' || key === 'scaleIp') {
+    if (key === 'comPort' || key === 'baudRate' || key === 'scaleType' || key === 'scaleIp' || key === 'protocol') {
       console.log(`[Main] Scale setting '${key}' changed to '${value}'. Restarting reader...`);
       if (global.restartSerialReader) {
         global.restartSerialReader();
@@ -268,6 +267,9 @@ function registerDatabaseHandlers() {
   });
   ipcMain.handle('db:deleteVehicleTare', async (event, id) => {
     return dbAdapter.call('deleteVehicleTare', id);
+  });
+  ipcMain.handle('db:deleteVehicleTareByNumber', async (event, vehicleNo) => {
+    return dbAdapter.call('deleteVehicleTareByNumber', vehicleNo);
   });
 
   // ---- LAN Network Settings Handlers ----
@@ -400,13 +402,6 @@ function registerDatabaseHandlers() {
     return printerService.printSilentHtml(printerName, htmlContent, options);
   });
 
-  // nChat Alert & Health Monitor Handlers
-  ipcMain.handle('nchat:send-test', async (event, targetNumber) => {
-    return sendTestAlert(targetNumber);
-  });
-  ipcMain.handle('nchat:get-config', async () => {
-    return getAlertConfig();
-  });
   ipcMain.handle('app:report-error', async (event, errStr) => {
     reportApplicationError(errStr);
     return { ok: true };
@@ -468,6 +463,7 @@ function createWindow() {
         const comPort = settings.comPort || 'COM7';
         const baudRate = Number(settings.baudRate) || 9600;
         const scaleIp = settings.scaleIp || '192.168.0.50';
+        const protocol = settings.protocol || 'Weitex';
 
         if (scaleType === 'network') {
           let url = (scaleIp || '192.168.0.50').trim();
@@ -488,9 +484,9 @@ function createWindow() {
           console.log(`[Main] Starting Network IP scale reader on ${url}...`);
           activeReader = new NetronReader(url);
         } else {
-          console.log(`[Main] Starting SerialPortReader on ${comPort} (${baudRate} baud)...`);
+          console.log(`[Main] Starting SerialPortReader on ${comPort} (${baudRate} baud, protocol: ${protocol})...`);
           const SerialPortReader = require('./socket/SerialPortReader');
-          activeReader = new SerialPortReader(comPort, baudRate);
+          activeReader = new SerialPortReader(comPort, baudRate, protocol);
         }
 
         activeReader.on('data', (data) => {
