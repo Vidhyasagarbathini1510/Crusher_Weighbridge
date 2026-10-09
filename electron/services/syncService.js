@@ -128,9 +128,15 @@ async function runSyncCycle() {
         continue;
       }
 
-      // First weighments are stored in local DB only (no remote server endpoint)
-      if (item.table_name === 'first_weighment' || item.table_name === 'first_weighments') {
+      // First weighments and loading slips are stored in local DB only (pre-registration / no remote server endpoint)
+      if (
+        item.table_name === 'first_weighment' ||
+        item.table_name === 'first_weighments' ||
+        item.table_name === 'loading_slips' ||
+        item.table_name === 'loading_slip'
+      ) {
         if (db.updateSyncQueueStatus) db.updateSyncQueueStatus(item.id, 'COMPLETED');
+        if (db.markLoadingSlipSynced) db.markLoadingSlipSynced(item.record_uuid);
         continue;
       }
 

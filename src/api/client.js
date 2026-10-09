@@ -333,12 +333,32 @@ export const api = {
     }
     return [];
   },
+  getLoadingSlips: async (options) => {
+    if (window.electronAPI && window.electronAPI.getLoadingSlips) {
+      return window.electronAPI.getLoadingSlips(options);
+    }
+    return [];
+  },
 
   addLoadingSlip: async (txData, base64Image) => {
     if (window.electronAPI && window.electronAPI.addLoadingSlip) {
       return window.electronAPI.addLoadingSlip({ tx: txData, base64Image });
     }
     return txData;
+  },
+
+  fulfillLoadingSlip: async (identifier, finalWeight) => {
+    if (window.electronAPI && window.electronAPI.fulfillLoadingSlip) {
+      return window.electronAPI.fulfillLoadingSlip({ identifier, finalWeight });
+    }
+    return true;
+  },
+
+  deleteLoadingSlip: async (identifier) => {
+    if (window.electronAPI && window.electronAPI.deleteLoadingSlip) {
+      return window.electronAPI.deleteLoadingSlip(identifier);
+    }
+    return true;
   },
 
   firstWeighments: async (options) => {
@@ -550,5 +570,27 @@ export const api = {
       return window.electronAPI.getVehicleTareByNumber(vehicleNo);
     }
     return null;
+  },
+
+  getTransporterVehicles: async () => {
+    if (window.electronAPI && window.electronAPI.getTransporterVehicles) {
+      return window.electronAPI.getTransporterVehicles();
+    }
+    const cached = localStorage.getItem('noris_transporter_vehicles');
+    return cached ? JSON.parse(cached) : [];
+  },
+
+  saveTransporterVehicle: async (data) => {
+    if (window.electronAPI && window.electronAPI.saveTransporterVehicle) {
+      return window.electronAPI.saveTransporterVehicle(data);
+    }
+    return false;
+  },
+
+  deleteTransporterVehicle: async (id) => {
+    if (window.electronAPI && window.electronAPI.deleteTransporterVehicle) {
+      return window.electronAPI.deleteTransporterVehicle(id);
+    }
+    return false;
   }
 };

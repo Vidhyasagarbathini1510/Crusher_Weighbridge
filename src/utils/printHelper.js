@@ -102,12 +102,35 @@ export const cleanAddress = (str) => {
     .trim();
 };
 
-export function generateSlipHtml(data = {}, template = getSelectedTemplate()) {
+export function generateSlipHtml(data = {}, template = getSelectedTemplate(), category = null) {
+  const dcTpl = getDcPrintTemplate();
+  const gpTpl = getGatePassTemplate();
+  let effectiveCategory = category;
+  if (!effectiveCategory) {
+    if (data.category || data.printCategory) {
+      effectiveCategory = data.category || data.printCategory;
+    } else if (template === dcTpl || template === 'RPT-CHALLAN-A4' || template === 'RPT-SALESBILL9' || template === 'RPT-SALESBILL9-2UP' || template === 'IMAGE-2') {
+      effectiveCategory = 'DC';
+    } else if (template === gpTpl || template === 'IMAGE-6' || template === 'RPT-GATEPASS-A5' || template === 'RPT-GATEPASS-3UP') {
+      effectiveCategory = 'GATE_PASS';
+    } else {
+      effectiveCategory = 'PRINT';
+    }
+  }
+
+  const effectiveHeaderMode = data.headerOverride || getRptHeaderMode(effectiveCategory);
+  const dataWithCategory = {
+    ...data,
+    category: effectiveCategory,
+    printCategory: effectiveCategory,
+    headerOverride: effectiveHeaderMode
+  };
+
   // The Crystal Reports layouts render their fields exactly as the .rpt files
   // did, so they are matched before any of the app's own sample-filled designs.
-  const rptHtml = generateRptSlipHtml(data, template);
+  const rptHtml = generateRptSlipHtml(dataWithCategory, template);
   if (rptHtml) return rptHtml;
-  if (template === 'IMAGE-8') return generateRptSlipHtml(data, 'RPT-CHALLAN-DUAL-A5');
+  if (template === 'IMAGE-8') return generateRptSlipHtml(dataWithCategory, 'RPT-CHALLAN-DUAL-A5');
 
 
   const dcNum = data.dcNum || data.dc_num || 'WB2505170001';
@@ -1154,7 +1177,7 @@ export function generateSlipHtml(data = {}, template = getSelectedTemplate()) {
     .replace(/>/g, '&gt;');
 
   const resolveDotMatrixHeader = (dataObj) => {
-    const headerMode = dataObj.headerOverride || getRptHeaderMode();
+    const headerMode = dataObj.headerOverride || getRptHeaderMode(dataObj.category || dataObj.printCategory || effectiveCategory);
     let showCompany = headerMode === 'COMPANY';
     if (headerMode === 'AUTO_GST') {
       const gstin = String(dataObj.gstin  || dataObj.gstIn || dataObj.gst_no || dataObj.gstNo || dataObj.partyGstin || '').trim();
@@ -1279,7 +1302,7 @@ export function generateSlipHtml(data = {}, template = getSelectedTemplate()) {
     const activeDriver = data.driver || data.driverName || driverName || 'ASHOK';
 
     let headerHtml = '';
-    const headerMode = data.headerOverride || getRptHeaderMode();
+    const headerMode = data.headerOverride || getRptHeaderMode(data.category || data.printCategory || effectiveCategory);
     let showCompany = headerMode === 'COMPANY';
     if (headerMode === 'AUTO_GST') {
       const gstin = String(data.gstin || data.gstIn || data.gst_no || data.gstNo || data.partyGstin || '').trim();
@@ -1437,7 +1460,7 @@ export function generateEscpSlipText(data = {}, template = '') {
   const RIGHT_COL = 36;
   const divider = '-'.repeat(68);
 
-  const headerMode = data.headerOverride || getRptHeaderMode();
+  const headerMode = data.headerOverride || getRptHeaderMode(data.category || data.printCategory || effectiveCategory);
   let showCompany = headerMode === 'COMPANY';
   if (headerMode === 'AUTO_GST') {
     const gstin = String(data.gstin || data.gstIn || data.gst_no || data.gstNo || data.partyGstin || '').trim();
@@ -1787,19 +1810,40 @@ export async function printTicket(data = {}, template = getSelectedTemplate(), c
   const dcTpl = getDcPrintTemplate();
   const gpTpl = getGatePassTemplate();
 
+  let effectiveCategory = category;
+  if (!effectiveCategory) {
+    if (data.category || data.printCategory) {
+      effectiveCategory = data.category || data.printCategory;
+    } else if (template === dcTpl || template === 'RPT-CHALLAN-A4' || template === 'RPT-SALESBILL9' || template === 'RPT-SALESBILL9-2UP' || template === 'IMAGE-2') {
+      effectiveCategory = 'DC';
+    } else if (template === gpTpl || template === 'IMAGE-6' || template === 'RPT-GATEPASS-A5' || template === 'RPT-GATEPASS-3UP') {
+      effectiveCategory = 'GATE_PASS';
+    } else {
+      effectiveCategory = 'PRINT';
+    }
+  }
+
+  const effectiveHeaderMode = data.headerOverride || getRptHeaderMode(effectiveCategory);
+  const dataWithCategory = {
+    ...data,
+    category: effectiveCategory,
+    printCategory: effectiveCategory,
+    headerOverride: effectiveHeaderMode
+  };
+
   let targetPrinter = config.printerName || config.dcPrinterName || config.gatePassPrinterName;
   let targetMode = config.mode || 'HTML_DRIVER';
 
-  if (category === 'DC' || template === dcTpl || template === 'RPT-CHALLAN-A4' || template === 'RPT-SALESBILL9' || template === 'IMAGE-2') {
+  if (effectiveCategory === 'DC' || template === dcTpl || template === 'RPT-CHALLAN-A4' || template === 'RPT-SALESBILL9' || template === 'RPT-SALESBILL9-2UP' || template === 'IMAGE-2') {
     targetPrinter = config.dcPrinterName || config.printerName || config.gatePassPrinterName;
     targetMode = config.dcMode || 'HTML_DRIVER';
-  } else if (category === 'GATE_PASS' || template === gpTpl || template === 'IMAGE-6') {
+  } else if (effectiveCategory === 'GATE_PASS' || template === gpTpl || template === 'IMAGE-6' || template === 'RPT-GATEPASS-A5' || template === 'RPT-GATEPASS-3UP') {
     targetPrinter = config.gatePassPrinterName || config.printerName || config.dcPrinterName;
     targetMode = config.gatePassMode || 'HTML_DRIVER';
   }
 
   const pageSetup = getPageSetupForTemplate(template);
-  const html = generateSlipHtml(data, template);
+  const html = generateSlipHtml(dataWithCategory, template, effectiveCategory);
 
   // A Crystal design only exists as a rendered layout — sending it down the
   // ESC/P plain-text path would silently print the generic dot-matrix slip

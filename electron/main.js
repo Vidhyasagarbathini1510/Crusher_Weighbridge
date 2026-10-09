@@ -178,6 +178,18 @@ function registerDatabaseHandlers() {
     if (cfg.mode === 'HOST') runSyncCycle().catch(() => {});
     return result;
   });
+  ipcMain.handle('db:fulfillLoadingSlip', async (event, { identifier, finalWeight }) => {
+    const result = await dbAdapter.call('fulfillLoadingSlip', identifier, finalWeight);
+    const cfg = dbAdapter.getNetworkConfig();
+    if (cfg.mode === 'HOST') runSyncCycle().catch(() => {});
+    return result;
+  });
+  ipcMain.handle('db:deleteLoadingSlip', async (event, identifier) => {
+    const result = await dbAdapter.call('deleteLoadingSlip', identifier);
+    const cfg = dbAdapter.getNetworkConfig();
+    if (cfg.mode === 'HOST') runSyncCycle().catch(() => {});
+    return result;
+  });
   ipcMain.handle('db:getFirstWeighments', async () => {
     return dbAdapter.call('getAllFirstWeighments');
   });
@@ -255,6 +267,15 @@ function registerDatabaseHandlers() {
   });
   ipcMain.handle('db:deleteRfidCard', async (event, id) => {
     return dbAdapter.call('deleteRfidCard', id);
+  });
+  ipcMain.handle('db:getTransporterVehicles', async () => {
+    return dbAdapter.call('getTransporterVehicles');
+  });
+  ipcMain.handle('db:saveTransporterVehicle', async (event, payload) => {
+    return dbAdapter.call('saveTransporterVehicle', payload);
+  });
+  ipcMain.handle('db:deleteTransporterVehicle', async (event, id) => {
+    return dbAdapter.call('deleteTransporterVehicle', id);
   });
   ipcMain.handle('db:getRfidCardByNumber', async (event, cardNumber) => {
     return dbAdapter.call('getRfidCardByNumber', cardNumber);

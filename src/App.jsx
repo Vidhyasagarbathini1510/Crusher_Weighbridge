@@ -39,7 +39,8 @@ import AdminGuard from './components/AdminGuard.jsx';
 // Wraps protected pages in the app shell (sidebar + navbar) and redirects to
 // /login when there is no token.
 function Protected({ children }) {
-  const { token } = useAuth();
+  const auth = useAuth();
+  const token = auth?.token;
   const [refreshKey, setRefreshKey] = useState(0);
 
   useEffect(() => {

@@ -3,8 +3,7 @@ import { Link } from 'react-router-dom';
 import { api } from '../api/client';
 import SearchableSelect from '../components/SearchableSelect.jsx';
 import { getVehicleOptionMode, filterVehiclesBySetting, fetchAllTransactions } from '../utils/vehicleFilterUtil.js';
-
-
+import LoadingSlip from './LoadingSlip.jsx';
 
 export default function Vehicles() {
   const STORAGE_KEY = 'noris_vehicle_tares';
@@ -54,6 +53,34 @@ export default function Vehicles() {
   const [allMaterials, setAllMaterials] = useState([]);
   const [transactions, setTransactions] = useState([]);
   const [vehicleOptionMode, setVehicleOptionMode] = useState('STAY_ALL');
+  const [isSlipEnabled, setIsSlipEnabled] = useState(() => localStorage.getItem('noris_enable_loading_slip') === 'true');
+  const [menuMode, setMenuMode] = useState(() => {
+    const saved = localStorage.getItem('noris_loading_slip_menu_mode');
+    if (saved) return saved;
+    return localStorage.getItem('noris_enable_loading_slip') === 'true' ? 'both' : 'vehicles';
+  });
+
+  useEffect(() => {
+    const handleStorage = () => {
+      const saved = localStorage.getItem('noris_loading_slip_menu_mode');
+      if (saved) {
+        setMenuMode(saved);
+      } else {
+        setMenuMode(localStorage.getItem('noris_enable_loading_slip') === 'true' ? 'both' : 'vehicles');
+      }
+      setIsSlipEnabled(localStorage.getItem('noris_enable_loading_slip') === 'true');
+    };
+    window.addEventListener('storage', handleStorage);
+    window.addEventListener('workflow-setting-changed', handleStorage);
+    return () => {
+      window.removeEventListener('storage', handleStorage);
+      window.removeEventListener('workflow-setting-changed', handleStorage);
+    };
+  }, []);
+
+  if (menuMode === 'loading_slip') {
+    return <LoadingSlip />;
+  }
 
   const displayTares = useMemo(() => {
     return filterVehiclesBySetting(tares, transactions, vehicleOptionMode);
@@ -320,13 +347,13 @@ export default function Vehicles() {
                         <td><span className="badge bg-light text-secondary border">{item.material || 'BOULDERS'}</span></td>
                         <td>
                           {(item.ownership || '').toUpperCase() === 'OWN' || (item.ownership || '').toUpperCase() === 'QUARRY' ? (
-                            <Link to="/boulders" style={{ textDecoration: 'none' }}>
+                            <Link to="/boulders" state={{ vehicle: item.vehicle }} style={{ textDecoration: 'none' }}>
                               <span className="badge bg-success bg-opacity-10 text-success border border-success border-opacity-25" style={{ cursor: 'pointer' }}>
                                 Quarry
                               </span>
                             </Link>
                           ) : (
-                            <Link to="/sales/weighment-units" style={{ textDecoration: 'none' }}>
+                            <Link to="/sales/weighment-units" state={{ vehicle: item.vehicle }} style={{ textDecoration: 'none' }}>
                               <span className="badge bg-primary bg-opacity-10 text-primary border border-primary border-opacity-25" style={{ cursor: 'pointer' }}>
                                 Others
                               </span>

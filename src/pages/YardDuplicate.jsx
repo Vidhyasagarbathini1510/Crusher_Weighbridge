@@ -217,15 +217,15 @@ export default function YardDuplicate() {
               <div className="col-12 d-flex gap-2 mt-4 justify-content-end">
                 <button type="button" onClick={() => {
                   const ticket = { dcNum: searchDc || '1', vehicle: vehicle || '-', material: material || '-', gross: grossVal || '0', tare: tareVal || '0', net: nettVal || '0' };
-                  printTicket(ticket);
+                  printTicket(ticket, undefined, 'PRINT');
                 }} className="btn btn-danger saas-btn px-4" style={{ backgroundColor: '#ef4444' }}>Print Bill</button>
                 <button type="button" onClick={() => {
                   const ticket = { dcNum: searchDc || '1', vehicle: vehicle || '-', material: material || '-', gross: grossVal || '0', tare: tareVal || '0', net: nettVal || '0' };
-                  printTicket(ticket, getDcPrintTemplate());
+                  printTicket(ticket, getDcPrintTemplate(), 'DC');
                 }} className="btn btn-dark saas-btn px-3">DC Print</button>
                 <button type="button" onClick={() => {
                   const ticket = { dcNum: searchDc || '1', vehicle: vehicle || '-', material: material || '-', gross: grossVal || '0', tare: tareVal || '0', net: nettVal || '0' };
-                  printTicket(ticket, getGatePassTemplate());
+                  printTicket(ticket, getGatePassTemplate(), 'GATE_PASS');
                 }} className="btn btn-secondary saas-btn px-3">Gate Pass</button>
               </div>
             </form>

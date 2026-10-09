@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { api } from '../api/client.js';
 import Loader from '../components/Loader.jsx';
+import SearchableSelect from '../components/SearchableSelect.jsx';
 import CameraManagement from './CameraManagement.jsx';
 import {
   PRINTER_TEMPLATES, getSelectedTemplate, setSelectedTemplate,
@@ -108,14 +109,32 @@ export default function Settings() {
   const appTemplates = TEMPLATE_CATALOGUE.filter(t => !t.id.startsWith('RPT-'));
   const selectedPaper = getPaperForTemplate(activeCategoryTemplate);
 
-  // Page header printed above the slip. Held in state purely so the preview
-  // below re-renders the moment the choice changes.
-  const [rptHeaderMode, setRptHeaderModeState] = useState(getRptHeaderMode());
+  // Page header printed above the slip. Separate configuration per document type (Print Bill, DC Print, Gate Pass)
+  const [printHeaderMode, setPrintHeaderModeState] = useState(getRptHeaderMode('PRINT'));
+  const [dcHeaderMode, setDcHeaderModeState] = useState(getRptHeaderMode('DC'));
+  const [gatePassHeaderMode, setGatePassHeaderModeState] = useState(getRptHeaderMode('GATE_PASS'));
   const [rptHeaderGap, setRptHeaderGapState] = useState(getRptHeaderGap());
 
+  const activeHeaderMode =
+    printCategory === 'DC' ? dcHeaderMode :
+    printCategory === 'GATE_PASS' ? gatePassHeaderMode :
+    printHeaderMode;
+
   const handleRptHeaderModeChange = (mode) => {
-    setRptHeaderMode(mode);
-    setRptHeaderModeState(mode);
+    if (printCategory === 'DC') {
+      setRptHeaderMode(mode, 'DC');
+      setDcHeaderModeState(mode);
+    } else if (printCategory === 'GATE_PASS') {
+      setRptHeaderMode(mode, 'GATE_PASS');
+      setGatePassHeaderModeState(mode);
+    } else {
+      setRptHeaderMode(mode, 'PRINT');
+      setPrintHeaderModeState(mode);
+    }
+    const catLabel = printCategory === 'DC' ? 'DC Print' : printCategory === 'GATE_PASS' ? 'Gate Pass' : 'Print (Bill)';
+    const modeLabel = RPT_HEADER_MODES.find(m => m.value === mode)?.label || mode;
+    setMsg(`Page header for ${catLabel} updated to "${modeLabel}"`);
+    setTimeout(() => setMsg(''), 3000);
   };
 
   const handleRptHeaderGapChange = (px) => {
@@ -229,7 +248,59 @@ export default function Settings() {
     setMsg(`Vehicle Option Type updated to "${labels[mode] || mode}"`);
   };
 
+  // Loading Slip Workflow State
+  const [loadingSlipWorkflow, setLoadingSlipWorkflow] = useState(() => localStorage.getItem('noris_enable_loading_slip') === 'true');
+  const [loadingSlipMenuMode, setLoadingSlipMenuMode] = useState(
+    () => localStorage.getItem('noris_loading_slip_menu_mode') || (localStorage.getItem('noris_enable_loading_slip') === 'true' ? 'both' : 'vehicles')
+  );
+  const [loadingSlipCompletionMode, setLoadingSlipCompletionMode] = useState(
+    () => localStorage.getItem('noris_loading_slip_completion_mode') || 'stay'
+  );
 
+  const handleSaveLoadingSlipMenuMode = (mode) => {
+    localStorage.setItem('noris_loading_slip_menu_mode', mode);
+    setLoadingSlipMenuMode(mode);
+    const isSlipActive = mode === 'loading_slip' || mode === 'both';
+    localStorage.setItem('noris_enable_loading_slip', isSlipActive ? 'true' : 'false');
+    setLoadingSlipWorkflow(isSlipActive);
+    window.dispatchEvent(new Event('storage'));
+    window.dispatchEvent(new CustomEvent('workflow-setting-changed', { detail: { menuMode: mode, enabled: isSlipActive } }));
+    const labels = {
+      vehicles: 'Vehicles Only',
+      loading_slip: 'Loading Slip Only',
+      both: 'Both (Vehicles & Loading Slip)'
+    };
+    setMsg(`Display mode updated to "${labels[mode] || mode}".`);
+    setTimeout(() => setMsg(''), 4000);
+  };
+
+  const handleSaveLoadingSlipWorkflow = (enabled) => {
+    const newMode = enabled ? 'both' : 'vehicles';
+    handleSaveLoadingSlipMenuMode(newMode);
+  };
+
+  const handleSaveLoadingSlipCompletionMode = (mode) => {
+    localStorage.setItem('noris_loading_slip_completion_mode', mode);
+    setLoadingSlipCompletionMode(mode);
+    window.dispatchEvent(new Event('storage'));
+    window.dispatchEvent(new CustomEvent('workflow-setting-changed', { detail: { completionMode: mode } }));
+    setMsg(`Loading Slip Completion Action set to "${mode === 'delete' ? 'Delete after Weighment' : 'Stay after Weighment'}".`);
+    setTimeout(() => setMsg(''), 4000);
+  };
+
+  // Sales Weighment Units Screen Layout State ('compact' = New Type screen-fit without scroll, 'classic' = Old Design)
+  const [salesLayoutDesign, setSalesLayoutDesign] = useState(
+    () => localStorage.getItem('noris_sales_layout_design') || 'compact'
+  );
+
+  const handleSaveSalesLayoutDesign = (design) => {
+    localStorage.setItem('noris_sales_layout_design', design);
+    setSalesLayoutDesign(design);
+    window.dispatchEvent(new Event('storage'));
+    window.dispatchEvent(new CustomEvent('sales-layout-changed', { detail: { design } }));
+    setMsg(`Sales Weighment layout updated to "${design === 'compact' ? 'New Design (Screen-Fit / No Scroll)' : 'Old Design (Classic / Standard)'}".`);
+    setTimeout(() => setMsg(''), 4000);
+  };
 
   useEffect(() => {
     if (window.electronAPI && window.electronAPI.getNetworkConfig) {
@@ -525,6 +596,8 @@ export default function Settings() {
   // 5. Transporter Vehicles State
   const [transporterForm, setTransporterForm] = useState({ transporter: '', vehicleNo: '', capacity: '' });
   const [transporterList, setTransporterList] = useState([]);
+  const [transportersMasterList, setTransportersMasterList] = useState([]);
+  const [vehiclesMasterList, setVehiclesMasterList] = useState([]);
 
   // 6. Get Old DC State
   const [searchDc, setSearchDc] = useState('');
@@ -761,14 +834,96 @@ export default function Settings() {
     }
   };
 
+  const loadTransporterVehiclesMaster = async () => {
+    try {
+      // 1. Transporters master list
+      if (api.getTransporters) {
+        const tList = await api.getTransporters().catch(() => []);
+        if (Array.isArray(tList)) {
+          const names = tList.map(t => {
+            if (typeof t === 'string') return t;
+            return t.transporterName || t.transporter || t.name;
+          }).filter(Boolean);
+          setTransportersMasterList([...new Set(['OWN', ...names])]);
+        }
+      }
+
+      // 2. Vehicles master list
+      const vSet = new Set();
+      if (api.getVehicleTares) {
+        const vList = await api.getVehicleTares().catch(() => []);
+        if (Array.isArray(vList)) {
+          vList.forEach(v => {
+            const vNo = (v.vehicle || v.vehicleNo || '').trim().toUpperCase();
+            if (vNo) vSet.add(vNo);
+          });
+        }
+      }
+      const localTares = localStorage.getItem('noris_vehicle_tares');
+      if (localTares) {
+        try {
+          const parsed = JSON.parse(localTares);
+          if (Array.isArray(parsed)) {
+            parsed.forEach(v => {
+              const vNo = (v.vehicle || v.vehicleNo || '').trim().toUpperCase();
+              if (vNo) vSet.add(vNo);
+            });
+          }
+        } catch (e) {}
+      }
+      setVehiclesMasterList(Array.from(vSet).sort());
+
+      // 3. Stored mappings from local SQLite DB
+      let dbMappings = [];
+      if (api.getTransporterVehicles) {
+        dbMappings = await api.getTransporterVehicles().catch(() => []);
+      }
+
+      if (Array.isArray(dbMappings) && dbMappings.length > 0) {
+        setTransporterList(dbMappings);
+        localStorage.setItem('noris_transporter_vehicles', JSON.stringify(dbMappings));
+      } else {
+        // If DB is empty, migrate any existing localStorage records to SQLite
+        const stored = localStorage.getItem('noris_transporter_vehicles');
+        if (stored) {
+          try {
+            const parsed = JSON.parse(stored);
+            if (Array.isArray(parsed) && parsed.length > 0) {
+              setTransporterList(parsed);
+              if (api.saveTransporterVehicle) {
+                for (const item of parsed) {
+                  await api.saveTransporterVehicle({
+                    transporter: item.transporter,
+                    vehicleNo: item.vehicleNo
+                  }).catch(() => {});
+                }
+                const refreshed = await api.getTransporterVehicles().catch(() => []);
+                if (Array.isArray(refreshed) && refreshed.length > 0) {
+                  setTransporterList(refreshed);
+                  localStorage.setItem('noris_transporter_vehicles', JSON.stringify(refreshed));
+                }
+              }
+            }
+          } catch (e) {}
+        }
+      }
+    } catch (e) {
+      console.error('[Settings] Error loading transporter vehicles master:', e);
+    }
+  };
+
   useEffect(() => {
     loadContractorsFromDb();
+    loadTransporterVehiclesMaster();
   }, []);
 
   useEffect(() => {
     if (activeTab === 'rfid') {
       loadRfidCardsFromDb();
       loadContractorsFromDb();
+    }
+    if (activeTab === 'transporter') {
+      loadTransporterVehiclesMaster();
     }
   }, [activeTab]);
 
@@ -910,7 +1065,7 @@ export default function Settings() {
   };
 
   const tabs = [
-    { id: 'vehicle_options', label: '🚚 Vehicle Options' },
+    { id: 'vehicle_options', label: '🚚 Vehicle & Workflow' },
     { id: 'network', label: '🌐 Network & Multi-PC' },
     { id: 'dc_sequence', label: '🔢 DC Sequence' },
     { id: 'comm', label: 'Communication' },
@@ -925,7 +1080,7 @@ export default function Settings() {
   ];
 
   return (
-    <div className="d-flex flex-column gap-3 animate-fade-in settings-container overflow-y-auto h-100 pb-5" style={{ maxHeight: 'calc(100vh - 80px)' }}>
+    <div className="d-flex flex-column gap-3 animate-fade-in settings-container" style={{ minHeight: '100%', paddingBottom: '120px' }}>
       {/* Sub-Tab Navigation Bar */}
       <div 
         className="d-flex gap-2 flex-wrap bg-white p-2 border rounded-3 shadow-sm mb-3" 
@@ -1058,6 +1213,279 @@ export default function Settings() {
               </div>
 
             </div>
+
+            {/* Loading Slip Workflow Setting */}
+            <div className="mt-4 pt-3 border-top">
+              <div className="d-flex justify-content-between align-items-center mb-2">
+                <div>
+                  <h6 className="fw-bold mb-1" style={{ color: 'var(--ink)' }}>📋 Loading Slip Workflow (Sales Pre-Registration)</h6>
+                  <p className="text-muted mb-0 small">
+                    When enabled, selecting a vehicle in Vehicles page opens Loading Slip for pre-order generation, and typing the vehicle in Sales Weighment Units automatically fills in the saved loading slip details.
+                  </p>
+                </div>
+                <div className="form-check form-switch fs-5">
+                  <input
+                    className="form-check-input"
+                    type="checkbox"
+                    role="switch"
+                    id="loadingSlipWorkflowSwitch"
+                    checked={loadingSlipWorkflow}
+                    onChange={(e) => handleSaveLoadingSlipWorkflow(e.target.checked)}
+                    style={{ cursor: 'pointer' }}
+                  />
+                </div>
+              </div>
+              <div className="p-3 rounded-3 bg-light border d-flex flex-wrap justify-content-between align-items-center gap-3">
+                <span className="small text-secondary">
+                  <strong>Status:</strong> {loadingSlipMenuMode === 'both' ? (
+                    <span className="text-success fw-bold ms-1">✓ Both Enabled — Vehicles & Loading Slip visible</span>
+                  ) : loadingSlipMenuMode === 'loading_slip' ? (
+                    <span className="text-success fw-bold ms-1">✓ Loading Slip Only — Replaces Vehicles in menu</span>
+                  ) : (
+                    <span className="text-muted ms-1">✗ Vehicles Only — Standard direct workflow</span>
+                  )}
+                </span>
+
+                {loadingSlipMenuMode !== 'vehicles' && (
+                  <div className="d-flex align-items-center gap-2">
+                    <span className="small fw-bold text-dark">When Weighment Finished:</span>
+                    <div className="btn-group btn-group-sm" role="group">
+                      <button
+                        type="button"
+                        className={`btn ${loadingSlipCompletionMode === 'stay' ? 'btn-primary active fw-bold' : 'btn-outline-secondary'}`}
+                        onClick={() => handleSaveLoadingSlipCompletionMode('stay')}
+                        style={{ fontSize: '0.82rem', padding: '0.35rem 0.9rem' }}
+                      >
+                        📌 Stay (Keep)
+                      </button>
+                      <button
+                        type="button"
+                        className={`btn ${loadingSlipCompletionMode === 'delete' ? 'btn-danger active fw-bold' : 'btn-outline-secondary'}`}
+                        onClick={() => handleSaveLoadingSlipCompletionMode('delete')}
+                        style={{ fontSize: '0.82rem', padding: '0.35rem 0.9rem' }}
+                      >
+                        🗑️ Delete Slip
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Navigation Menu Display Mode Cards: Vehicles / Loading Slip / Both */}
+              <div className="mt-3">
+                <label className="fw-semibold small text-dark mb-1.5 d-block">
+                  Top Menu & Navigation Option:
+                </label>
+                <div className="row g-2">
+                  <div className="col-12 col-md-4">
+                    <div 
+                      className={`p-3 rounded-3 border transition-all h-100 ${loadingSlipMenuMode === 'vehicles' ? 'border-primary bg-primary-subtle text-dark shadow-sm' : 'border-secondary-subtle bg-white text-secondary'}`}
+                      style={{ cursor: 'pointer' }}
+                      onClick={() => handleSaveLoadingSlipMenuMode('vehicles')}
+                    >
+                      <div className="d-flex align-items-center gap-2 mb-1">
+                        <input 
+                          type="radio" 
+                          name="loadingSlipMenuMode" 
+                          id="menu_mode_vehicles"
+                          checked={loadingSlipMenuMode === 'vehicles'} 
+                          onChange={() => handleSaveLoadingSlipMenuMode('vehicles')} 
+                        />
+                        <label htmlFor="menu_mode_vehicles" className="fw-bold mb-0 cursor-pointer" style={{ fontSize: '0.88rem' }}>
+                          🚗 Vehicles Only
+                        </label>
+                      </div>
+                      <p className="mb-0 text-muted" style={{ fontSize: '0.78rem' }}>
+                        Shows only Vehicles in the top navigation. Directly routes to Sales Weighment.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="col-12 col-md-4">
+                    <div 
+                      className={`p-3 rounded-3 border transition-all h-100 ${loadingSlipMenuMode === 'loading_slip' ? 'border-primary bg-primary-subtle text-dark shadow-sm' : 'border-secondary-subtle bg-white text-secondary'}`}
+                      style={{ cursor: 'pointer' }}
+                      onClick={() => handleSaveLoadingSlipMenuMode('loading_slip')}
+                    >
+                      <div className="d-flex align-items-center gap-2 mb-1">
+                        <input 
+                          type="radio" 
+                          name="loadingSlipMenuMode" 
+                          id="menu_mode_loading_slip"
+                          checked={loadingSlipMenuMode === 'loading_slip'} 
+                          onChange={() => handleSaveLoadingSlipMenuMode('loading_slip')} 
+                        />
+                        <label htmlFor="menu_mode_loading_slip" className="fw-bold mb-0 cursor-pointer" style={{ fontSize: '0.88rem' }}>
+                          📋 Loading Slip Only
+                        </label>
+                      </div>
+                      <p className="mb-0 text-muted" style={{ fontSize: '0.78rem' }}>
+                        Shows only Loading Slip in top navigation for pre-order workflow.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="col-12 col-md-4">
+                    <div 
+                      className={`p-3 rounded-3 border transition-all h-100 ${loadingSlipMenuMode === 'both' ? 'border-primary bg-primary-subtle text-dark shadow-sm' : 'border-secondary-subtle bg-white text-secondary'}`}
+                      style={{ cursor: 'pointer' }}
+                      onClick={() => handleSaveLoadingSlipMenuMode('both')}
+                    >
+                      <div className="d-flex align-items-center gap-2 mb-1">
+                        <input 
+                          type="radio" 
+                          name="loadingSlipMenuMode" 
+                          id="menu_mode_both"
+                          checked={loadingSlipMenuMode === 'both'} 
+                          onChange={() => handleSaveLoadingSlipMenuMode('both')} 
+                        />
+                        <label htmlFor="menu_mode_both" className="fw-bold mb-0 cursor-pointer" style={{ fontSize: '0.88rem' }}>
+                          ✨ Both (Vehicles & Slip)
+                        </label>
+                      </div>
+                      <p className="mb-0 text-muted" style={{ fontSize: '0.78rem' }}>
+                        Shows <b>both</b> Vehicles and Loading Slip side-by-side in navigation!
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Loading Slip Completion Action Cards */}
+              {loadingSlipMenuMode !== 'vehicles' && (
+                <div className="mt-3">
+                  <div className="row g-2">
+                    <div className="col-12 col-md-6">
+                      <div 
+                        className={`p-3 rounded-3 border transition-all h-100 ${loadingSlipCompletionMode === 'stay' ? 'border-primary bg-primary-subtle text-dark shadow-sm' : 'border-secondary-subtle bg-white text-secondary'}`}
+                        style={{ cursor: 'pointer' }}
+                        onClick={() => handleSaveLoadingSlipCompletionMode('stay')}
+                      >
+                        <div className="d-flex align-items-center gap-2 mb-1">
+                          <input 
+                            type="radio" 
+                            name="loadingSlipCompletionMode" 
+                            id="slip_mode_stay"
+                            checked={loadingSlipCompletionMode === 'stay'} 
+                            onChange={() => handleSaveLoadingSlipCompletionMode('stay')} 
+                          />
+                          <label htmlFor="slip_mode_stay" className="fw-bold mb-0 cursor-pointer" style={{ fontSize: '0.9rem' }}>
+                            📌 Stay (Keep Slip)
+                          </label>
+                        </div>
+                        <p className="mb-0 text-muted" style={{ fontSize: '0.78rem' }}>
+                          Loading slip stays in the active table and history after weighment completion.
+                        </p>
+                      </div>
+                    </div>
+                    <div className="col-12 col-md-6">
+                      <div 
+                        className={`p-3 rounded-3 border transition-all h-100 ${loadingSlipCompletionMode === 'delete' ? 'border-danger bg-danger-subtle text-dark shadow-sm' : 'border-secondary-subtle bg-white text-secondary'}`}
+                        style={{ cursor: 'pointer' }}
+                        onClick={() => handleSaveLoadingSlipCompletionMode('delete')}
+                      >
+                        <div className="d-flex align-items-center gap-2 mb-1">
+                          <input 
+                            type="radio" 
+                            name="loadingSlipCompletionMode" 
+                            id="slip_mode_delete"
+                            checked={loadingSlipCompletionMode === 'delete'} 
+                            onChange={() => handleSaveLoadingSlipCompletionMode('delete')} 
+                          />
+                          <label htmlFor="slip_mode_delete" className="fw-bold mb-0 cursor-pointer" style={{ fontSize: '0.9rem' }}>
+                            🗑️ Delete (Auto-Delete Slip)
+                          </label>
+                        </div>
+                        <p className="mb-0 text-muted" style={{ fontSize: '0.78rem' }}>
+                          Loading slip is automatically deleted from active orders/slips once sales weighment is complete.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Sales Weighment Units Screen Layout Setting */}
+            <div className="mt-4 pt-3 border-top">
+              <div className="d-flex justify-content-between align-items-center mb-2">
+                <div>
+                  <h6 className="fw-bold mb-1" style={{ color: 'var(--ink)' }}>🖥️ Sales Weighment (Units) Screen Layout</h6>
+                  <p className="text-muted mb-0 small">
+                    Choose between the new screen-fit compact layout (neat &amp; clean, no vertical scrollbar) or the original classic layout.
+                  </p>
+                </div>
+                <div className="btn-group btn-group-sm" role="group">
+                  <button
+                    type="button"
+                    className={`btn ${salesLayoutDesign === 'compact' ? 'btn-primary active fw-bold' : 'btn-outline-secondary'}`}
+                    onClick={() => handleSaveSalesLayoutDesign('compact')}
+                    style={{ fontSize: '0.82rem', padding: '0.35rem 0.9rem' }}
+                  >
+                    ✨ New (Screen-Fit)
+                  </button>
+                  <button
+                    type="button"
+                    className={`btn ${salesLayoutDesign === 'classic' ? 'btn-primary active fw-bold' : 'btn-outline-secondary'}`}
+                    onClick={() => handleSaveSalesLayoutDesign('classic')}
+                    style={{ fontSize: '0.82rem', padding: '0.35rem 0.9rem' }}
+                  >
+                    🏛️ Old Design
+                  </button>
+                </div>
+              </div>
+
+              <div className="row g-2 mt-2">
+                <div className="col-12 col-md-6">
+                  <div 
+                    className={`p-3 rounded-3 border transition-all h-100 ${salesLayoutDesign === 'compact' ? 'border-primary bg-primary-subtle text-dark shadow-sm' : 'border-secondary-subtle bg-white text-secondary'}`}
+                    style={{ cursor: 'pointer' }}
+                    onClick={() => handleSaveSalesLayoutDesign('compact')}
+                  >
+                    <div className="d-flex align-items-center gap-2 mb-1">
+                      <input 
+                        type="radio" 
+                        name="salesLayoutDesign" 
+                        id="layout_compact"
+                        checked={salesLayoutDesign === 'compact'} 
+                        onChange={() => handleSaveSalesLayoutDesign('compact')} 
+                      />
+                      <label htmlFor="layout_compact" className="fw-bold mb-0 cursor-pointer" style={{ fontSize: '0.9rem' }}>
+                        ✨ New Design (Screen-Fit / No Scroll)
+                      </label>
+                    </div>
+                    <p className="mb-0 text-muted" style={{ fontSize: '0.78rem' }}>
+                      Clean 2-column input grid with balanced spacing so all input boxes fit exactly on screen without any vertical scrollbar.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="col-12 col-md-6">
+                  <div 
+                    className={`p-3 rounded-3 border transition-all h-100 ${salesLayoutDesign === 'classic' ? 'border-primary bg-primary-subtle text-dark shadow-sm' : 'border-secondary-subtle bg-white text-secondary'}`}
+                    style={{ cursor: 'pointer' }}
+                    onClick={() => handleSaveSalesLayoutDesign('classic')}
+                  >
+                    <div className="d-flex align-items-center gap-2 mb-1">
+                      <input 
+                        type="radio" 
+                        name="salesLayoutDesign" 
+                        id="layout_classic"
+                        checked={salesLayoutDesign === 'classic'} 
+                        onChange={() => handleSaveSalesLayoutDesign('classic')} 
+                      />
+                      <label htmlFor="layout_classic" className="fw-bold mb-0 cursor-pointer" style={{ fontSize: '0.9rem' }}>
+                        🏛️ Old Design (Original Stacked)
+                      </label>
+                    </div>
+                    <p className="mb-0 text-muted" style={{ fontSize: '0.78rem' }}>
+                      Original full-width stacked fields with standard spacing and vertical scroll.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
           </div>
         </div>
       )}
@@ -2334,11 +2762,11 @@ export default function Settings() {
 
                   {/* Page header printed above the slip */}
                   <label className="form-label fw-semibold text-secondary mb-1 mt-3" style={{ fontSize: '0.78rem' }}>
-                    Page header
+                    Page header for {printCategory === 'DC' ? 'DC Print' : printCategory === 'GATE_PASS' ? 'Gate Pass' : 'Standard Print (Bill)'}
                   </label>
                   <select
                     className="form-select form-select-sm fw-semibold"
-                    value={rptHeaderMode}
+                    value={activeHeaderMode}
                     onChange={(e) => handleRptHeaderModeChange(e.target.value)}
                   >
                     {RPT_HEADER_MODES.map((m) => (
@@ -2346,13 +2774,13 @@ export default function Settings() {
                     ))}
                   </select>
 
-                  {rptHeaderMode === 'AUTO_GST' && (
+                  {activeHeaderMode === 'AUTO_GST' && (
                     <div className="text-primary mt-2 p-2 rounded border border-primary-subtle" style={{ backgroundColor: '#eff6ff', fontSize: '0.73rem', lineHeight: '1.4' }}>
                       <b>🌟 Smart Header Active:</b> When printing for a <b>GST Party</b>, the <b>Company Header</b> will print. For a <b>Non-GST Party</b>, a <b>blank space ({rptHeaderGap}px)</b> is reserved for pre-printed paper.
                     </div>
                   )}
 
-                  {(rptHeaderMode === 'EMPTY' || rptHeaderMode === 'AUTO_GST') && (
+                  {(activeHeaderMode === 'EMPTY' || activeHeaderMode === 'AUTO_GST') && (
                     <div className="d-flex align-items-center gap-2 mt-2">
                       <span className="text-secondary" style={{ fontSize: '0.72rem' }}>Blank space height</span>
                       <input
@@ -2368,7 +2796,7 @@ export default function Settings() {
                     </div>
                   )}
 
-                  {(rptHeaderMode === 'COMPANY' || rptHeaderMode === 'AUTO_GST') && getCompanyHeaderLines().length === 0 && (
+                  {(activeHeaderMode === 'COMPANY' || activeHeaderMode === 'AUTO_GST') && getCompanyHeaderLines().length === 0 && (
                     <div className="text-warning-emphasis mt-2" style={{ fontSize: '0.71rem' }}>
                       No address saved yet — fill in the <b>Address Setting</b> tab and press Save, or nothing will print here.
                     </div>
@@ -2381,7 +2809,13 @@ export default function Settings() {
                   >
                     <div
                       style={{ width: '700px', transform: 'scale(0.30)', transformOrigin: 'top left', pointerEvents: 'none' }}
-                      dangerouslySetInnerHTML={{ __html: generateSlipHtml(PREVIEW_TICKET, activeCategoryTemplate) }}
+                      dangerouslySetInnerHTML={{
+                        __html: generateSlipHtml(
+                          { ...PREVIEW_TICKET, category: printCategory, headerOverride: activeHeaderMode },
+                          activeCategoryTemplate,
+                          printCategory
+                        )
+                      }}
                     />
                   </div>
                 </div>
@@ -2409,7 +2843,7 @@ export default function Settings() {
                     <button
                       className="btn btn-sm btn-primary fw-semibold py-0 px-2"
                       style={{ fontSize: '0.75rem' }}
-                      onClick={() => printTicket(PREVIEW_TICKET, activeCategoryTemplate)}
+                      onClick={() => printTicket(PREVIEW_TICKET, activeCategoryTemplate, printCategory)}
                     >
                       🖨️ Test {printCategory === 'DC' ? 'DC Print' : printCategory === 'GATE_PASS' ? 'Gate Pass' : 'Print'}
                     </button>
@@ -2418,7 +2852,13 @@ export default function Settings() {
 
                 <div className="p-3 overflow-auto" style={{ backgroundColor: 'var(--surface-2)', maxHeight: '520px' }}>
                   <div className="border bg-white p-3 shadow-sm rounded-2 mx-auto w-100" style={{ maxWidth: '680px', minHeight: '420px', borderColor: 'var(--line)' }}>
-                    <div dangerouslySetInnerHTML={{ __html: generateSlipHtml(PREVIEW_TICKET, activeCategoryTemplate) }} />
+                    <div dangerouslySetInnerHTML={{
+                      __html: generateSlipHtml(
+                        { ...PREVIEW_TICKET, category: printCategory, headerOverride: activeHeaderMode },
+                        activeCategoryTemplate,
+                        printCategory
+                      )
+                    }} />
                   </div>
                 </div>
               </div>
@@ -2441,7 +2881,7 @@ export default function Settings() {
               <div className="d-flex gap-2">
                 <button
                   className="btn btn-sm btn-success fw-bold px-3"
-                  onClick={() => printTicket(PREVIEW_TICKET, activeCategoryTemplate)}
+                  onClick={() => printTicket(PREVIEW_TICKET, activeCategoryTemplate, printCategory)}
                 >
                   🖨️ Test {printCategory === 'DC' ? 'DC Print' : printCategory === 'GATE_PASS' ? 'Gate Pass' : 'Print'}
                 </button>
@@ -2455,7 +2895,13 @@ export default function Settings() {
             </div>
             <div className="card-body overflow-auto p-4 bg-light d-flex justify-content-center align-items-start">
               <div className="bg-white p-4 shadow-sm border rounded-3 w-100" style={{ maxWidth: '720px' }}>
-                <div dangerouslySetInnerHTML={{ __html: generateSlipHtml(PREVIEW_TICKET, activeCategoryTemplate) }} />
+                <div dangerouslySetInnerHTML={{
+                  __html: generateSlipHtml(
+                    { ...PREVIEW_TICKET, category: printCategory, headerOverride: activeHeaderMode },
+                    activeCategoryTemplate,
+                    printCategory
+                  )
+                }} />
               </div>
             </div>
           </div>
@@ -2633,19 +3079,25 @@ export default function Settings() {
             <div className="card p-3 d-flex flex-column h-100" style={{ backgroundColor: '#D8E2DC', border: '2px solid #5B8C5A', borderRadius: '4px' }}>
               <div className="mb-2">
                 <label className="form-label text-dark fw-bold mb-1" style={{ fontSize: '0.8rem' }}>TRANSPORTER</label>
-                <input 
-                  className="form-control form-control-sm bg-white border border-secondary" 
-                  value={transporterForm.transporter} 
-                  onChange={(e) => setTransporterForm({ ...transporterForm, transporter: e.target.value })} 
+                <SearchableSelect
+                  className="form-select-sm bg-white border border-secondary"
+                  value={transporterForm.transporter}
+                  onChange={(val) => setTransporterForm({ ...transporterForm, transporter: val })}
+                  options={transportersMasterList}
+                  placeholder="Select or enter Transporter..."
+                  allowCustom={true}
                 />
               </div>
 
               <div className="mb-3">
                 <label className="form-label text-dark fw-bold mb-1" style={{ fontSize: '0.8rem' }}>VEHICLE</label>
-                <input 
-                  className="form-control form-control-sm bg-white border border-secondary" 
-                  value={transporterForm.vehicleNo} 
-                  onChange={(e) => setTransporterForm({ ...transporterForm, vehicleNo: e.target.value })} 
+                <SearchableSelect
+                  className="form-select-sm bg-white border border-secondary"
+                  value={transporterForm.vehicleNo}
+                  onChange={(val) => setTransporterForm({ ...transporterForm, vehicleNo: (val || '').toUpperCase() })}
+                  options={vehiclesMasterList}
+                  placeholder="Select or enter Vehicle..."
+                  allowCustom={true}
                 />
               </div>
 
@@ -2654,9 +3106,49 @@ export default function Settings() {
                   type="button" 
                   className="btn btn-sm fw-bold px-4 text-dark" 
                   style={{ backgroundColor: '#E0E000', border: '1px solid #666', minWidth: '80px' }}
-                  onClick={() => {
-                    if (!transporterForm.transporter || !transporterForm.vehicleNo) return alert('Please enter Transporter and Vehicle');
-                    setTransporterList([...transporterList, { id: Date.now(), ...transporterForm }]);
+                  onClick={async () => {
+                    const trans = (transporterForm.transporter || '').trim();
+                    const veh = (transporterForm.vehicleNo || '').trim().toUpperCase();
+                    if (!trans || !veh) return alert('Please enter both Transporter and Vehicle Number');
+
+                    if (api.saveTransporterVehicle) {
+                      await api.saveTransporterVehicle({ transporter: trans, vehicleNo: veh });
+                      const fresh = await api.getTransporterVehicles().catch(() => []);
+                      if (Array.isArray(fresh) && fresh.length > 0) {
+                        setTransporterList(fresh);
+                        localStorage.setItem('noris_transporter_vehicles', JSON.stringify(fresh));
+                      }
+                    } else {
+                      const existingIdx = transporterList.findIndex(
+                        item => (item.vehicleNo || '').trim().toUpperCase() === veh
+                      );
+                      let updated;
+                      if (existingIdx >= 0) {
+                        updated = [...transporterList];
+                        updated[existingIdx] = {
+                          ...updated[existingIdx],
+                          transporter: trans,
+                          vehicleNo: veh,
+                          updatedAt: new Date().toISOString()
+                        };
+                      } else {
+                        const newEntry = {
+                          id: Date.now(),
+                          transporter: trans,
+                          vehicleNo: veh,
+                          createdAt: new Date().toISOString()
+                        };
+                        updated = [newEntry, ...transporterList];
+                      }
+                      setTransporterList(updated);
+                      localStorage.setItem('noris_transporter_vehicles', JSON.stringify(updated));
+                    }
+
+                    window.dispatchEvent(new CustomEvent('noris-transporter-vehicles-changed'));
+                    window.dispatchEvent(new Event('storage'));
+
+                    setTransportersMasterList(prev => prev.includes(trans) ? prev : [...prev, trans]);
+                    setVehiclesMasterList(prev => prev.includes(veh) ? prev : [...prev, veh].sort());
                     setTransporterForm({ transporter: '', vehicleNo: '', capacity: '' });
                   }}
                 >
@@ -2692,7 +3184,26 @@ export default function Settings() {
                         <td className="fw-bold">{t.transporter}</td>
                         <td>{t.vehicleNo}</td>
                         <td className="text-center">
-                          <button className="btn btn-sm text-danger border-danger py-0 px-2" style={{ fontSize: '0.75rem', borderRadius: '10px' }} onClick={() => setTransporterList(transporterList.filter(x => x.id !== t.id))}>Del</button>
+                          <button 
+                            className="btn btn-sm text-danger border-danger py-0 px-2" 
+                            style={{ fontSize: '0.75rem', borderRadius: '10px' }} 
+                            onClick={async () => {
+                              if (api.deleteTransporterVehicle) {
+                                await api.deleteTransporterVehicle(t.id);
+                                const fresh = await api.getTransporterVehicles().catch(() => []);
+                                setTransporterList(fresh || []);
+                                localStorage.setItem('noris_transporter_vehicles', JSON.stringify(fresh || []));
+                              } else {
+                                const updated = transporterList.filter(x => x.id !== t.id);
+                                setTransporterList(updated);
+                                localStorage.setItem('noris_transporter_vehicles', JSON.stringify(updated));
+                              }
+                              window.dispatchEvent(new CustomEvent('noris-transporter-vehicles-changed'));
+                              window.dispatchEvent(new Event('storage'));
+                            }}
+                          >
+                            Del
+                          </button>
                         </td>
                       </tr>
                     ))}

@@ -4,6 +4,22 @@ import { printReport, printSingleTicketSlip } from '../utils/reportPrinter.js';
 import { printClassicSalesReport, printClassicSummaryReport, toReportStamp } from '../utils/classicReportPrinter.js';
 import SearchableSelect from '../components/SearchableSelect.jsx';
 
+const getMinDateTime = () => {
+  const d = new Date();
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}T00:00`;
+};
+
+const getMaxDateTime = () => {
+  const d = new Date();
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}T23:59`;
+};
+
 export default function NormalReport() {
   const [transactions, setTransactions] = useState([]);
   const [filtered, setFiltered] = useState([]);
@@ -13,8 +29,8 @@ export default function NormalReport() {
   const [party, setParty] = useState('');
   const [material, setMaterial] = useState('');
   const [vehicle, setVehicle] = useState('');
-  const [fromDate, setFromDate] = useState('');
-  const [toDate, setToDate] = useState('');
+  const [fromDate, setFromDate] = useState(() => getMinDateTime());
+  const [toDate, setToDate] = useState(() => getMaxDateTime());
   
   // Tabs
   const [activeTab, setActiveTab] = useState('Report');
@@ -23,22 +39,6 @@ export default function NormalReport() {
   const [metrics, setMetrics] = useState({ charges: 0, gross: 0, tare: 0, nett: 0, trips: 0 });
 
   const [selectedImage, setSelectedImage] = useState(null);
-
-  const getMinDateTime = () => {
-    const d = new Date();
-    const year = d.getFullYear();
-    const month = String(d.getMonth() + 1).padStart(2, '0');
-    const day = String(d.getDate()).padStart(2, '0');
-    return `${year}-${month}-${day}T00:00`;
-  };
-
-  const getMaxDateTime = () => {
-    const d = new Date();
-    const year = d.getFullYear();
-    const month = String(d.getMonth() + 1).padStart(2, '0');
-    const day = String(d.getDate()).padStart(2, '0');
-    return `${year}-${month}-${day}T23:59`;
-  };
 
   const parseTxDateTime = (dtStr) => {
     if (!dtStr) return null;
@@ -168,6 +168,47 @@ export default function NormalReport() {
     setFromDate(minD);
     setToDate(maxD);
     filterData(transactions, '', '', '', minD, maxD);
+  };
+
+  // Grouped summary calculation for Material and Party tabs
+  const getGroupedSummary = (keyName) => {
+    const groups = {};
+    const normKey = (keyName || '').toLowerCase().trim();
+
+    filtered.forEach(t => {
+      let val = '';
+      if (normKey === 'material') {
+        val = t.product || t.material || 'UNSPECIFIED';
+      } else if (normKey === 'party') {
+        val = t.party || 'LOCAL SALE';
+      } else if (normKey === 'vehicle') {
+        val = t.vehicle_no || t.vehicle || 'UNSPECIFIED';
+      } else {
+        val = t[keyName] || 'UNSPECIFIED';
+      }
+
+      val = String(val).trim() ? String(val).trim().toUpperCase() : 'UNSPECIFIED';
+
+      if (!groups[val]) {
+        groups[val] = {
+          name: val,
+          trips: 0,
+          gross: 0,
+          tare: 0,
+          nett: 0,
+          charges: 0
+        };
+      }
+
+      const rowCharge = Number(t.charges || t.amount || 0) || ((Number(t.net || t.nettVal || 0)) / 1000 * 350);
+      groups[val].trips += 1;
+      groups[val].gross += Number(t.gross || 0);
+      groups[val].tare += Number(t.tare || 0);
+      groups[val].nett += Number(t.net || t.nettVal || 0);
+      groups[val].charges += rowCharge;
+    });
+
+    return Object.values(groups);
   };
 
   const handlePrint = () => {
@@ -383,72 +424,108 @@ export default function NormalReport() {
               </ul>
             </div>
 
-            <div className="table-responsive">
-              <table className="table table-sm table-hover align-middle" style={{ fontSize: '0.8rem' }}>
-                <thead className="table-light text-uppercase" style={{ fontSize: '0.72rem' }}>
-                  <tr>
-                    <th>DC / Ticket</th>
-                    <th>Date & Time</th>
-                    <th>Vehicle</th>
-                    <th>Party</th>
-                    <th>Material</th>
-                    <th className="text-end">Gross (kg)</th>
-                    <th className="text-end">Tare (kg)</th>
-                    <th className="text-end">Nett (kg)</th>
-                    <th className="text-end">Charges (₹)</th>
-                    <th className="text-center">Camera Image</th>
-                    <th className="text-center">Action</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filtered.map((t, idx) => {
-                    const rowCharge = Number(t.charges || t.amount || 0) || ((t.net || 0)/1000 * 350);
-                    return (
-                      <tr key={idx}>
-                        <td className="fw-bold">{t.dc_num || t.dcNum || t.serial_no || t.token || `TK-${t.id}`}</td>
-                        <td>{t.date_time || t.created_at || 'N/A'}</td>
-                        <td className="fw-semibold text-primary">{t.vehicle_no || t.vehicle || 'N/A'}</td>
-                        <td>{t.party || 'LOCAL SALE'}</td>
-                        <td>{t.product || t.material || 'N/A'}</td>
-                        <td className="text-end text-secondary">{Number(t.gross || 0).toLocaleString()}</td>
-                        <td className="text-end text-secondary">{Number(t.tare || 0).toLocaleString()}</td>
-                        <td className="text-end fw-bold text-danger">{Number(t.net || t.nettVal || 0).toLocaleString()}</td>
-                        <td className="text-end fw-bold text-success">₹ {rowCharge.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
-                        <td className="text-center">
-                          {t.image_base64 ? (
-                            <img
-                              src={t.image_base64.startsWith('data:') ? t.image_base64 : `data:image/jpeg;base64,${t.image_base64}`}
-                              alt="Snapshot"
-                              style={{ width: '42px', height: '28px', objectFit: 'cover', borderRadius: '4px', cursor: 'pointer', border: '1px solid var(--line-strong)' }}
-                              onClick={() => setSelectedImage(t.image_base64.startsWith('data:') ? t.image_base64 : `data:image/jpeg;base64,${t.image_base64}`)}
-                              title="Click to expand snapshot"
-                            />
-                          ) : (
-                            <span className="badge bg-secondary opacity-50" style={{ fontSize: '0.65rem' }}>No Img</span>
-                          )}
-                        </td>
-                        <td className="text-center">
-                          <button
-                            type="button"
-                            className="btn btn-sm btn-outline-primary py-0 px-2 fw-semibold"
-                            style={{ fontSize: '0.72rem' }}
-                            onClick={() => printSingleTicketSlip(t)}
-                            title={`Print Slip for ${t.dc_num || t.dcNum || t.serial_no || t.id}`}
-                          >
-                            🖨️ Print
-                          </button>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                  {filtered.length === 0 && (
+            {activeTab === 'Report' && (
+              <div className="table-responsive">
+                <table className="table table-sm table-hover align-middle" style={{ fontSize: '0.8rem' }}>
+                  <thead className="table-light text-uppercase" style={{ fontSize: '0.72rem' }}>
                     <tr>
-                      <td colSpan="11" className="text-center py-4 text-muted">No normal weighment records found for selected filters.</td>
+                      <th>DC / Ticket</th>
+                      <th>Date & Time</th>
+                      <th>Vehicle</th>
+                      <th>Party</th>
+                      <th>Material</th>
+                      <th className="text-end">Gross (kg)</th>
+                      <th className="text-end">Tare (kg)</th>
+                      <th className="text-end">Nett (kg)</th>
+                      <th className="text-end">Charges (₹)</th>
+                      <th className="text-center">Camera Image</th>
+                      <th className="text-center">Action</th>
                     </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
+                  </thead>
+                  <tbody>
+                    {filtered.map((t, idx) => {
+                      const rowCharge = Number(t.charges || t.amount || 0) || ((t.net || 0)/1000 * 350);
+                      return (
+                        <tr key={idx}>
+                          <td className="fw-bold">{t.dc_num || t.dcNum || t.serial_no || t.token || `TK-${t.id}`}</td>
+                          <td>{t.date_time || t.created_at || 'N/A'}</td>
+                          <td className="fw-semibold text-primary">{t.vehicle_no || t.vehicle || 'N/A'}</td>
+                          <td>{t.party || 'LOCAL SALE'}</td>
+                          <td>{t.product || t.material || 'N/A'}</td>
+                          <td className="text-end text-secondary">{Number(t.gross || 0).toLocaleString()}</td>
+                          <td className="text-end text-secondary">{Number(t.tare || 0).toLocaleString()}</td>
+                          <td className="text-end fw-bold text-danger">{Number(t.net || t.nettVal || 0).toLocaleString()}</td>
+                          <td className="text-end fw-bold text-success">₹ {rowCharge.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                          <td className="text-center">
+                            {t.image_base64 ? (
+                              <img
+                                src={t.image_base64.startsWith('data:') ? t.image_base64 : `data:image/jpeg;base64,${t.image_base64}`}
+                                alt="Snapshot"
+                                style={{ width: '42px', height: '28px', objectFit: 'cover', borderRadius: '4px', cursor: 'pointer', border: '1px solid var(--line-strong)' }}
+                                onClick={() => setSelectedImage(t.image_base64.startsWith('data:') ? t.image_base64 : `data:image/jpeg;base64,${t.image_base64}`)}
+                                title="Click to expand snapshot"
+                              />
+                            ) : (
+                              <span className="badge bg-secondary opacity-50" style={{ fontSize: '0.65rem' }}>No Img</span>
+                            )}
+                          </td>
+                          <td className="text-center">
+                            <button
+                              type="button"
+                              className="btn btn-sm btn-outline-primary py-0 px-2 fw-semibold"
+                              style={{ fontSize: '0.72rem' }}
+                              onClick={() => printSingleTicketSlip(t)}
+                              title={`Print Slip for ${t.dc_num || t.dcNum || t.serial_no || t.id}`}
+                            >
+                              🖨️ Print
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                    {filtered.length === 0 && (
+                      <tr>
+                        <td colSpan="11" className="text-center py-4 text-muted">No normal weighment records found for selected filters.</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {activeTab !== 'Report' && (
+              <div className="table-responsive">
+                <table className="table table-sm table-hover align-middle" style={{ fontSize: '0.8rem' }}>
+                  <thead className="table-light text-uppercase" style={{ fontSize: '0.72rem' }}>
+                    <tr>
+                      <th>{activeTab === 'Material' ? 'Material Name' : 'Party / Customer Name'}</th>
+                      <th className="text-center">Total Trips</th>
+                      <th className="text-end">Total Gross (kg)</th>
+                      <th className="text-end">Total Tare (kg)</th>
+                      <th className="text-end">Total Nett (kg)</th>
+                      <th className="text-end">Total Charges (₹)</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {getGroupedSummary(activeTab.toLowerCase()).map((row, idx) => (
+                      <tr key={idx}>
+                        <td className="fw-bold text-primary">{row.name}</td>
+                        <td className="text-center fw-semibold">{row.trips}</td>
+                        <td className="text-end text-secondary">{row.gross.toLocaleString()}</td>
+                        <td className="text-end text-secondary">{row.tare.toLocaleString()}</td>
+                        <td className="text-end fw-bold text-danger">{row.nett.toLocaleString()}</td>
+                        <td className="text-end fw-bold text-success">₹ {row.charges.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                      </tr>
+                    ))}
+                    {getGroupedSummary(activeTab.toLowerCase()).length === 0 && (
+                      <tr>
+                        <td colSpan="6" className="text-center py-4 text-muted">No grouped summary records found for selected filters.</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
         </div>
       </div>

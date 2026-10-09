@@ -158,6 +158,14 @@ export default function SalesWeighment() {
       syncDcCounterFromTransactions(txs, 'sales');
       setAllDebitors(debitorsData || []);
 
+      if (api.getTransporterVehicles) {
+        api.getTransporterVehicles().then(tv => {
+          if (Array.isArray(tv) && tv.length > 0) {
+            localStorage.setItem('noris_transporter_vehicles', JSON.stringify(tv));
+          }
+        }).catch(() => {});
+      }
+
       // Vehicles
       let tareObjs = [];
       const cachedTares = localStorage.getItem('noris_vehicle_tares');
@@ -275,6 +283,10 @@ export default function SalesWeighment() {
       if (matchedDebitor) {
         const gstinVal = matchedDebitor.gstin || matchedDebitor.gst || '';
         setPartyGstin(gstinVal);
+        const debPhone = matchedDebitor.phone || matchedDebitor.phoneNumber || matchedDebitor.mobile || matchedDebitor.contact_number || '';
+        if (debPhone) {
+          setPhone(String(debPhone).trim());
+        }
 
         const bType = matchedDebitor.billingType || matchedDebitor.billing_type;
         if (bType) {
@@ -473,6 +485,30 @@ export default function SalesWeighment() {
       return;
     }
     const cleanVehicle = vehicle.replace(/\s+/g, '').toUpperCase();
+
+    // Auto-fill Transporter mapped to this vehicle
+    const storedTransporterVehicles = localStorage.getItem('noris_transporter_vehicles');
+    if (storedTransporterVehicles) {
+      try {
+        const transList = JSON.parse(storedTransporterVehicles);
+        if (Array.isArray(transList)) {
+          const matchedTrans = transList.find(
+            m => m.vehicleNo && m.vehicleNo.replace(/\s+/g, '').toUpperCase() === cleanVehicle
+          );
+          if (matchedTrans && matchedTrans.transporter && matchedTrans.transporter.trim()) {
+            const mappedTransporter = matchedTrans.transporter.trim();
+            setTransporter(mappedTransporter);
+            setTransportersList(prev => {
+              const exists = prev.some(t => t.toUpperCase() === mappedTransporter.toUpperCase());
+              return exists ? prev : [...prev, mappedTransporter];
+            });
+          }
+        }
+      } catch (err) {
+        console.error('Error auto-filling transporter for vehicle in SalesWeighment:', err);
+      }
+    }
+
     const cachedTares = localStorage.getItem('noris_vehicle_tares');
     let localTares = [];
     if (cachedTares) {

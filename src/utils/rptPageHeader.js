@@ -9,6 +9,8 @@
 // printing exactly what it printed before.
 
 export const RPT_HEADER_MODE_KEY = 'noris_rpt_page_header_mode';
+export const DC_HEADER_MODE_KEY = 'noris_dc_page_header_mode';
+export const GATE_PASS_HEADER_MODE_KEY = 'noris_gate_pass_page_header_mode';
 export const RPT_HEADER_GAP_KEY = 'noris_rpt_page_header_gap';
 
 // Paired with the key classicReportPrinter.js writes from the Address Setting
@@ -25,17 +27,31 @@ export const RPT_HEADER_MODES = [
 
 export const DEFAULT_HEADER_GAP_PX = 60;
 
-export function getRptHeaderMode() {
+export function getRptHeaderMode(category = 'PRINT') {
   try {
-    return localStorage.getItem(RPT_HEADER_MODE_KEY) || 'NONE';
+    const cat = String(category || 'PRINT').trim().toUpperCase();
+    if (cat === 'DC') {
+      return localStorage.getItem(DC_HEADER_MODE_KEY) || 'NONE';
+    }
+    if (cat === 'GATE_PASS' || cat === 'GATEPASS') {
+      return localStorage.getItem(GATE_PASS_HEADER_MODE_KEY) || 'NONE';
+    }
+    return localStorage.getItem(RPT_HEADER_MODE_KEY) || 'COMPANY';
   } catch (_) {
     return 'NONE';
   }
 }
 
-export function setRptHeaderMode(mode) {
+export function setRptHeaderMode(mode, category = 'PRINT') {
   try {
-    localStorage.setItem(RPT_HEADER_MODE_KEY, mode);
+    const cat = String(category || 'PRINT').trim().toUpperCase();
+    if (cat === 'DC') {
+      localStorage.setItem(DC_HEADER_MODE_KEY, mode);
+    } else if (cat === 'GATE_PASS' || cat === 'GATEPASS') {
+      localStorage.setItem(GATE_PASS_HEADER_MODE_KEY, mode);
+    } else {
+      localStorage.setItem(RPT_HEADER_MODE_KEY, mode);
+    }
   } catch (_) {}
 }
 
@@ -84,7 +100,7 @@ function esc(value) {
 }
 
 // Renders the header block based on selected mode and transaction data (GSTIN / billType / Overrides)
-export function renderRptPageHeader(data = {}, mode = getRptHeaderMode()) {
+export function renderRptPageHeader(data = {}, mode = null) {
   let activeData = data;
   let activeMode = mode;
 
@@ -92,6 +108,17 @@ export function renderRptPageHeader(data = {}, mode = getRptHeaderMode()) {
   if (typeof data === 'string') {
     activeMode = data;
     activeData = {};
+  }
+
+  // 1. If explicit headerOverride is provided on data, respect it directly!
+  if (!activeMode && (activeData.headerOverride || activeData.header_override)) {
+    activeMode = String(activeData.headerOverride || activeData.header_override).trim().toUpperCase();
+  }
+
+  // 2. If mode is still null, resolve from category (DC, GATE_PASS, or PRINT)
+  if (!activeMode) {
+    const cat = activeData.category || activeData.printCategory || 'PRINT';
+    activeMode = getRptHeaderMode(cat);
   }
 
   // Resolve AUTO_GST mode based on GSTIN, billType, isGst, Party or explicit override
@@ -125,6 +152,8 @@ export function renderRptPageHeader(data = {}, mode = getRptHeaderMode()) {
       activeMode = 'COMPANY';
     } else if (override === 'EMPTY') {
       activeMode = 'EMPTY';
+    } else if (override === 'NONE') {
+      activeMode = 'NONE';
     } else if (isExplicitNonGst) {
       activeMode = 'EMPTY';
     } else if (isExplicitGst) {

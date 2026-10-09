@@ -14,6 +14,19 @@ export default function Navbar() {
   const { isConnected } = useScale();
   const [time, setTime] = useState(new Date());
   const [liveWeight, setLiveWeight] = useState('0');
+  const [isSlipEnabled, setIsSlipEnabled] = useState(() => localStorage.getItem('noris_enable_loading_slip') === 'true');
+
+  useEffect(() => {
+    const handleUpdate = () => {
+      setIsSlipEnabled(localStorage.getItem('noris_enable_loading_slip') === 'true');
+    };
+    window.addEventListener('storage', handleUpdate);
+    window.addEventListener('workflow-setting-changed', handleUpdate);
+    return () => {
+      window.removeEventListener('storage', handleUpdate);
+      window.removeEventListener('workflow-setting-changed', handleUpdate);
+    };
+  }, []);
 
   useEffect(() => {
     const timer = setInterval(() => setTime(new Date()), 1000);
@@ -74,8 +87,15 @@ export default function Navbar() {
         return { title: 'Second Weighment', subtitle: 'Capture second weight logs' };
       case '/weighment/duplicate-bill':
         return { title: 'Duplicate Bill', subtitle: 'Search & reprint weighment bill' };
-      case '/vehicles':
-        return { title: 'Vehicles', subtitle: 'Manage transport vehicles' };
+      case '/vehicles': {
+        const menuMode = localStorage.getItem('noris_loading_slip_menu_mode');
+        if (menuMode === 'both' || menuMode === 'vehicles') {
+          return { title: 'Vehicles', subtitle: 'Manage transport vehicles' };
+        }
+        return isSlipEnabled
+          ? { title: 'Loading Slip', subtitle: 'Sales Order Generator' }
+          : { title: 'Vehicles', subtitle: 'Manage transport vehicles' };
+      }
       case '/grid':
         return { title: 'Camera Grid', subtitle: 'Live security feeds' };
       case '/manage':

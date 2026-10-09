@@ -61,4 +61,15 @@ export function AuthProvider({ children }) {
   );
 }
 
-export const useAuth = () => useContext(AuthContext);
+export const useAuth = () => {
+  const context = useContext(AuthContext);
+  return context || {
+    token: null,
+    user: null,
+    role: null,
+    isAdmin: false,
+    isOperator: false,
+    login: async () => {},
+    logout: () => {}
+  };
+};

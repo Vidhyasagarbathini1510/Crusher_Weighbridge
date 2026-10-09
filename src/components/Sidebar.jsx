@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { NavLink } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useScale } from '../context/ScaleContext.jsx';
@@ -9,6 +9,31 @@ export default function Sidebar() {
   const [profileDropdownOpen, setProfileDropdownOpen] = useState(false);
   const { logout, user, isAdmin } = useAuth();
   const { isConnected } = useScale();
+
+  const [isSlipEnabled, setIsSlipEnabled] = useState(() => localStorage.getItem('noris_enable_loading_slip') === 'true');
+  const [menuMode, setMenuMode] = useState(() => {
+    const saved = localStorage.getItem('noris_loading_slip_menu_mode');
+    if (saved) return saved;
+    return localStorage.getItem('noris_enable_loading_slip') === 'true' ? 'both' : 'vehicles';
+  });
+
+  useEffect(() => {
+    const handleUpdate = () => {
+      const saved = localStorage.getItem('noris_loading_slip_menu_mode');
+      if (saved) {
+        setMenuMode(saved);
+      } else {
+        setMenuMode(localStorage.getItem('noris_enable_loading_slip') === 'true' ? 'both' : 'vehicles');
+      }
+      setIsSlipEnabled(localStorage.getItem('noris_enable_loading_slip') === 'true');
+    };
+    window.addEventListener('storage', handleUpdate);
+    window.addEventListener('workflow-setting-changed', handleUpdate);
+    return () => {
+      window.removeEventListener('storage', handleUpdate);
+      window.removeEventListener('workflow-setting-changed', handleUpdate);
+    };
+  }, []);
 
   const scaleRoutes = [
     '/boulders/weighment',
@@ -126,15 +151,30 @@ export default function Sidebar() {
           <span>Dashboard</span>
         </NavLink>
 
-        <NavLink to="/vehicles" className={linkClass}>
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <rect x="1" y="3" width="15" height="13" />
-            <polygon points="16 8 20 8 23 11 23 16 16 16 16 8" />
-            <circle cx="5.5" cy="18.5" r="2.5" />
-            <circle cx="18.5" cy="18.5" r="2.5" />
-          </svg>
-          <span>Vehicles</span>
-        </NavLink>
+        {(menuMode === 'vehicles' || menuMode === 'both') && (
+          <NavLink to="/vehicles" className={linkClass}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <rect x="1" y="3" width="15" height="13" />
+              <polygon points="16 8 20 8 23 11 23 16 16 16 16 8" />
+              <circle cx="5.5" cy="18.5" r="2.5" />
+              <circle cx="18.5" cy="18.5" r="2.5" />
+            </svg>
+            <span>Vehicles</span>
+          </NavLink>
+        )}
+
+        {(menuMode === 'loading_slip' || menuMode === 'both') && (
+          <NavLink to="/sales/loading-slip" className={linkClass}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+              <polyline points="14 2 14 8 20 8" />
+              <line x1="16" y1="13" x2="8" y2="13" />
+              <line x1="16" y1="17" x2="8" y2="17" />
+              <polyline points="10 9 9 9 8 9" />
+            </svg>
+            <span>Loading Slip</span>
+          </NavLink>
+        )}
 
         {renderDropdown(
           'Boulders',

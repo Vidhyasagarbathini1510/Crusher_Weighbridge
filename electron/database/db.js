@@ -364,6 +364,7 @@ async function init() {
       operator TEXT DEFAULT 'Admin',
       image_path TEXT,
       image_base64 TEXT,
+      status TEXT DEFAULT 'pending',
       sync_status INTEGER DEFAULT 0,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
@@ -376,6 +377,16 @@ async function init() {
       vehicle TEXT NOT NULL,
       material TEXT DEFAULT 'BOULDERS',
       contractor TEXT DEFAULT '',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+
+  dbInstance.run(`
+    CREATE TABLE IF NOT EXISTS transporter_vehicles (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      transporter TEXT NOT NULL,
+      vehicle_no TEXT NOT NULL,
+      capacity TEXT DEFAULT '',
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
   `);
@@ -506,6 +517,18 @@ async function init() {
   try { dbInstance.run(`ALTER TABLE contractors ADD COLUMN rate REAL;`); } catch (e) { }
   try { dbInstance.run(`ALTER TABLE debitors ADD COLUMN billingType TEXT;`); } catch (e) { }
   try { dbInstance.run(`ALTER TABLE debitors ADD COLUMN gstSale INTEGER;`); } catch (e) { }
+  try { dbInstance.run(`ALTER TABLE debitors ADD COLUMN phone TEXT;`); } catch (e) { }
+  try { dbInstance.run(`ALTER TABLE debitors ADD COLUMN contact TEXT;`); } catch (e) { }
+  try { dbInstance.run(`ALTER TABLE debitors ADD COLUMN email TEXT;`); } catch (e) { }
+  try { dbInstance.run(`ALTER TABLE debitors ADD COLUMN pan TEXT;`); } catch (e) { }
+  try { dbInstance.run(`ALTER TABLE debitors ADD COLUMN ledgerId INTEGER;`); } catch (e) { }
+  try { dbInstance.run(`ALTER TABLE debitors ADD COLUMN ledgerType TEXT;`); } catch (e) { }
+  try { dbInstance.run(`ALTER TABLE loading_slips ADD COLUMN status TEXT DEFAULT 'pending';`); } catch (e) { }
+  try {
+    // Keep loading slips strictly local-only on desktop; dismiss any pending loading slips from sync_queue
+    dbInstance.run("UPDATE sync_queue SET status = 'COMPLETED' WHERE table_name = 'loading_slips' OR table_name = 'loading_slip';");
+    dbInstance.run("UPDATE loading_slips SET sync_status = 1 WHERE sync_status = 0;");
+  } catch (e) { }
 
 
   dbInstance.run(`
@@ -527,7 +550,13 @@ async function init() {
       status TEXT,
       online TEXT,
       billingType TEXT,
-      gstSale INTEGER
+      gstSale INTEGER,
+      phone TEXT,
+      contact TEXT,
+      email TEXT,
+      pan TEXT,
+      ledgerId INTEGER,
+      ledgerType TEXT
     );
   `);
 
@@ -917,7 +946,6 @@ function populateInitialSyncQueue() {
     { table: 'boulders', source: 'boulders' },
     { table: 'sales_weighment_units', source: 'sales_units' },
     { table: 'yard_weighments', source: 'yard' },
-    { table: 'loading_slips', source: 'loading_slips' },
     { table: 'first_weighments', source: 'first_weighment' },
     { table: 'second_weighments', source: 'second_weighment' }
   ];
@@ -1439,8 +1467,8 @@ function savePendingData(data) {
   // Process debitors
   if (data.debitors && Array.isArray(data.debitors)) {
     const insertStmt = dbInstance.prepare(`
-      INSERT OR REPLACE INTO debitors (id, party, creditLimit, site, vendorName, gstin, address, status, online, billingType, gstSale)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT OR REPLACE INTO debitors (id, party, creditLimit, site, vendorName, gstin, address, status, online, billingType, gstSale, phone, contact, email, pan, ledgerId, ledgerType)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     for (const d of data.debitors) {
       if (isInactiveStatus(d.status, d)) {
@@ -1452,6 +1480,7 @@ function savePendingData(data) {
         const gstSaleVal = d.gstSale !== undefined && d.gstSale !== null
           ? (d.gstSale === true || String(d.gstSale).toLowerCase() === 'true' || d.gstSale === 1 ? 1 : 0)
           : null;
+        const phoneVal = d.phone ?? d.phoneNumber ?? d.mobile ?? d.contact_number ?? null;
         insertStmt.run([
           d.id,
           d.party ?? null,
@@ -1463,7 +1492,13 @@ function savePendingData(data) {
           d.status ?? null,
           d.online ?? null,
           d.billingType ?? d.billing_type ?? null,
-          gstSaleVal
+          gstSaleVal,
+          phoneVal,
+          d.contact ?? null,
+          d.email ?? null,
+          d.pan ?? null,
+          d.ledgerId ?? null,
+          d.ledgerType ?? null
         ]);
         insertedCount++;
       }
@@ -1905,6 +1940,66 @@ function deleteRfidCard(id) {
   }
 }
 
+function getTransporterVehicles() {
+  if (!dbInstance) return [];
+  try {
+    const stmt = dbInstance.prepare('SELECT id, transporter, vehicle_no AS vehicleNo, capacity, created_at AS createdAt FROM transporter_vehicles ORDER BY id DESC');
+    const rows = [];
+    while (stmt.step()) {
+      rows.push(stmt.getAsObject());
+    }
+    stmt.free();
+    return rows;
+  } catch (e) {
+    console.error('[SQLite] Error getting transporter_vehicles:', e);
+    return [];
+  }
+}
+
+function saveTransporterVehicle(data) {
+  if (!dbInstance || !data || !data.transporter || (!data.vehicleNo && !data.vehicle_no && !data.vehicle)) return false;
+  try {
+    const trans = String(data.transporter).trim();
+    const veh = String(data.vehicleNo || data.vehicle_no || data.vehicle).trim().toUpperCase();
+    const capacity = String(data.capacity || '').trim();
+
+    const stmt = dbInstance.prepare('SELECT id FROM transporter_vehicles WHERE LOWER(TRIM(vehicle_no)) = LOWER(?)');
+    stmt.bind([veh]);
+    const existing = stmt.step() ? stmt.getAsObject() : null;
+    stmt.free();
+
+    if (existing) {
+      dbInstance.run(`
+        UPDATE transporter_vehicles
+        SET transporter = ?, capacity = ?
+        WHERE id = ?
+      `, [trans, capacity, existing.id]);
+    } else {
+      dbInstance.run(`
+        INSERT INTO transporter_vehicles (transporter, vehicle_no, capacity)
+        VALUES (?, ?, ?)
+      `, [trans, veh, capacity]);
+    }
+    saveToDisk();
+    return true;
+  } catch (e) {
+    console.error('[SQLite] Error saving transporter_vehicle:', e);
+    return false;
+  }
+}
+
+function deleteTransporterVehicle(id) {
+  if (!dbInstance || !id) return false;
+  try {
+    dbInstance.run('DELETE FROM transporter_vehicles WHERE id = ?', [id]);
+    saveToDisk();
+    return true;
+  } catch (e) {
+    console.error('[SQLite] Error deleting transporter_vehicle:', e);
+    return false;
+  }
+}
+
 function getVehicleTareByNumber(vehicleNo) {
   if (!dbInstance || !vehicleNo) return null;
   try {
@@ -2256,7 +2351,7 @@ function addLoadingSlip(tx, base64Image) {
       uuid, dc_num, copy_num, date_time, vehicle_no, party, material,
       destination, source, transporter, payment, phone, weight, operator, image_path, image_base64, image_path_2, image_base64_2, sync_status
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
   `, [
     uuid,
     officialDc,
@@ -2279,13 +2374,14 @@ function addLoadingSlip(tx, base64Image) {
     imgPath2 ? '' : (img2 || '')
   ]);
 
-  pushToSyncQueue('loading_slips', uuid);
+  // Loading slips are kept local-only on desktop and not synced to remote server.
+  // Only the completed sales weighment (sales_weighment_units) is synced to the server.
   saveToDisk();
   return { uuid, ...tx };
 }
 
 function getAllLoadingSlips() {
-  const stmt = dbInstance.prepare('SELECT * FROM loading_slips ORDER BY created_at DESC');
+  const stmt = dbInstance.prepare("SELECT * FROM loading_slips WHERE status != 'completed' OR status IS NULL ORDER BY created_at DESC");
   const rows = [];
   while (stmt.step()) {
     rows.push(stmt.getAsObject());
@@ -2308,6 +2404,37 @@ function markLoadingSlipSynced(uuid) {
   dbInstance.run('UPDATE loading_slips SET sync_status = 1 WHERE uuid = ?', [uuid]);
   saveToDisk();
   return true;
+}
+
+function fulfillLoadingSlip(identifier, finalWeight) {
+  const weightStr = String(finalWeight != null ? finalWeight : 'Completed');
+  try {
+    dbInstance.run(
+      `UPDATE loading_slips 
+       SET weight = ?, status = 'completed', sync_status = 0 
+       WHERE uuid = ? OR dc_num = ? OR vehicle_no = ?`,
+      [weightStr, identifier, identifier, identifier]
+    );
+    saveToDisk();
+    return true;
+  } catch (err) {
+    console.error('[DB] fulfillLoadingSlip error:', err);
+    return false;
+  }
+}
+
+function deleteLoadingSlip(identifier) {
+  try {
+    dbInstance.run(
+      'DELETE FROM loading_slips WHERE uuid = ? OR dc_num = ? OR vehicle_no = ?',
+      [identifier, identifier, identifier]
+    );
+    saveToDisk();
+    return true;
+  } catch (err) {
+    console.error('[DB] deleteLoadingSlip error:', err);
+    return false;
+  }
 }
 
 // --- FIRST WEIGHMENTS OPERATIONS ---
@@ -3528,6 +3655,8 @@ module.exports = {
   getAllLoadingSlips,
   getUnsyncedLoadingSlips,
   markLoadingSlipSynced,
+  fulfillLoadingSlip,
+  deleteLoadingSlip,
   addFirstWeighment,
   getAllFirstWeighments,
   getUnsyncedFirstWeighments,
@@ -3554,6 +3683,9 @@ module.exports = {
   saveRfidCard,
   deleteRfidCard,
   getRfidCardByNumber,
+  getTransporterVehicles,
+  saveTransporterVehicle,
+  deleteTransporterVehicle,
   getVehicleTareByNumber,
   pushToSyncQueue,
   getPendingSyncQueue,

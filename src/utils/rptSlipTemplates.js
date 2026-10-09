@@ -527,7 +527,16 @@ function loadingSlipPanel(f, { heading, signature, first }) {
   // If a specific Party is present (credit/contract customer), hide Amount.
   // If it's a Local Sale (or empty/cash), show Amount.
   const partyUpper = String(f.party || '').trim().toUpperCase();
-  const isLocalSale = !partyUpper || partyUpper === 'LOCAL' || partyUpper === 'LOCAL SALE' || partyUpper === 'LOCAL SALES' || partyUpper === 'CASH' || partyUpper === 'CASH SALE' || partyUpper === 'CASH SALES';
+  const isLocalSale = !partyUpper || 
+    partyUpper === 'LOCAL' || 
+    partyUpper === 'LOCAL SALE' || 
+    partyUpper === 'LOCAL SALES' || 
+    partyUpper === 'CASH' || 
+    partyUpper === 'CASH SALE' || 
+    partyUpper === 'CASH SALES' ||
+    partyUpper.startsWith('LOCAL SALE') ||
+    partyUpper.startsWith('LOCAL -') ||
+    partyUpper.startsWith('LOCAL (');
   const showAmount = isLocalSale;
 
   // One set of stops for both halves of the form, so GROSS lines up under

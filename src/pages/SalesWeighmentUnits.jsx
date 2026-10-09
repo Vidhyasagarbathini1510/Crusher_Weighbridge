@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
+import { useLocation } from 'react-router-dom';
 import { api } from '../api/client.js';
 import CameraPlayer from '../components/CameraPlayer.jsx';
 import CameraPreviewModal from '../components/CameraPreviewModal.jsx';
@@ -54,8 +55,11 @@ export default function SalesWeighmentUnits() {
   const [showCameraPanel, setShowCameraPanel] = useState(false);
 
   // Form fields
+  const location = useLocation();
   const [dcNum, setDcNum] = useState('');
   const [yourDc, setYourDc] = useState('');
+  const [activeLoadingSlip, setActiveLoadingSlip] = useState(null);
+  const isLocked = Boolean(activeLoadingSlip);
   const {
     vehicle, setVehicle,
     gross: grossVal, setGross: setGrossVal,
@@ -63,12 +67,21 @@ export default function SalesWeighmentUnits() {
     nett: nettVal, setNett: setNettVal
   } = useScale();
 
+  // Read incoming vehicle from location state if passed from Vehicles / Loading Slip
+  useEffect(() => {
+    if (location.state?.vehicle) {
+      setVehicle(location.state.vehicle);
+    }
+  }, [location.state]);
+
   // Vehicle lives in the shared scale context so the bottom status bar mirrors
   // this field — but it is wiped on unmount, so leaving this page never carries
   // the truck over to Boulders or Yard.
   useEffect(() => () => setVehicle(''), []);
   const [party, setParty] = useState('');
   const [material, setMaterial] = useState('');
+  const userManuallyChangedMaterialRef = useRef(false);
+  const lastVehicleRef = useRef('');
   const [unitType, setUnitType] = useState('tonnes'); // tonnes or units
   const [unitsVal, setUnitsVal] = useState('');
   const [destination, setDestination] = useState('');
@@ -111,6 +124,22 @@ export default function SalesWeighmentUnits() {
   const [poDate, setPoDate] = useState(todayForDateInput);
   const [payment, setPayment] = useState('Credit');
   const [localScaleMode, setLocalScaleMode] = useState(false);
+  const [layoutDesign, setLayoutDesign] = useState(
+    () => localStorage.getItem('noris_sales_layout_design') || 'compact'
+  );
+
+  useEffect(() => {
+    const handleLayoutChange = (e) => {
+      const mode = e?.detail?.design || localStorage.getItem('noris_sales_layout_design') || 'compact';
+      setLayoutDesign(mode);
+    };
+    window.addEventListener('sales-layout-changed', handleLayoutChange);
+    window.addEventListener('storage', handleLayoutChange);
+    return () => {
+      window.removeEventListener('sales-layout-changed', handleLayoutChange);
+      window.removeEventListener('storage', handleLayoutChange);
+    };
+  }, []);
 
   // Weights
   const [savedWeight, setSavedWeight] = useState('');
@@ -166,11 +195,29 @@ export default function SalesWeighmentUnits() {
       api.getDestinations ? api.getDestinations().catch(() => []) : Promise.resolve([]),
       api.getSources ? api.getSources().catch(() => []) : Promise.resolve([]),
       api.getTransporters ? api.getTransporters().catch(() => []) : Promise.resolve([]),
-      api.getVehicleTares ? api.getVehicleTares().catch(() => []) : Promise.resolve([])
-    ]).then(([txs, debitorsData, materialsData, destinationsData, sourcesData, transportersData, vehicleTaresData]) => {
+      api.getVehicleTares ? api.getVehicleTares().catch(() => []) : Promise.resolve([]),
+      api.getLoadingSlips ? api.getLoadingSlips().catch(() => []) : Promise.resolve([])
+    ]).then(([txs, debitorsData, materialsData, destinationsData, sourcesData, transportersData, vehicleTaresData, loadingSlipsData]) => {
       syncDcCounterFromTransactions(txs, 'sales');
       setVehicleTares(vehicleTaresData || []);
       setAllDebitors(debitorsData || []);
+
+      if (api.getTransporterVehicles) {
+        api.getTransporterVehicles().then(tv => {
+          if (Array.isArray(tv) && tv.length > 0) {
+            localStorage.setItem('noris_transporter_vehicles', JSON.stringify(tv));
+          }
+        }).catch(() => {});
+      }
+
+      // Extract pending loading slips (unfulfilled only)
+      const pendingSlips = (loadingSlipsData || []).filter(s => {
+        const status = String(s.status || '').trim().toLowerCase();
+        return status !== 'completed' && status !== 'fulfilled';
+      });
+      const pendingVehicles = [...new Set(
+        pendingSlips.map(s => String(s.vehicle_no || s.vehicle || '').trim().toUpperCase()).filter(Boolean)
+      )];
 
       // Vehicles
       let tareObjs = [];
@@ -188,8 +235,21 @@ export default function SalesWeighmentUnits() {
 
       getVehicleOptionMode().then(mode => {
         const filteredObjs = filterVehiclesBySetting(allOtherVehObjs, txs, mode);
-        const vehNos = filteredObjs.map(t => t.vehicle || t.vehicleNo);
-        setVehiclesList([...new Set(vehNos)].filter(Boolean));
+        const vehNos = filteredObjs.map(t => (t.vehicle || t.vehicleNo || '').trim().toUpperCase());
+        const combined = [...new Set([...pendingVehicles, ...vehNos])].filter(Boolean);
+
+        const menuMode = localStorage.getItem('noris_loading_slip_menu_mode') || (localStorage.getItem('noris_enable_loading_slip') === 'true' ? 'both' : 'vehicles');
+
+        if (menuMode === 'loading_slip') {
+          // Loading Slip Only: show only vehicles from pending loading slips
+          setVehiclesList(pendingVehicles);
+        } else if (menuMode === 'vehicles') {
+          // Vehicles Only: show only vehicles from vehicle records
+          setVehiclesList(vehNos);
+        } else {
+          // Both: show both loading slip vehicles and master vehicles
+          setVehiclesList(combined);
+        }
       });
 
 
@@ -258,6 +318,11 @@ export default function SalesWeighmentUnits() {
     const onRefresh = () => handleResetForm();
     window.addEventListener('page-refresh', onRefresh);
 
+    const onSlipSaved = () => loadMasterData();
+    window.addEventListener('loading-slip-saved', onSlipSaved);
+    window.addEventListener('workflow-setting-changed', onSlipSaved);
+    window.addEventListener('storage', onSlipSaved);
+
     let unsubscribeSync = null;
     if (window.electronAPI && window.electronAPI.onMasterDataSynced) {
       unsubscribeSync = window.electronAPI.onMasterDataSynced(() => {
@@ -267,6 +332,9 @@ export default function SalesWeighmentUnits() {
 
     return () => {
       window.removeEventListener('page-refresh', onRefresh);
+      window.removeEventListener('loading-slip-saved', onSlipSaved);
+      window.removeEventListener('workflow-setting-changed', onSlipSaved);
+      window.removeEventListener('storage', onSlipSaved);
       if (unsubscribeSync) unsubscribeSync();
     };
   }, []);
@@ -276,7 +344,9 @@ export default function SalesWeighmentUnits() {
     if (!window.electronAPI || !window.electronAPI.onAiMaterialDetected) return;
     const unsubscribe = window.electronAPI.onAiMaterialDetected((data) => {
       if (data && data.material && data.stable) {
-        setMaterial(data.material);
+        if (!userManuallyChangedMaterialRef.current) {
+          setMaterial(prev => prev || data.material);
+        }
       }
     });
     return () => {
@@ -298,7 +368,7 @@ export default function SalesWeighmentUnits() {
     }
 
     const partyUpper = party.trim().toUpperCase();
-    const isLocalSale = partyUpper === 'LOCAL SALE';
+    const isLocalSale = partyUpper === 'LOCAL SALE' || partyUpper.startsWith('LOCAL SALE');
     const matchedMaterials = allMaterials.filter(
       m => m.party && m.party.trim().toUpperCase() === partyUpper
     );
@@ -338,7 +408,7 @@ export default function SalesWeighmentUnits() {
   // Dynamically update destinations list based on selected Party while keeping 'OUT' option
   useEffect(() => {
     const partyUpper = (party || '').trim().toUpperCase();
-    const isLocalSale = partyUpper === 'LOCAL SALE';
+    const isLocalSale = partyUpper === 'LOCAL SALE' || partyUpper.startsWith('LOCAL SALE');
     const matchedDestinations = allDestinations.filter(
       d => d.party && d.party.trim().toUpperCase() === partyUpper
     );
@@ -499,14 +569,45 @@ export default function SalesWeighmentUnits() {
     });
   }, [vehicle, party, material, transporter, destination]);
 
-  // Auto-fill tare when vehicle is selected & perform order validation
+  // Auto-fill tare and transporter when vehicle is selected & perform order validation
   useEffect(() => {
     if (!vehicle) {
       setSavedWeight('');
       setTareVal('');
+      lastVehicleRef.current = '';
+      userManuallyChangedMaterialRef.current = false;
       return;
     }
     const cleanVehicle = vehicle.replace(/\s+/g, '').toUpperCase();
+    if (cleanVehicle !== lastVehicleRef.current) {
+      lastVehicleRef.current = cleanVehicle;
+      userManuallyChangedMaterialRef.current = false;
+    }
+
+    // Auto-fill Transporter mapped to this vehicle
+    const storedTransporterVehicles = localStorage.getItem('noris_transporter_vehicles');
+    if (storedTransporterVehicles) {
+      try {
+        const transList = JSON.parse(storedTransporterVehicles);
+        if (Array.isArray(transList)) {
+          const matchedTrans = transList.find(
+            m => m.vehicleNo && m.vehicleNo.replace(/\s+/g, '').toUpperCase() === cleanVehicle
+          );
+          if (matchedTrans && matchedTrans.transporter && matchedTrans.transporter.trim()) {
+            const mappedTransporter = matchedTrans.transporter.trim();
+            if (!activeLoadingSlip || !activeLoadingSlip.transporter) {
+              setTransporter(mappedTransporter);
+              setTransportersList(prev => {
+                const exists = prev.some(t => t.toUpperCase() === mappedTransporter.toUpperCase());
+                return exists ? prev : [...prev, mappedTransporter];
+              });
+            }
+          }
+        }
+      } catch (err) {
+        console.error('Error auto-filling transporter for vehicle:', err);
+      }
+    }
 
     const cachedTares = localStorage.getItem('noris_vehicle_tares');
     let localTares = [];
@@ -524,20 +625,22 @@ export default function SalesWeighmentUnits() {
     const currentScaleWeight = liveWeightNum > 0 ? liveWeightNum : currentGrossNum;
 
     if (matched) {
-      // Auto-fill material from vehicle tare record
-      if (matched.material && matched.material.trim()) {
+      // Auto-fill material from vehicle tare record (only if not loaded from active loading slip)
+      if (!activeLoadingSlip && matched.material && matched.material.trim()) {
         const vehMat = matched.material.trim();
-        setMaterial(vehMat);
-        setAvailableMaterials(prev => {
-          const hasIt = prev.some(m => m.toUpperCase() === vehMat.toUpperCase());
-          return hasIt ? prev : [...prev, vehMat];
-        });
-        const matchEntry = allMaterials.find(m =>
-          (!party || (m.party || '').trim().toUpperCase() === (party || '').trim().toUpperCase()) &&
-          (m.material || '').trim().toUpperCase() === vehMat.toUpperCase()
-        );
-        if (matchEntry && matchEntry.rate !== undefined && matchEntry.rate !== null) {
-          setRate(matchEntry.rate.toString());
+        if (!userManuallyChangedMaterialRef.current) {
+          setMaterial(vehMat);
+          setAvailableMaterials(prev => {
+            const hasIt = prev.some(m => m.toUpperCase() === vehMat.toUpperCase());
+            return hasIt ? prev : [...prev, vehMat];
+          });
+          const matchEntry = allMaterials.find(m =>
+            (!party || (m.party || '').trim().toUpperCase() === (party || '').trim().toUpperCase()) &&
+            (m.material || '').trim().toUpperCase() === vehMat.toUpperCase()
+          );
+          if (matchEntry && matchEntry.rate !== undefined && matchEntry.rate !== null) {
+            setRate(matchEntry.rate.toString());
+          }
         }
       }
 
@@ -562,6 +665,100 @@ export default function SalesWeighmentUnits() {
       }
     }
   }, [vehicle, vehicleTares, allMaterials, party]);
+
+  // Auto-detect and prefill pending Loading Slip for this vehicle
+  useEffect(() => {
+    if (!vehicle || !vehicle.trim()) {
+      setActiveLoadingSlip(null);
+      return;
+    }
+    const cleanVeh = vehicle.trim().toUpperCase();
+    if (api.getLoadingSlips) {
+      api.getLoadingSlips().then(slips => {
+        if (!Array.isArray(slips)) return;
+        const hit = slips.find(s => {
+          const sVeh = String(s.vehicle_no || s.vehicle || '').trim().toUpperCase();
+          const sStatus = String(s.status || '').trim().toLowerCase();
+          return sVeh === cleanVeh && sStatus !== 'completed' && sStatus !== 'fulfilled';
+        });
+
+        if (hit) {
+          setActiveLoadingSlip(hit);
+                if (hit.party) {
+            setParty(hit.party);
+            setPartiesList(prev => {
+              const hasIt = prev.some(p => p.trim().toUpperCase() === hit.party.trim().toUpperCase());
+              return hasIt ? prev : [hit.party, ...prev];
+            });
+          }
+          if (hit.material) {
+            const hitMat = hit.material.trim();
+            if (!userManuallyChangedMaterialRef.current) {
+              setMaterial(hitMat);
+              setAvailableMaterials(prev => {
+                const hasIt = prev.some(m => m.toUpperCase() === hitMat.toUpperCase());
+                return hasIt ? prev : [...prev, hitMat];
+              });
+              const matchEntry = allMaterials.find(m =>
+                (!hit.party || (m.party || '').trim().toUpperCase() === (hit.party || '').trim().toUpperCase()) &&
+                (m.material || '').trim().toUpperCase() === hitMat.toUpperCase()
+              );
+              if (matchEntry && matchEntry.rate !== undefined && matchEntry.rate !== null) {
+                setRate(matchEntry.rate.toString());
+              }
+            }
+          }
+          if (hit.destination) {
+            setDestination(hit.destination.trim());
+          }
+          if (hit.source) {
+            setSource(hit.source.trim());
+          }
+          const isHitLocal = hit.party && (hit.party.trim().toUpperCase() === 'LOCAL SALE' || hit.party.trim().toUpperCase().startsWith('LOCAL SALE'));
+          if (hit.payment && hit.payment.trim()) {
+            const slipPay = hit.payment.trim();
+            if (isHitLocal) {
+              setPayment(slipPay.toUpperCase() === 'CREDIT' ? 'Cash' : slipPay);
+            } else {
+              setPayment(slipPay);
+            }
+          } else {
+            setPayment(isHitLocal ? 'Cash' : 'Credit');
+          }
+          if (hit.phone) {
+            setPhone(hit.phone.trim());
+          }
+          if (hit.transporter && hit.transporter.trim()) {
+            setTransporter(hit.transporter.trim());
+          }
+          // Do NOT overwrite yourDc from loading slip ("dont consier the dc -number in loading slip")
+
+          // Consider loading slip weight for Gross vs Tare calculation
+          const rawSlipWeight = String(hit.weight || '').trim().replace(/,/g, '');
+          const slipWeightNum = parseFloat(rawSlipWeight) || 0;
+          if (slipWeightNum > 0) {
+            setSavedWeight(rawSlipWeight);
+            const liveWeightNum = parseFloat(netronWeight) || 0;
+            const currentGrossNum = parseFloat(grossVal) || 0;
+            const currentScale = liveWeightNum > 0 ? liveWeightNum : currentGrossNum;
+
+            if (currentScale > 0) {
+              const high = Math.max(currentScale, slipWeightNum).toString();
+              const low = Math.min(currentScale, slipWeightNum).toString();
+              setGrossVal(high);
+              setTareVal(low);
+            } else {
+              setTareVal(rawSlipWeight);
+            }
+          }
+        } else {
+          setActiveLoadingSlip(null);
+              }
+      }).catch(err => {
+        console.error('[SalesWeighmentUnits] Error checking loading slips:', err);
+      });
+    }
+  }, [vehicle]);
 
   // Listen to scale
   useEffect(() => {
@@ -652,14 +849,19 @@ export default function SalesWeighmentUnits() {
 
   const [partyGstin, setPartyGstin] = useState('');
 
-  // Auto-detect GST vs Non-GST & open payment calculation ONLY when LOCAL SALE is selected
+  // Auto-detect GST vs Non-GST & open payment calculation when LOCAL SALE or LOCAL SALE - <Name> is selected
   useEffect(() => {
-    if (party && party.trim().toUpperCase() === 'LOCAL SALE') {
+    const isLocal = party && (party.trim().toUpperCase() === 'LOCAL SALE' || party.trim().toUpperCase().startsWith('LOCAL SALE'));
+    if (isLocal) {
       setLocalScaleMode(true);
       setBillType('NON-GST');
       setPartyGstin('');
+      setPayment('Cash');
     } else {
       setLocalScaleMode(false);
+      if (party) {
+        setPayment('Credit');
+      }
       if (party) {
         const matchedDebitor = (allDebitors || []).find(
           d => d.party && d.party.trim().toUpperCase() === party.trim().toUpperCase()
@@ -667,6 +869,10 @@ export default function SalesWeighmentUnits() {
         if (matchedDebitor) {
           const gstinVal = matchedDebitor.gstin || matchedDebitor.gst || '';
           setPartyGstin(gstinVal);
+          const debPhone = matchedDebitor.phone || matchedDebitor.phoneNumber || matchedDebitor.mobile || matchedDebitor.contact_number || '';
+          if (debPhone) {
+            setPhone(String(debPhone).trim());
+          }
 
           const bType = matchedDebitor.billingType || matchedDebitor.billing_type;
           if (bType) {
@@ -745,6 +951,7 @@ export default function SalesWeighmentUnits() {
   const handleResetForm = () => {
     setSavedTicket(null);
     setIsSaved(false);
+    setActiveLoadingSlip(null);
     setErrors({});
     setVehicle('');
     setGrossVal('');
@@ -753,6 +960,8 @@ export default function SalesWeighmentUnits() {
     setYourDc('');
     setParty('');
     setMaterial('');
+    userManuallyChangedMaterialRef.current = false;
+    lastVehicleRef.current = '';
     setUnitType('tonnes');
     setUnitsVal('');
     setDestination('');
@@ -837,8 +1046,11 @@ export default function SalesWeighmentUnits() {
     const nowTimeFormatted = `${pad(now.getHours())}:${pad(now.getMinutes())}`;
 
     const liveWeight = parseFloat(netronWeight) || 0;
-    const previousWeight = matched ? (parseFloat(String(matched.weight).replace(/,/g, '')) || 0) : 0;
-    const previousDate = matched ? (matched.date || matched.tare_date || matched.date_time || '') : '';
+    const slipWeightVal = (activeLoadingSlip && activeLoadingSlip.weight && activeLoadingSlip.weight !== 'Pending')
+      ? (parseFloat(String(activeLoadingSlip.weight).replace(/,/g, '')) || 0)
+      : 0;
+    const previousWeight = matched ? (parseFloat(String(matched.weight).replace(/,/g, '')) || slipWeightVal) : slipWeightVal;
+    const previousDate = matched ? (matched.date || matched.tare_date || matched.date_time || '') : (activeLoadingSlip?.date_time || '');
     const previousTime = matched ? (matched.time || matched.tare_time || '') : '';
 
     let finalGross = '0';
@@ -847,16 +1059,16 @@ export default function SalesWeighmentUnits() {
     let tareTime = '';
     let grossDateTime = nowFormatted;
 
-    if (matched && previousWeight > 0 && liveWeight > 0) {
+    if (previousWeight > 0 && liveWeight > 0) {
       if (liveWeight >= previousWeight) {
-        // Case 1: Live scale is higher (Gross was weighed NOW, Tare was from Master/Previous)
+        // Case 1: Live scale is higher (Gross was weighed NOW, Tare was from Master/Loading Slip)
         finalGross = liveWeight.toString();
         finalTare = previousWeight.toString();
         grossDateTime = nowFormatted;
         tareDate = previousDate || nowDateFormatted;
         tareTime = previousTime || nowTimeFormatted;
       } else {
-        // Case 2: Live scale is lower (Tare is weighed NOW, Gross was from Master/Previous)
+        // Case 2: Live scale is lower (Tare is weighed NOW, Gross was from Master/Loading Slip)
         finalGross = previousWeight.toString();
         finalTare = liveWeight.toString();
         grossDateTime = (previousDate && previousTime) ? `${previousDate} ${previousTime}:00` : (previousDate || nowFormatted);
@@ -959,6 +1171,32 @@ export default function SalesWeighmentUnits() {
       }
 
       const confirmedDc = (savedRecord && (savedRecord.dc_num || savedRecord.dcNum)) || dcNum || 'DC-1';
+
+      if (activeLoadingSlip) {
+        const slipId = activeLoadingSlip.uuid || activeLoadingSlip.dc_num || cleanVehicle;
+        if (api.fulfillLoadingSlip) {
+          api.fulfillLoadingSlip(slipId, nettVal || finalGross).catch(err => {
+            console.error('[SalesWeighmentUnits] Error fulfilling loading slip:', err);
+          });
+        }
+        const completionMode = localStorage.getItem('noris_loading_slip_completion_mode') || 'stay';
+        if (completionMode === 'delete') {
+          if (api.deleteLoadingSlip) {
+            api.deleteLoadingSlip(slipId).catch(() => {});
+          }
+        }
+        // Remove this completed vehicle from vehiclesList immediately so it doesn't show in the dropdown anymore
+        setVehiclesList(prev => prev.filter(v => v.toUpperCase() !== cleanVehicle.toUpperCase()));
+        window.dispatchEvent(new CustomEvent('loading-slip-fulfilled', { 
+          detail: { 
+            vehicle: cleanVehicle, 
+            slipId, 
+            finalWeight: nettVal || finalGross,
+            mode: completionMode 
+          } 
+        }));
+        setActiveLoadingSlip(null);
+      }
 
       const ticketSnapshot = {
         dcNum: confirmedDc,
@@ -1075,6 +1313,60 @@ export default function SalesWeighmentUnits() {
           border-radius: 4px;
           padding: 0.45rem 1.25rem;
         }
+        .saas-card-compact {
+          padding: 0.45rem 0.8rem 0.55rem 0.8rem !important;
+          margin-bottom: 0.15rem !important;
+        }
+        .saas-card-compact .saas-header {
+          padding-bottom: 0.25rem !important;
+          margin-bottom: 0.35rem !important;
+        }
+        .saas-card-compact .saas-label {
+          font-size: 0.65rem !important;
+          margin-bottom: 0.06rem !important;
+          letter-spacing: 0.02em;
+        }
+        .saas-card-compact .saas-input {
+          height: 29px !important;
+          font-size: 0.76rem !important;
+          padding: 0.18rem 0.45rem !important;
+        }
+        .saas-card-compact select.saas-input,
+        .saas-card-compact .form-select.saas-input {
+          height: 29px !important;
+          padding-right: 1.8rem !important;
+          color: #111827 !important;
+          background-color: #ffffff !important;
+          font-weight: 600 !important;
+          font-size: 0.77rem !important;
+          line-height: 1.2 !important;
+        }
+        .sales-compact-no-scroll {
+          overflow-y: hidden !important;
+          padding-bottom: 6px !important;
+        }
+        .saas-card-compact .saas-section {
+          padding: 0.55rem 0.75rem !important;
+          margin-bottom: 0.45rem !important;
+          border-radius: 5px !important;
+        }
+        .saas-card-compact .saas-section-title {
+          font-size: 0.68rem !important;
+          margin-bottom: 0.35rem !important;
+          padding-bottom: 0.15rem !important;
+        }
+        .saas-card-compact .weight-display-input {
+          height: 31px !important;
+          font-size: 0.92rem !important;
+          font-weight: 700 !important;
+          padding: 0.18rem 0.5rem !important;
+        }
+        .saas-card-compact .btn-action-save {
+          height: 35px !important;
+          font-size: 0.9rem !important;
+          font-weight: 700 !important;
+          padding: 0.35rem 1rem !important;
+        }
       `}</style>
 
       {msg && (
@@ -1086,10 +1378,12 @@ export default function SalesWeighmentUnits() {
 
       <div className="row g-3">
         {/* Left Column: Form */}
-        <div className="col-lg-4">
-          <div className="saas-card">
+        <div className={layoutDesign === 'compact' ? 'col-lg-5 sales-compact-no-scroll' : 'col-lg-4'}>
+          <div className={layoutDesign === 'compact' ? 'saas-card saas-card-compact' : 'saas-card'}>
             <div className="saas-header d-flex justify-content-between align-items-center">
-              <span className="saas-title">Sales Weighment (Units)</span>
+              <div className="d-flex align-items-center gap-2">
+                <span className="saas-title">Sales Weighment (Units)</span>
+              </div>
               {savedTicket && (
                 <button
                   type="button"
@@ -1103,292 +1397,617 @@ export default function SalesWeighmentUnits() {
               )}
             </div>
 
-            <form onSubmit={handleSave} className="row g-2">
-              <div className="col-6">
-                <div className="d-flex justify-content-between align-items-center mb-1">
-                  <label className="saas-label mb-0">DC Num/RST</label>
-                  <button
-                    type="button"
-                    className="btn btn-link p-0 text-decoration-none small fw-semibold text-primary"
-                    style={{ fontSize: '0.75rem' }}
-                    onClick={() => Promise.resolve(getNextDcNumber(billType, 'DC-', 'sales')).then(val => val && setDcNum(val))}
-                    title="Refresh DC Number"
-                  >
-
-                    ↻ Refresh
-                  </button>
+            {layoutDesign === 'compact' ? (
+              /* ✨ NEW DESIGN: Compact Screen-Fit (No Scroll) */
+              <form onSubmit={handleSave} className="row g-1.5">
+                {/* Row 1: DC Num/RST & Your DC */}
+                <div className="col-6">
+                  <div className="d-flex justify-content-between align-items-center mb-0.5">
+                    <label className="saas-label mb-0">DC Num/RST</label>
+                    <button
+                      type="button"
+                      className="btn btn-link p-0 text-decoration-none small fw-semibold text-primary"
+                      style={{ fontSize: '0.72rem' }}
+                      onClick={() => Promise.resolve(getNextDcNumber(billType, 'DC-', 'sales')).then(val => val && setDcNum(val))}
+                      title="Refresh DC Number"
+                    >
+                      ↻ Refresh
+                    </button>
+                  </div>
+                  <input type="text" className="form-control saas-input saas-input-readonly fw-semibold" value={dcNum} readOnly />
                 </div>
-                <input type="text" className="form-control saas-input saas-input-readonly fw-semibold" value={dcNum} readOnly />
-              </div>
-              <div className="col-6">
-                <label className="saas-label">Your DC</label>
-                <input type="text" className="form-control saas-input" value={yourDc} onChange={(e) => setYourDc(e.target.value)} />
-              </div>
-              <div className="col-12">
-                <label className="saas-label">Vehicle</label>
-                <SearchableSelect
-                  className="saas-input"
-                  value={vehicle}
-                  onChange={(val) => {
-                    setVehicle(val);
-                    if (errors.vehicle) setErrors(prev => ({ ...prev, vehicle: undefined }));
-                  }}
-                  options={vehiclesList}
-                  placeholder="Select Vehicle..."
-                  required
-                />
-                {errors.vehicle && (
-                  <div className="text-danger mt-1" style={{ fontSize: '0.72rem', fontWeight: '500' }}>
-                    {errors.vehicle}
-                  </div>
-                )}
-              </div>
-              <div className="col-12">
-                <label className="saas-label">Party</label>
-                <SearchableSelect
-                  className="saas-input"
-                  value={party}
-                  onChange={setParty}
-                  options={partiesList}
-                  placeholder="Select Party..."
-                />
-                {errors.party && (
-                  <div className="text-danger mt-1" style={{ fontSize: '0.72rem', fontWeight: '500' }}>
-                    {errors.party}
-                  </div>
-                )}
-              </div>
-
-              <div className="col-12 my-2">
-                <label className="saas-label">Material</label>
-                <SearchableSelect
-                  className="saas-input mb-1"
-                  value={material}
-                  options={availableMaterials}
-                  placeholder={!party ? '-- Select Party First --' : (availableMaterials.length > 0 ? '-- Select Material --' : '-- No Materials for Party --')}
-                  onChange={(newMat) => {
-                    setMaterial(newMat);
-                    const matchEntry = allMaterials.find(m =>
-                      (m.party || '').trim().toUpperCase() === party.trim().toUpperCase() &&
-                      (m.material || '').trim().toUpperCase() === newMat.trim().toUpperCase()
-                    );
-                    if (matchEntry && matchEntry.rate !== undefined && matchEntry.rate !== null) {
-                      setRate(matchEntry.rate.toString());
-                    }
-                  }}
-                />
-                {errors.material && (
-                  <div className="text-danger mb-2" style={{ fontSize: '0.72rem', fontWeight: '500' }}>
-                    {errors.material}
-                  </div>
-                )}
-                <div className="d-flex gap-4 align-items-center">
-                  <div className="form-check">
-                    <input className="form-check-input" type="radio" name="unitType" id="tonnesCheck" checked={unitType === 'tonnes'} onChange={() => setUnitType('tonnes')} />
-                    <label className="form-check-label small fw-semibold" htmlFor="tonnesCheck">Tonnes Mode</label>
-                  </div>
-                  <div className="form-check">
-                    <input className="form-check-input" type="radio" name="unitType" id="unitsCheck" checked={unitType === 'units'} onChange={() => setUnitType('units')} />
-                    <label className="form-check-label small fw-semibold" htmlFor="unitsCheck">Units Mode</label>
-                  </div>
+                <div className="col-6">
+                  <label className="saas-label">Your DC</label>
+                  <input type="text" className="form-control saas-input" value={yourDc} onChange={(e) => setYourDc(e.target.value)} />
                 </div>
-              </div>
 
-              {unitType === 'units' && (
-                <div className="col-12">
-                  <label className="saas-label">Units</label>
-                  <input type="number" className="form-control saas-input" placeholder="Number of Units" value={unitsVal} onChange={(e) => setUnitsVal(e.target.value)} />
+                {/* Row 2: Vehicle & Party */}
+                <div className="col-6">
+                  <label className="saas-label">Vehicle</label>
+                  <SearchableSelect
+                    className="saas-input"
+                    value={vehicle}
+                    onChange={(val) => {
+                      setVehicle(val);
+                      if (errors.vehicle) setErrors(prev => ({ ...prev, vehicle: undefined }));
+                    }}
+                    options={vehiclesList}
+                    placeholder="Select Vehicle..."
+                    allowCustom={true}
+                    required
+                  />
+                  {errors.vehicle && (
+                    <div className="text-danger mt-0.5" style={{ fontSize: '0.68rem', fontWeight: '500' }}>
+                      {errors.vehicle}
+                    </div>
+                  )}
                 </div>
-              )}
+                <div className="col-6">
+                  <label className="saas-label">Party</label>
+                  <SearchableSelect
+                    className="saas-input"
+                    value={party}
+                    onChange={setParty}
+                    options={partiesList}
+                    placeholder="Select Party..."
+                    disabled={isLocked}
+                  />
+                  {errors.party && (
+                    <div className="text-danger mt-0.5" style={{ fontSize: '0.68rem', fontWeight: '500' }}>
+                      {errors.party}
+                    </div>
+                  )}
+                </div>
 
-              <div className="col-6">
-                <label className="saas-label">Destination</label>
-                <SearchableSelect
-                  className="saas-input"
-                  value={destination}
-                  onChange={setDestination}
-                  options={availableDestinations.length > 0 ? availableDestinations : ['OUT']}
-                  placeholder="OUT"
-                  allowCustom={true}
-                />
-                {errors.destination && (
-                  <div className="text-danger mt-1" style={{ fontSize: '0.72rem', fontWeight: '500' }}>
-                    {errors.destination}
-                  </div>
-                )}
-              </div>
-              <div className="col-6">
-                <label className="saas-label">Source</label>
-                <SearchableSelect
-                  className="saas-input"
-                  value={source}
-                  onChange={setSource}
-                  options={sourcesList}
-                  placeholder="Select Source..."
-                  allowCustom={true}
-                />
-              </div>
-              <div className="col-6">
-                <label className="saas-label">Transporter</label>
-                <SearchableSelect
-                  className="saas-input"
-                  value={transporter}
-                  options={transportersList}
-                  placeholder="-- Select Transporter --"
-                  allowCustom={true}
-                  onChange={(selectedTrans) => {
-                    setTransporter(selectedTrans);
-                    if (selectedTrans) {
-                      const transUpper = selectedTrans.trim().toUpperCase();
-                      const transRecord = allTransporters.find(t =>
-                        (t.transporterName || t.transporter || '').trim().toUpperCase() === transUpper &&
-                        t.destination && t.destination.trim().toUpperCase() !== 'OUT'
+                {/* Row 3: Material & Mode / Units */}
+                <div className="col-6">
+                  <label className="saas-label">Material</label>
+                  <SearchableSelect
+                    className="saas-input"
+                    value={material}
+                    options={availableMaterials}
+                    placeholder={!party ? '-- Select Party First --' : (availableMaterials.length > 0 ? '-- Select Material --' : '-- No Materials --')}
+                    disabled={isLocked}
+                    onChange={(newMat) => {
+                      userManuallyChangedMaterialRef.current = true;
+                      setMaterial(newMat);
+                      const matchEntry = allMaterials.find(m =>
+                        (m.party || '').trim().toUpperCase() === party.trim().toUpperCase() &&
+                        (m.material || '').trim().toUpperCase() === newMat.trim().toUpperCase()
                       );
-                      if (transRecord && transRecord.destination && (!destination || destination === 'OUT')) {
-                        setDestination(transRecord.destination);
-                        setAvailableDestinations(prev =>
-                          prev.includes(transRecord.destination) ? prev : [...prev, transRecord.destination]
-                        );
+                      if (matchEntry && matchEntry.rate !== undefined && matchEntry.rate !== null) {
+                        setRate(matchEntry.rate.toString());
                       }
-                    }
-                  }}
-                />
-                {errors.transporter && (
-                  <div className="text-danger mt-1" style={{ fontSize: '0.72rem', fontWeight: '500' }}>
-                    {errors.transporter}
+                    }}
+                  />
+                  {errors.material && (
+                    <div className="text-danger mt-0.5" style={{ fontSize: '0.68rem', fontWeight: '500' }}>
+                      {errors.material}
+                    </div>
+                  )}
+                </div>
+                <div className="col-6">
+                  <div className="d-flex justify-content-between align-items-center mb-0.5">
+                    <label className="saas-label mb-0">Mode</label>
+                    <div className="d-flex gap-2 align-items-center">
+                      <div className="form-check form-check-inline m-0">
+                        <input className="form-check-input" type="radio" name="unitType" id="tonnesCheckCompact" checked={unitType === 'tonnes'} onChange={() => setUnitType('tonnes')} style={{ cursor: 'pointer' }} />
+                        <label className="form-check-label small fw-semibold" htmlFor="tonnesCheckCompact" style={{ fontSize: '0.72rem', cursor: 'pointer' }}>Tonnes</label>
+                      </div>
+                      <div className="form-check form-check-inline m-0">
+                        <input className="form-check-input" type="radio" name="unitType" id="unitsCheckCompact" checked={unitType === 'units'} onChange={() => setUnitType('units')} style={{ cursor: 'pointer' }} />
+                        <label className="form-check-label small fw-semibold" htmlFor="unitsCheckCompact" style={{ fontSize: '0.72rem', cursor: 'pointer' }}>Units</label>
+                      </div>
+                    </div>
+                  </div>
+                  {unitType === 'units' ? (
+                    <input type="number" className="form-control saas-input" placeholder="Enter Units" value={unitsVal} onChange={(e) => setUnitsVal(e.target.value)} />
+                  ) : (
+                    <input type="text" className="form-control saas-input saas-input-readonly text-center" value="Tonnes Weighment" readOnly disabled />
+                  )}
+                </div>
+
+                {/* Row 4: Destination & Source */}
+                <div className="col-6">
+                  <label className="saas-label">Destination</label>
+                  <SearchableSelect
+                    className="saas-input"
+                    value={destination}
+                    onChange={setDestination}
+                    options={availableDestinations.length > 0 ? availableDestinations : ['OUT']}
+                    placeholder="OUT"
+                    allowCustom={true}
+                    disabled={isLocked}
+                  />
+                  {errors.destination && (
+                    <div className="text-danger mt-0.5" style={{ fontSize: '0.68rem', fontWeight: '500' }}>
+                      {errors.destination}
+                    </div>
+                  )}
+                </div>
+                <div className="col-6">
+                  <label className="saas-label">Source</label>
+                  <SearchableSelect
+                    className="saas-input"
+                    value={source}
+                    onChange={setSource}
+                    options={sourcesList}
+                    placeholder="Select Source..."
+                    allowCustom={true}
+                    disabled={isLocked}
+                  />
+                </div>
+
+                {/* Row 5: Transporter & Driver */}
+                <div className="col-6">
+                  <label className="saas-label">Transporter</label>
+                  <SearchableSelect
+                    className="saas-input"
+                    value={transporter}
+                    options={transportersList}
+                    placeholder="-- Select Transporter --"
+                    allowCustom={true}
+                    onChange={(selectedTrans) => {
+                      setTransporter(selectedTrans);
+                      if (selectedTrans) {
+                        const transUpper = selectedTrans.trim().toUpperCase();
+                        const transRecord = allTransporters.find(t =>
+                          (t.transporterName || t.transporter || '').trim().toUpperCase() === transUpper &&
+                          t.destination && t.destination.trim().toUpperCase() !== 'OUT'
+                        );
+                        if (transRecord && transRecord.destination && (!destination || destination === 'OUT')) {
+                          setDestination(transRecord.destination);
+                          setAvailableDestinations(prev =>
+                            prev.includes(transRecord.destination) ? prev : [...prev, transRecord.destination]
+                          );
+                        }
+                      }
+                    }}
+                  />
+                  {errors.transporter && (
+                    <div className="text-danger mt-0.5" style={{ fontSize: '0.68rem', fontWeight: '500' }}>
+                      {errors.transporter}
+                    </div>
+                  )}
+                </div>
+                <div className="col-6">
+                  <label className="saas-label">Driver</label>
+                  <input type="text" className="form-control saas-input" placeholder="Driver Name" value={driver} onChange={(e) => setDriver(e.target.value)} />
+                </div>
+
+                {/* Row 6: Phone, Payment Mode & Stationary */}
+                <div className="col-4">
+                  <label className="saas-label">Phone</label>
+                  <input
+                    type="text"
+                    className="form-control saas-input"
+                    placeholder="Phone No"
+                    value={phone}
+                    onChange={(e) => setPhone(e.target.value)}
+                    readOnly={isLocked}
+                    style={isLocked ? { backgroundColor: 'var(--surface-2)', cursor: 'not-allowed' } : {}}
+                  />
+                </div>
+                <div className="col-4">
+                  <label className="saas-label">Payment Mode</label>
+                  <select
+                    className="form-select saas-input"
+                    disabled={isLocked}
+                    style={{
+                      color: '#111827',
+                      backgroundColor: isLocked ? 'var(--surface-2)' : '#ffffff',
+                      fontWeight: '600',
+                      fontSize: '0.76rem',
+                      lineHeight: '1.2',
+                      paddingRight: '1.8rem',
+                      cursor: isLocked ? 'not-allowed' : 'pointer'
+                    }}
+                    value={payment || 'Credit'}
+                    onChange={(e) => {
+                      const mode = e.target.value;
+                      setPayment(mode);
+                      if (mode === 'Pending') {
+                        setCashAmount('0');
+                        setUpiAmount('0');
+                        setCreditAmount('0');
+                      }
+                    }}
+                  >
+                    <option value="Credit" style={{ color: '#111827', backgroundColor: '#ffffff' }}>Credit</option>
+                    <option value="Cash" style={{ color: '#111827', backgroundColor: '#ffffff' }}>Cash</option>
+                    <option value="UPI" style={{ color: '#111827', backgroundColor: '#ffffff' }}>UPI</option>
+                    <option value="Pending" style={{ color: '#111827', backgroundColor: '#ffffff' }}>Pending</option>
+                  </select>
+                </div>
+                <div className="col-4">
+                  <label className="saas-label">Stationary</label>
+                  <input type="text" className="form-control saas-input" placeholder="Stationary" value={stationary} onChange={(e) => setStationary(e.target.value)} />
+                </div>
+
+                {/* Row 7: Royalty Type, PO Number & PO Date */}
+                <div className="col-4">
+                  <label className="saas-label">Royalty Type</label>
+                  <select className="form-select saas-input" value={royaltyType} onChange={(e) => setRoyaltyType(e.target.value)}>
+                    <option value="None">None</option>
+                    <option value="Government">Government</option>
+                    <option value="General">General</option>
+                  </select>
+                </div>
+                <div className="col-4">
+                  <label className="saas-label">PO Number</label>
+                  <input type="text" className="form-control saas-input" placeholder="PO Number" value={poNumber} onChange={(e) => setPoNumber(e.target.value)} />
+                </div>
+                <div className="col-4">
+                  <label className="saas-label">PO Date</label>
+                  <input type="date" className="form-control saas-input" value={poDate} onChange={(e) => setPoDate(e.target.value)} />
+                </div>
+              </form>
+            ) : (
+              /* 🏛️ OLD DESIGN: Classic Stacked Layout */
+              <form onSubmit={handleSave} className="row g-2">
+                <div className="col-6">
+                  <div className="d-flex justify-content-between align-items-center mb-1">
+                    <label className="saas-label mb-0">DC Num/RST</label>
+                    <button
+                      type="button"
+                      className="btn btn-link p-0 text-decoration-none small fw-semibold text-primary"
+                      style={{ fontSize: '0.75rem' }}
+                      onClick={() => Promise.resolve(getNextDcNumber(billType, 'DC-', 'sales')).then(val => val && setDcNum(val))}
+                      title="Refresh DC Number"
+                    >
+                      ↻ Refresh
+                    </button>
+                  </div>
+                  <input type="text" className="form-control saas-input saas-input-readonly fw-semibold" value={dcNum} readOnly />
+                </div>
+                <div className="col-6">
+                  <label className="saas-label">Your DC</label>
+                  <input type="text" className="form-control saas-input" value={yourDc} onChange={(e) => setYourDc(e.target.value)} />
+                </div>
+                <div className="col-12">
+                  <label className="saas-label">Vehicle</label>
+                  <SearchableSelect
+                    className="saas-input"
+                    value={vehicle}
+                    onChange={(val) => {
+                      setVehicle(val);
+                      if (errors.vehicle) setErrors(prev => ({ ...prev, vehicle: undefined }));
+                    }}
+                    options={vehiclesList}
+                    placeholder="Select Vehicle..."
+                    allowCustom={true}
+                    required
+                  />
+                  {errors.vehicle && (
+                    <div className="text-danger mt-1" style={{ fontSize: '0.72rem', fontWeight: '500' }}>
+                      {errors.vehicle}
+                    </div>
+                  )}
+                </div>
+                <div className="col-12">
+                  <label className="saas-label">Party</label>
+                  <SearchableSelect
+                    className="saas-input"
+                    value={party}
+                    onChange={setParty}
+                    options={partiesList}
+                    placeholder="Select Party..."
+                    disabled={isLocked}
+                  />
+                  {errors.party && (
+                    <div className="text-danger mt-1" style={{ fontSize: '0.72rem', fontWeight: '500' }}>
+                      {errors.party}
+                    </div>
+                  )}
+                </div>
+
+                <div className="col-12 my-2">
+                  <label className="saas-label">Material</label>
+                  <SearchableSelect
+                    className="saas-input mb-1"
+                    value={material}
+                    options={availableMaterials}
+                    placeholder={!party ? '-- Select Party First --' : (availableMaterials.length > 0 ? '-- Select Material --' : '-- No Materials for Party --')}
+                    disabled={isLocked}
+                    onChange={(newMat) => {
+                      userManuallyChangedMaterialRef.current = true;
+                      setMaterial(newMat);
+                      const matchEntry = allMaterials.find(m =>
+                        (m.party || '').trim().toUpperCase() === party.trim().toUpperCase() &&
+                        (m.material || '').trim().toUpperCase() === newMat.trim().toUpperCase()
+                      );
+                      if (matchEntry && matchEntry.rate !== undefined && matchEntry.rate !== null) {
+                        setRate(matchEntry.rate.toString());
+                      }
+                    }}
+                  />
+                  {errors.material && (
+                    <div className="text-danger mb-2" style={{ fontSize: '0.72rem', fontWeight: '500' }}>
+                      {errors.material}
+                    </div>
+                  )}
+                  <div className="d-flex gap-4 align-items-center">
+                    <div className="form-check">
+                      <input className="form-check-input" type="radio" name="unitType" id="tonnesCheck" checked={unitType === 'tonnes'} onChange={() => setUnitType('tonnes')} />
+                      <label className="form-check-label small fw-semibold" htmlFor="tonnesCheck">Tonnes Mode</label>
+                    </div>
+                    <div className="form-check">
+                      <input className="form-check-input" type="radio" name="unitType" id="unitsCheck" checked={unitType === 'units'} onChange={() => setUnitType('units')} />
+                      <label className="form-check-label small fw-semibold" htmlFor="unitsCheck">Units Mode</label>
+                    </div>
+                  </div>
+                </div>
+
+                {unitType === 'units' && (
+                  <div className="col-12">
+                    <label className="saas-label">Units</label>
+                    <input type="number" className="form-control saas-input" placeholder="Number of Units" value={unitsVal} onChange={(e) => setUnitsVal(e.target.value)} />
                   </div>
                 )}
-              </div>
-              <div className="col-6">
-                <label className="saas-label">Driver</label>
-                <input type="text" className="form-control saas-input" value={driver} onChange={(e) => setDriver(e.target.value)} />
-              </div>
-              <div className="col-6">
-                <label className="saas-label">Phone</label>
-                <input type="text" className="form-control saas-input" value={phone} onChange={(e) => setPhone(e.target.value)} />
-              </div>
-              <div className="col-6">
-                <label className="saas-label">Stationary</label>
-                <input type="text" className="form-control saas-input" value={stationary} onChange={(e) => setStationary(e.target.value)} />
-              </div>
-              <div className="col-6">
-                <label className="saas-label">Royalty Type</label>
-                <select className="form-select saas-input" value={royaltyType} onChange={(e) => setRoyaltyType(e.target.value)}>
-                  <option value="None">None</option>
-                  <option value="Government">Government</option>
-                  <option value="General">General</option>
-                </select>
-              </div>
-              <div className="col-6">
-                <label className="saas-label">PO Number</label>
-                <input type="text" className="form-control saas-input" value={poNumber} onChange={(e) => setPoNumber(e.target.value)} />
-              </div>
-              <div className="col-6">
-                <label className="saas-label">PO Date</label>
-                <input type="date" className="form-control saas-input" value={poDate} onChange={(e) => setPoDate(e.target.value)} />
-              </div>
-              <div className="col-6">
-                <label className="saas-label">Payment Mode</label>
-                <select
-                  className="form-select saas-input"
-                  value={payment || 'Credit'}
-                  onChange={(e) => {
-                    const mode = e.target.value;
-                    setPayment(mode);
-                    if (mode === 'Pending') {
-                      setCashAmount('0');
-                      setUpiAmount('0');
-                      setCreditAmount('0');
-                    }
-                  }}
-                >
-                  <option value="Credit">Credit</option>
-                  <option value="Cash">Cash</option>
-                  <option value="UPI">UPI</option>
-                  <option value="Pending">Pending</option>
-                </select>
-              </div>
 
-            </form>
+                <div className="col-6">
+                  <label className="saas-label">Destination</label>
+                  <SearchableSelect
+                    className="saas-input"
+                    value={destination}
+                    onChange={setDestination}
+                    options={availableDestinations.length > 0 ? availableDestinations : ['OUT']}
+                    placeholder="OUT"
+                    allowCustom={true}
+                  />
+                  {errors.destination && (
+                    <div className="text-danger mt-1" style={{ fontSize: '0.72rem', fontWeight: '500' }}>
+                      {errors.destination}
+                    </div>
+                  )}
+                </div>
+                <div className="col-6">
+                  <label className="saas-label">Source</label>
+                  <SearchableSelect
+                    className="saas-input"
+                    value={source}
+                    onChange={setSource}
+                    options={sourcesList}
+                    placeholder="Select Source..."
+                    allowCustom={true}
+                  />
+                </div>
+                <div className="col-6">
+                  <label className="saas-label">Transporter</label>
+                  <SearchableSelect
+                    className="saas-input"
+                    value={transporter}
+                    options={transportersList}
+                    placeholder="-- Select Transporter --"
+                    allowCustom={true}
+                    onChange={(selectedTrans) => {
+                      setTransporter(selectedTrans);
+                      if (selectedTrans) {
+                        const transUpper = selectedTrans.trim().toUpperCase();
+                        const transRecord = allTransporters.find(t =>
+                          (t.transporterName || t.transporter || '').trim().toUpperCase() === transUpper &&
+                          t.destination && t.destination.trim().toUpperCase() !== 'OUT'
+                        );
+                        if (transRecord && transRecord.destination && (!destination || destination === 'OUT')) {
+                          setDestination(transRecord.destination);
+                          setAvailableDestinations(prev =>
+                            prev.includes(transRecord.destination) ? prev : [...prev, transRecord.destination]
+                          );
+                        }
+                      }
+                    }}
+                  />
+                  {errors.transporter && (
+                    <div className="text-danger mt-1" style={{ fontSize: '0.72rem', fontWeight: '500' }}>
+                      {errors.transporter}
+                    </div>
+                  )}
+                </div>
+                <div className="col-6">
+                  <label className="saas-label">Driver</label>
+                  <input type="text" className="form-control saas-input" value={driver} onChange={(e) => setDriver(e.target.value)} />
+                </div>
+                <div className="col-6">
+                  <label className="saas-label">Phone</label>
+                  <input
+                    type="text"
+                    className="form-control saas-input"
+                    value={phone}
+                    onChange={(e) => setPhone(e.target.value)}
+                    readOnly={isLocked}
+                    style={isLocked ? { backgroundColor: 'var(--surface-2)', cursor: 'not-allowed' } : {}}
+                  />
+                </div>
+                <div className="col-6">
+                  <label className="saas-label">Stationary</label>
+                  <input type="text" className="form-control saas-input" value={stationary} onChange={(e) => setStationary(e.target.value)} />
+                </div>
+                <div className="col-6">
+                  <label className="saas-label">Royalty Type</label>
+                  <select className="form-select saas-input" value={royaltyType} onChange={(e) => setRoyaltyType(e.target.value)}>
+                    <option value="None">None</option>
+                    <option value="Government">Government</option>
+                    <option value="General">General</option>
+                  </select>
+                </div>
+                <div className="col-6">
+                  <label className="saas-label">PO Number</label>
+                  <input type="text" className="form-control saas-input" value={poNumber} onChange={(e) => setPoNumber(e.target.value)} />
+                </div>
+                <div className="col-6">
+                  <label className="saas-label">PO Date</label>
+                  <input type="date" className="form-control saas-input" value={poDate} onChange={(e) => setPoDate(e.target.value)} />
+                </div>
+                <div className="col-6">
+                  <label className="saas-label">Payment Mode</label>
+                  <select
+                    className="form-select saas-input"
+                    value={payment || 'Credit'}
+                    disabled={isLocked}
+                    onChange={(e) => {
+                      const mode = e.target.value;
+                      setPayment(mode);
+                      if (mode === 'Pending') {
+                        setCashAmount('0');
+                        setUpiAmount('0');
+                        setCreditAmount('0');
+                      }
+                    }}
+                  >
+                    <option value="Credit">Credit</option>
+                    <option value="Cash">Cash</option>
+                    <option value="UPI">UPI</option>
+                    <option value="Pending">Pending</option>
+                  </select>
+                </div>
+
+              </form>
+            )}
           </div>
         </div>
 
         {/* Middle Column: Weighment & Payment Details */}
-        <div className="col-lg-4">
-          <div className="saas-card">
+        <div className={layoutDesign === 'compact' ? 'col-lg-4 sales-compact-no-scroll' : 'col-lg-4'}>
+          <div className={layoutDesign === 'compact' ? 'saas-card saas-card-compact' : 'saas-card'}>
             <div className="saas-header">
               <span className="saas-title">Weighment Details</span>
             </div>
 
-            <div className="saas-section" style={{ backgroundColor: 'var(--surface-2)' }}>
-              <div className="row g-2 align-items-center mb-2">
-                <div className="col-4"><span className="saas-label" style={{ color: 'var(--primary-ink)' }}>Gross</span></div>
-                <div className="col-8">
-                  <input type="number" className="form-control saas-input saas-input-readonly text-center fw-bold" style={{ color: 'var(--primary-ink)' }} value={grossVal} readOnly />
-                </div>
-              </div>
-              <div className="row g-2 align-items-center mb-2">
-                <div className="col-4"><span className="saas-label" style={{ color: '#16a34a' }}>Tare</span></div>
-                <div className="col-8">
-                  <input type="number" className="form-control saas-input saas-input-readonly text-center fw-bold" style={{ color: '#16a34a' }} value={tareVal} readOnly />
-                </div>
-              </div>
-              <div className="row g-2 align-items-center">
-                <div className="col-4"><span className="saas-label" style={{ color: '#dc2626' }}>Nett</span></div>
-                <div className="col-8">
-                  <input type="number" className="form-control saas-input saas-input-readonly text-center fw-bold" style={{ color: '#dc2626', backgroundColor: '#ffffff' }} value={nettVal} readOnly />
-                </div>
-              </div>
-            </div>
-
-            {localScaleMode && (
-              <div className="saas-section mt-3">
-                <div className="saas-section-title mb-2">Payment Calculation</div>
-                <div className="row g-2">
-                  <div className="col-6">
-                    <label className="saas-label">Rate</label>
-                    <input type="number" className="form-control saas-input" value={rate} onChange={(e) => setRate(e.target.value)} />
-                  </div>
-                  <div className="col-6">
-                    <label className="saas-label">Amount</label>
-                    <input type="text" className="form-control saas-input saas-input-readonly" value={amount} readOnly />
-                  </div>
-                  <div className="col-6">
-                    <label className="saas-label d-flex justify-content-between align-items-center">
-                      <span>Transport</span>
-                      {partyTransportRate && (
-                        <span className="text-muted fw-normal" style={{ fontSize: '0.68rem' }}>
-                          {transporterRate ? `₹${partyTransportAmount} - ₹${transporterAmount}` : `₹${partyTransportRate}/${partyTransportMeasurement}`}
-                        </span>
-                      )}
-                    </label>
-                    <input type="number" className="form-control saas-input" value={transport} onChange={(e) => setTransport(e.target.value)} />
-                  </div>
-                  <div className="col-6">
-                    <label className="saas-label">Discount</label>
-                    <input type="number" className="form-control saas-input" value={discount} onChange={(e) => setDiscount(e.target.value)} />
-                  </div>
-                  <div className="col-12 mt-2">
-                    <label className="saas-label" style={{ color: 'var(--primary-ink)' }}>Grand Total</label>
-                    <input type="text" className="form-control saas-input saas-input-readonly fw-bold text-center text-primary" style={{ fontSize: '1rem' }} value={grandTotal} readOnly />
+            {layoutDesign === 'compact' ? (
+              <div className="saas-section mb-1.5" style={{ backgroundColor: 'var(--surface-2)', padding: '0.4rem 0.6rem' }}>
+                <div className="row g-2 text-center">
+                  <div className="col-4">
+                    <span className="saas-label mb-0.5 d-block" style={{ color: 'var(--primary-ink)', fontWeight: 700, fontSize: '0.7rem' }}>Gross</span>
+                    <input type="number" className="form-control saas-input saas-input-readonly text-center fw-bold weight-display-input" style={{ color: 'var(--primary-ink)', fontSize: '0.92rem' }} value={grossVal} readOnly />
                   </div>
                   <div className="col-4">
-                    <label className="saas-label">Cash</label>
-                    <input type="number" className="form-control saas-input text-center fw-bold text-success" value={cashAmount} onChange={(e) => handleCashChange(e.target.value)} placeholder="0" />
+                    <span className="saas-label mb-0.5 d-block" style={{ color: '#16a34a', fontWeight: 700, fontSize: '0.7rem' }}>Tare</span>
+                    <input type="number" className="form-control saas-input saas-input-readonly text-center fw-bold weight-display-input" style={{ color: '#16a34a' }} value={tareVal} readOnly />
                   </div>
                   <div className="col-4">
-                    <label className="saas-label">UPI</label>
-                    <input type="number" className="form-control saas-input text-center fw-bold text-info" value={upiAmount} onChange={(e) => handleUpiChange(e.target.value)} placeholder="0" />
+                    <span className="saas-label mb-0.5 d-block" style={{ color: '#dc2626', fontWeight: 700, fontSize: '0.7rem' }}>Nett</span>
+                    <input type="number" className="form-control saas-input saas-input-readonly text-center fw-bold weight-display-input" style={{ color: '#dc2626', backgroundColor: '#ffffff' }} value={nettVal} readOnly />
                   </div>
-                  <div className="col-4">
-                    <label className="saas-label">Credit</label>
-                    <input type="number" className="form-control saas-input text-center fw-bold text-warning" value={creditAmount} onChange={(e) => setCreditAmount(e.target.value)} placeholder="0" />
+                </div>
+              </div>
+            ) : (
+              <div className="saas-section" style={{ backgroundColor: 'var(--surface-2)' }}>
+                <div className="row g-2 align-items-center mb-2">
+                  <div className="col-4"><span className="saas-label mb-0" style={{ color: 'var(--primary-ink)' }}>Gross</span></div>
+                  <div className="col-8">
+                    <input type="number" className="form-control saas-input saas-input-readonly text-center fw-bold" style={{ color: 'var(--primary-ink)' }} value={grossVal} readOnly />
+                  </div>
+                </div>
+                <div className="row g-2 align-items-center mb-2">
+                  <div className="col-4"><span className="saas-label mb-0" style={{ color: '#16a34a' }}>Tare</span></div>
+                  <div className="col-8">
+                    <input type="number" className="form-control saas-input saas-input-readonly text-center fw-bold" style={{ color: '#16a34a' }} value={tareVal} readOnly />
+                  </div>
+                </div>
+                <div className="row g-2 align-items-center">
+                  <div className="col-4"><span className="saas-label mb-0" style={{ color: '#dc2626' }}>Nett</span></div>
+                  <div className="col-8">
+                    <input type="number" className="form-control saas-input saas-input-readonly text-center fw-bold" style={{ color: '#dc2626', backgroundColor: '#ffffff' }} value={nettVal} readOnly />
                   </div>
                 </div>
               </div>
             )}
 
-            <div className="d-flex flex-wrap gap-2 mt-4 justify-content-end align-items-center">
+            {localScaleMode && (
+              layoutDesign === 'compact' ? (
+                <div className="saas-section mt-1.5" style={{ padding: '0.4rem 0.6rem' }}>
+                  <div className="saas-section-title mb-1">Payment Calculation</div>
+                  <div className="row g-2">
+                    <div className="col-4">
+                      <label className="saas-label mb-0.5">Rate</label>
+                      <input type="number" className="form-control saas-input" value={rate} onChange={(e) => setRate(e.target.value)} />
+                    </div>
+                    <div className="col-4">
+                      <label className="saas-label mb-0.5">Amount</label>
+                      <input type="text" className="form-control saas-input saas-input-readonly" value={amount} readOnly />
+                    </div>
+                    <div className="col-4">
+                      <label className="saas-label mb-0.5">Discount</label>
+                      <input type="number" className="form-control saas-input" value={discount} onChange={(e) => setDiscount(e.target.value)} />
+                    </div>
+                    <div className="col-6">
+                      <label className="saas-label mb-0.5 d-flex justify-content-between align-items-center">
+                        <span>Transport</span>
+                        {partyTransportRate && (
+                          <span className="text-muted fw-normal" style={{ fontSize: '0.62rem' }}>
+                            {transporterRate ? `₹${partyTransportAmount}` : `₹${partyTransportRate}`}
+                          </span>
+                        )}
+                      </label>
+                      <input type="number" className="form-control saas-input" value={transport} onChange={(e) => setTransport(e.target.value)} />
+                    </div>
+                    <div className="col-6">
+                      <label className="saas-label mb-0.5" style={{ color: 'var(--primary-ink)', fontWeight: 700 }}>Grand Total</label>
+                      <input type="text" className="form-control saas-input saas-input-readonly fw-bold text-center text-primary" style={{ fontSize: '0.88rem' }} value={grandTotal} readOnly />
+                    </div>
+                    <div className="col-4">
+                      <label className="saas-label mb-0.5">Cash</label>
+                      <input type="number" className="form-control saas-input text-center fw-bold text-success" value={cashAmount} onChange={(e) => handleCashChange(e.target.value)} placeholder="0" />
+                    </div>
+                    <div className="col-4">
+                      <label className="saas-label mb-0.5">UPI</label>
+                      <input type="number" className="form-control saas-input text-center fw-bold text-info" value={upiAmount} onChange={(e) => handleUpiChange(e.target.value)} placeholder="0" />
+                    </div>
+                    <div className="col-4">
+                      <label className="saas-label mb-0.5">Credit</label>
+                      <input type="number" className="form-control saas-input text-center fw-bold text-warning" value={creditAmount} onChange={(e) => setCreditAmount(e.target.value)} placeholder="0" />
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="saas-section mt-3">
+                  <div className="saas-section-title mb-1.5">Payment Calculation</div>
+                  <div className="row g-2">
+                    <div className="col-6">
+                      <label className="saas-label">Rate</label>
+                      <input type="number" className="form-control saas-input" value={rate} onChange={(e) => setRate(e.target.value)} />
+                    </div>
+                    <div className="col-6">
+                      <label className="saas-label">Amount</label>
+                      <input type="text" className="form-control saas-input saas-input-readonly" value={amount} readOnly />
+                    </div>
+                    <div className="col-6">
+                      <label className="saas-label d-flex justify-content-between align-items-center">
+                        <span>Transport</span>
+                        {partyTransportRate && (
+                          <span className="text-muted fw-normal" style={{ fontSize: '0.68rem' }}>
+                            {transporterRate ? `₹${partyTransportAmount} - ₹${transporterAmount}` : `₹${partyTransportRate}/${partyTransportMeasurement}`}
+                          </span>
+                        )}
+                      </label>
+                      <input type="number" className="form-control saas-input" value={transport} onChange={(e) => setTransport(e.target.value)} />
+                    </div>
+                    <div className="col-6">
+                      <label className="saas-label">Discount</label>
+                      <input type="number" className="form-control saas-input" value={discount} onChange={(e) => setDiscount(e.target.value)} />
+                    </div>
+                    <div className="col-12 mt-2">
+                      <label className="saas-label" style={{ color: 'var(--primary-ink)' }}>Grand Total</label>
+                      <input type="text" className="form-control saas-input saas-input-readonly fw-bold text-center text-primary" style={{ fontSize: '1rem' }} value={grandTotal} readOnly />
+                    </div>
+                    <div className="col-4">
+                      <label className="saas-label">Cash</label>
+                      <input type="number" className="form-control saas-input text-center fw-bold text-success" value={cashAmount} onChange={(e) => handleCashChange(e.target.value)} placeholder="0" />
+                    </div>
+                    <div className="col-4">
+                      <label className="saas-label">UPI</label>
+                      <input type="number" className="form-control saas-input text-center fw-bold text-info" value={upiAmount} onChange={(e) => handleUpiChange(e.target.value)} placeholder="0" />
+                    </div>
+                    <div className="col-4">
+                      <label className="saas-label">Credit</label>
+                      <input type="number" className="form-control saas-input text-center fw-bold text-warning" value={creditAmount} onChange={(e) => setCreditAmount(e.target.value)} placeholder="0" />
+                    </div>
+                  </div>
+                </div>
+              )
+            )}
+
+            <div className={`d-flex flex-wrap gap-2 ${layoutDesign === 'compact' ? 'mt-2' : 'mt-4'} justify-content-end align-items-center`}>
               {savedTicket ? (
                 <>
                   <span className="text-secondary w-100 text-end mb-1" style={{ fontSize: '0.75rem' }}>
@@ -1405,7 +2024,7 @@ export default function SalesWeighmentUnits() {
                   </button>
                 </>
               ) : (
-                <button type="button" onClick={handleSave} className="btn btn-success saas-btn w-100">
+                <button type="button" onClick={handleSave} className={`btn btn-success saas-btn w-100 ${layoutDesign === 'compact' ? 'btn-action-save' : ''}`}>
                   Save
                 </button>
               )}
@@ -1414,7 +2033,7 @@ export default function SalesWeighmentUnits() {
         </div>
 
         {/* Right Column: Camera feeds */}
-        <div className="col-lg-4">
+        <div className={layoutDesign === 'compact' ? 'col-lg-3' : 'col-lg-4'}>
           <div className="saas-card overflow-auto" style={{ maxHeight: 'calc(100vh - 180px)' }}>
             <div className="saas-header">
               <span className="saas-title">Live Feeds</span>
