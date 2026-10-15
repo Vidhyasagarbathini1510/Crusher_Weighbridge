@@ -16,6 +16,7 @@ import {
 } from '../utils/rptPageHeader.js';
 import { useScale } from '../context/ScaleContext.jsx';
 import { VEHICLE_OPTION_MODES, getVehicleOptionMode, setVehicleOptionMode } from '../utils/vehicleFilterUtil.js';
+import { SALES_SUMMARY_PRINT_MODES, getSalesSummaryPrintMode, setSalesSummaryPrintMode } from '../utils/salesSummaryPrinter.js';
 
 
 // Display names for the slip templates. The `id` is the value stored in
@@ -300,6 +301,123 @@ export default function Settings() {
     window.dispatchEvent(new CustomEvent('sales-layout-changed', { detail: { design } }));
     setMsg(`Sales Weighment layout updated to "${design === 'compact' ? 'New Design (Screen-Fit / No Scroll)' : 'Old Design (Classic / Standard)'}".`);
     setTimeout(() => setMsg(''), 4000);
+  };
+
+  // Sales Summary Report Print Mode State ('NORMAL' or 'DOT_MATRIX')
+  const [salesSummaryPrintMode, setSalesSummaryPrintModeState] = useState(
+    () => getSalesSummaryPrintMode()
+  );
+
+  const handleSaveSalesSummaryPrintMode = (mode) => {
+    setSalesSummaryPrintMode(mode);
+    setSalesSummaryPrintModeState(mode);
+    setMsg(`Sales Summary Report Print Mode updated to "${mode === SALES_SUMMARY_PRINT_MODES.DOT_MATRIX ? 'Dot Matrix Printer (Quarry Report)' : 'Normal Report (Standard A4)'}".`);
+    setTimeout(() => setMsg(''), 4000);
+  };
+
+  // DC Cyclic Sequence Settings State (e.g. 1 to 50, then restart at 1)
+  const [dcCycleLimitEnabled, setDcCycleLimitEnabled] = useState(() => {
+    return localStorage.getItem('noris_dc_cycle_limit_enabled') === 'true';
+  });
+  const [dcCycleLimitMax, setDcCycleLimitMax] = useState(() => {
+    return localStorage.getItem('noris_dc_cycle_limit_max') || '50';
+  });
+
+  useEffect(() => {
+    if (api && api.getSettings) {
+      api.getSettings().then(s => {
+        if (s) {
+          if (s.dc_cycle_limit_enabled !== undefined) {
+            const en = String(s.dc_cycle_limit_enabled).toLowerCase() === 'true' || s.dc_cycle_limit_enabled === '1' || s.dc_cycle_limit_enabled === true;
+            setDcCycleLimitEnabled(en);
+            localStorage.setItem('noris_dc_cycle_limit_enabled', en ? 'true' : 'false');
+          }
+          if (s.dc_cycle_limit_max !== undefined) {
+            const m = String(s.dc_cycle_limit_max || '50');
+            setDcCycleLimitMax(m);
+            localStorage.setItem('noris_dc_cycle_limit_max', m);
+          }
+        }
+      }).catch(() => {});
+    }
+  }, []);
+
+  const handleSaveDcCycleLimit = async (enabledVal, maxVal) => {
+    const isEn = enabledVal !== undefined ? enabledVal : dcCycleLimitEnabled;
+    const maxNum = maxVal !== undefined ? Math.max(1, parseInt(maxVal, 10) || 50) : Math.max(1, parseInt(dcCycleLimitMax, 10) || 50);
+
+    setDcCycleLimitEnabled(isEn);
+    setDcCycleLimitMax(String(maxNum));
+    localStorage.setItem('noris_dc_cycle_limit_enabled', isEn ? 'true' : 'false');
+    localStorage.setItem('noris_dc_cycle_limit_max', String(maxNum));
+
+    try {
+      if (api && api.saveSetting) {
+        await api.saveSetting('dc_cycle_limit_enabled', isEn ? 'true' : 'false');
+        await api.saveSetting('dc_cycle_limit_max', String(maxNum));
+      }
+      setMsg(isEn 
+        ? `✔ DC Number Cycle Limit enabled: Sequence will count up to ${maxNum} and then restart from 1.`
+        : `✔ Continuous DC Number Sequence restored (Cycle Limit Disabled).`
+      );
+    } catch (err) {
+      console.error('Error saving DC cycle limit:', err);
+      setMsg(`Error saving DC cycle limit: ${err.message}`);
+    }
+  };
+
+  // Boulders Manual Weight Entry Mode State & Password Protection (Noris@123)
+  const [bouldersManualEntry, setBouldersManualEntry] = useState(() => {
+    return localStorage.getItem('noris_boulders_manual_entry') === 'true';
+  });
+  const [showBouldersPasswordModal, setShowBouldersPasswordModal] = useState(false);
+  const [bouldersTargetState, setBouldersTargetState] = useState(false);
+  const [bouldersPasswordInput, setBouldersPasswordInput] = useState('');
+  const [bouldersPasswordError, setBouldersPasswordError] = useState('');
+  const [showBouldersPasswordText, setShowBouldersPasswordText] = useState(false);
+
+  useEffect(() => {
+    if (api.getSettings) {
+      api.getSettings().then((s) => {
+        if (s && s.boulders_manual_entry !== undefined) {
+          const val = s.boulders_manual_entry === 'true' || s.boulders_manual_entry === true;
+          setBouldersManualEntry(val);
+          localStorage.setItem('noris_boulders_manual_entry', val ? 'true' : 'false');
+        }
+      }).catch(err => console.error('[Settings] Error loading boulders manual setting:', err));
+    }
+  }, []);
+
+  const handleRequestBouldersManualToggle = (targetVal) => {
+    setBouldersTargetState(targetVal);
+    setBouldersPasswordInput('');
+    setBouldersPasswordError('');
+    setShowBouldersPasswordText(false);
+    setShowBouldersPasswordModal(true);
+  };
+
+  const handleConfirmBouldersPassword = async () => {
+    if (bouldersPasswordInput === 'Noris@123') {
+      const newVal = bouldersTargetState;
+      setBouldersManualEntry(newVal);
+      localStorage.setItem('noris_boulders_manual_entry', newVal ? 'true' : 'false');
+      try {
+        if (api.saveSetting) {
+          await api.saveSetting('boulders_manual_entry', newVal ? 'true' : 'false');
+        }
+      } catch (e) {
+        console.error('Error saving boulders manual entry setting:', e);
+      }
+      window.dispatchEvent(new Event('storage'));
+      window.dispatchEvent(new CustomEvent('boulders-manual-entry-changed', { detail: { enabled: newVal } }));
+      setShowBouldersPasswordModal(false);
+      setBouldersPasswordInput('');
+      setBouldersPasswordError('');
+      setMsg(`Boulders Manual Weight Entry mode ${newVal ? 'ENABLED' : 'DISABLED'} successfully.`);
+      setTimeout(() => setMsg(''), 4000);
+    } else {
+      setBouldersPasswordError('Incorrect password! Access denied.');
+    }
   };
 
   useEffect(() => {
@@ -1406,6 +1524,86 @@ export default function Settings() {
               )}
             </div>
 
+            {/* Sales Summary Report Print Mode Setting */}
+            <div className="mt-4 pt-3 border-top">
+              <div className="d-flex justify-content-between align-items-center mb-2">
+                <div>
+                  <h6 className="fw-bold mb-1" style={{ color: 'var(--ink)' }}>🖨️ Sales Summary Report Print Output Mode</h6>
+                  <p className="text-muted mb-0 small">
+                    Configure the print layout for Sales Summary Report: choose between the standard A4 print preview window or high-speed ESC/P continuous dot-matrix printer format.
+                  </p>
+                </div>
+                <div className="btn-group btn-group-sm" role="group">
+                  <button
+                    type="button"
+                    className={`btn ${salesSummaryPrintMode === SALES_SUMMARY_PRINT_MODES.NORMAL ? 'btn-primary active fw-bold' : 'btn-outline-secondary'}`}
+                    onClick={() => handleSaveSalesSummaryPrintMode(SALES_SUMMARY_PRINT_MODES.NORMAL)}
+                    style={{ fontSize: '0.82rem', padding: '0.35rem 0.9rem' }}
+                  >
+                    📄 Normal (A4 / Laser)
+                  </button>
+                  <button
+                    type="button"
+                    className={`btn ${salesSummaryPrintMode === SALES_SUMMARY_PRINT_MODES.DOT_MATRIX ? 'btn-primary active fw-bold' : 'btn-outline-secondary'}`}
+                    onClick={() => handleSaveSalesSummaryPrintMode(SALES_SUMMARY_PRINT_MODES.DOT_MATRIX)}
+                    style={{ fontSize: '0.82rem', padding: '0.35rem 0.9rem' }}
+                  >
+                    🖨️ Dot Matrix (Quarry ESC/P)
+                  </button>
+                </div>
+              </div>
+
+              <div className="row g-2 mt-2">
+                <div className="col-12 col-md-6">
+                  <div
+                    className={`p-3 rounded-3 border transition-all h-100 ${salesSummaryPrintMode === SALES_SUMMARY_PRINT_MODES.NORMAL ? 'border-primary bg-primary-subtle text-dark shadow-sm' : 'border-secondary-subtle bg-white text-secondary'}`}
+                    style={{ cursor: 'pointer' }}
+                    onClick={() => handleSaveSalesSummaryPrintMode(SALES_SUMMARY_PRINT_MODES.NORMAL)}
+                  >
+                    <div className="d-flex align-items-center gap-2 mb-1">
+                      <input
+                        type="radio"
+                        name="salesSummaryPrintModeRadio"
+                        id="summary_print_normal"
+                        checked={salesSummaryPrintMode === SALES_SUMMARY_PRINT_MODES.NORMAL}
+                        onChange={() => handleSaveSalesSummaryPrintMode(SALES_SUMMARY_PRINT_MODES.NORMAL)}
+                      />
+                      <label htmlFor="summary_print_normal" className="fw-bold mb-0 cursor-pointer" style={{ fontSize: '0.9rem' }}>
+                        📄 Normal Report (Standard A4 Print Window)
+                      </label>
+                    </div>
+                    <p className="mb-0 text-muted" style={{ fontSize: '0.78rem' }}>
+                      Opens the classic popup print preview window for standard laser/inkjet A4 sheets with company masthead and clean tabular borders (previous layout).
+                    </p>
+                  </div>
+                </div>
+
+                <div className="col-12 col-md-6">
+                  <div
+                    className={`p-3 rounded-3 border transition-all h-100 ${salesSummaryPrintMode === SALES_SUMMARY_PRINT_MODES.DOT_MATRIX ? 'border-primary bg-primary-subtle text-dark shadow-sm' : 'border-secondary-subtle bg-white text-secondary'}`}
+                    style={{ cursor: 'pointer' }}
+                    onClick={() => handleSaveSalesSummaryPrintMode(SALES_SUMMARY_PRINT_MODES.DOT_MATRIX)}
+                  >
+                    <div className="d-flex align-items-center gap-2 mb-1">
+                      <input
+                        type="radio"
+                        name="salesSummaryPrintModeRadio"
+                        id="summary_print_dot_matrix"
+                        checked={salesSummaryPrintMode === SALES_SUMMARY_PRINT_MODES.DOT_MATRIX}
+                        onChange={() => handleSaveSalesSummaryPrintMode(SALES_SUMMARY_PRINT_MODES.DOT_MATRIX)}
+                      />
+                      <label htmlFor="summary_print_dot_matrix" className="fw-bold mb-0 cursor-pointer" style={{ fontSize: '0.9rem' }}>
+                        🖨️ Dot Matrix Printer (ESC/P 120-Column Quarry Report)
+                      </label>
+                    </div>
+                    <p className="mb-0 text-muted" style={{ fontSize: '0.78rem' }}>
+                      Directly sends high-speed ESC/P text format with horizontal tab stops to the dot matrix printer on continuous form paper (Quarry Report format with Contractor, Vehicle, Gross, Tare, Nett).
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
             {/* Sales Weighment Units Screen Layout Setting */}
             <div className="mt-4 pt-3 border-top">
               <div className="d-flex justify-content-between align-items-center mb-2">
@@ -1484,6 +1682,209 @@ export default function Settings() {
                   </div>
                 </div>
               </div>
+            </div>
+
+            {/* Boulders Manual Weight Entry Setting (Password Protected: Noris@123) */}
+            <div className="mt-4 pt-3 border-top">
+              <div className="d-flex justify-content-between align-items-center mb-2">
+                <div>
+                  <div className="d-flex align-items-center gap-2">
+                    <h6 className="fw-bold mb-0" style={{ color: 'var(--ink)' }}>🪨 Boulders Manual Weight Entry Mode</h6>
+                    <span className={`badge ${bouldersManualEntry ? 'bg-warning text-dark' : 'bg-secondary-subtle text-secondary'} border px-2 py-0.5`} style={{ fontSize: '0.72rem' }}>
+                      {bouldersManualEntry ? 'Manual Entry Active' : 'Automatic Scale Active'}
+                    </span>
+                  </div>
+                  <p className="text-muted mb-0 small mt-1">
+                    When enabled, operators can type Gross and Tare weights manually in the Boulders Weighment form instead of requiring live scale readings. 
+                    <span className="text-danger fw-semibold ms-1">🔒 Protected by Password (Noris@123)</span>
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  className={`btn btn-sm px-3 py-1.5 fw-semibold d-flex align-items-center gap-1.5 ${
+                    bouldersManualEntry ? 'btn-outline-danger' : 'btn-primary'
+                  }`}
+                  style={{ borderRadius: '6px' }}
+                  onClick={() => handleRequestBouldersManualToggle(!bouldersManualEntry)}
+                >
+                  {bouldersManualEntry ? '🔒 Disable Manual Entry' : '🔓 Enable Manual Entry'}
+                </button>
+              </div>
+
+              <div className="row g-2 mt-1">
+                <div className="col-12 col-md-6">
+                  <div
+                    className={`p-3 rounded-3 border transition-all h-100 ${!bouldersManualEntry ? 'border-primary bg-primary-subtle text-dark shadow-sm' : 'border-secondary-subtle bg-white text-secondary'}`}
+                    style={{ cursor: 'pointer' }}
+                    onClick={() => {
+                      if (bouldersManualEntry) handleRequestBouldersManualToggle(false);
+                    }}
+                  >
+                    <div className="d-flex align-items-center gap-2 mb-1">
+                      <input
+                        type="radio"
+                        name="bouldersManualEntryRadio"
+                        id="boulders_scale_auto"
+                        checked={!bouldersManualEntry}
+                        onChange={() => {
+                          if (bouldersManualEntry) handleRequestBouldersManualToggle(false);
+                        }}
+                      />
+                      <label htmlFor="boulders_scale_auto" className="fw-bold mb-0 cursor-pointer" style={{ fontSize: '0.9rem' }}>
+                        ⚖️ Standard Automatic Scale (Recommended)
+                      </label>
+                    </div>
+                    <p className="mb-0 text-muted" style={{ fontSize: '0.78rem' }}>
+                      Weights are automatically captured from the live Netron scale and vehicle tare records. Manual typing is locked.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="col-12 col-md-6">
+                  <div
+                    className={`p-3 rounded-3 border transition-all h-100 ${bouldersManualEntry ? 'border-warning bg-warning-subtle text-dark shadow-sm' : 'border-secondary-subtle bg-white text-secondary'}`}
+                    style={{ cursor: 'pointer' }}
+                    onClick={() => {
+                      if (!bouldersManualEntry) handleRequestBouldersManualToggle(true);
+                    }}
+                  >
+                    <div className="d-flex align-items-center gap-2 mb-1">
+                      <input
+                        type="radio"
+                        name="bouldersManualEntryRadio"
+                        id="boulders_manual_active"
+                        checked={bouldersManualEntry}
+                        onChange={() => {
+                          if (!bouldersManualEntry) handleRequestBouldersManualToggle(true);
+                        }}
+                      />
+                      <label htmlFor="boulders_manual_active" className="fw-bold mb-0 cursor-pointer" style={{ fontSize: '0.9rem' }}>
+                        ✍️ Manual Weight Entry Mode
+                      </label>
+                    </div>
+                    <p className="mb-0 text-muted" style={{ fontSize: '0.78rem' }}>
+                      Allows operator to type Gross and Tare directly. Protected by security password (Noris@123).
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* DC Number Cycle / Loop Limit Workflow Setting (e.g. 50 -> then continue from 1) */}
+            <div className="mt-4 pt-3 border-top">
+              <div className="d-flex justify-content-between align-items-center mb-2">
+                <div>
+                  <div className="d-flex align-items-center gap-2">
+                    <h6 className="fw-bold mb-0" style={{ color: 'var(--ink)' }}>🔢 DC Number Cycle Limit (Loop Sequence)</h6>
+                    <span className={`badge ${dcCycleLimitEnabled ? 'bg-success-subtle text-success border border-success-subtle' : 'bg-secondary-subtle text-secondary border'} px-2 py-0.5`} style={{ fontSize: '0.72rem' }}>
+                      {dcCycleLimitEnabled ? `Cycle Active (Max: ${dcCycleLimitMax} → 1)` : 'Continuous Sequence Active'}
+                    </span>
+                  </div>
+                  <p className="text-muted mb-0 small mt-1">
+                    For client operations using fixed slip booklets (e.g., 50 slips per book). When enabled, DC numbers count up to the limit (e.g. 50) and then restart automatically from 1 instead of continuing sequentially.
+                  </p>
+                </div>
+                <div className="form-check form-switch fs-5">
+                  <input
+                    className="form-check-input"
+                    type="checkbox"
+                    role="switch"
+                    id="dcCycleLimitSwitch"
+                    checked={dcCycleLimitEnabled}
+                    onChange={(e) => handleSaveDcCycleLimit(e.target.checked, dcCycleLimitMax)}
+                    style={{ cursor: 'pointer' }}
+                  />
+                </div>
+              </div>
+
+              <div className="row g-2 mt-2">
+                <div className="col-12 col-md-6">
+                  <div
+                    className={`p-3 rounded-3 border transition-all h-100 ${!dcCycleLimitEnabled ? 'border-primary bg-primary-subtle text-dark shadow-sm' : 'border-secondary-subtle bg-white text-secondary'}`}
+                    style={{ cursor: 'pointer' }}
+                    onClick={() => handleSaveDcCycleLimit(false, dcCycleLimitMax)}
+                  >
+                    <div className="d-flex align-items-center gap-2 mb-1">
+                      <input
+                        type="radio"
+                        name="dcCycleLimitRadio"
+                        id="dc_cycle_disabled"
+                        checked={!dcCycleLimitEnabled}
+                        onChange={() => handleSaveDcCycleLimit(false, dcCycleLimitMax)}
+                      />
+                      <label htmlFor="dc_cycle_disabled" className="fw-bold mb-0 cursor-pointer" style={{ fontSize: '0.9rem' }}>
+                        ♾️ Standard Continuous Sequence (Default)
+                      </label>
+                    </div>
+                    <p className="mb-0 text-muted" style={{ fontSize: '0.78rem' }}>
+                      Normal uninterrupted sequence: 1, 2, 3... 50, 51, 52... without any cyclic reset.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="col-12 col-md-6">
+                  <div
+                    className={`p-3 rounded-3 border transition-all h-100 ${dcCycleLimitEnabled ? 'border-success bg-success-subtle text-dark shadow-sm' : 'border-secondary-subtle bg-white text-secondary'}`}
+                    style={{ cursor: 'pointer' }}
+                    onClick={() => {
+                      if (!dcCycleLimitEnabled) handleSaveDcCycleLimit(true, dcCycleLimitMax);
+                    }}
+                  >
+                    <div className="d-flex align-items-center gap-2 mb-1">
+                      <input
+                        type="radio"
+                        name="dcCycleLimitRadio"
+                        id="dc_cycle_enabled"
+                        checked={dcCycleLimitEnabled}
+                        onChange={() => handleSaveDcCycleLimit(true, dcCycleLimitMax)}
+                      />
+                      <label htmlFor="dc_cycle_enabled" className="fw-bold mb-0 cursor-pointer" style={{ fontSize: '0.9rem' }}>
+                        🔄 Cyclic Sequence (End at Limit → Continue from 1)
+                      </label>
+                    </div>
+                    <p className="mb-0 text-muted" style={{ fontSize: '0.78rem' }}>
+                      Counts up to {dcCycleLimitMax || 50}, then loops back: <b>1 → {dcCycleLimitMax || 50} → 1 → {dcCycleLimitMax || 50}</b>.
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {dcCycleLimitEnabled && (
+                <div className="p-3 mt-2 rounded-3 bg-light border animate-fade-in d-flex flex-wrap align-items-center justify-content-between gap-3">
+                  <div className="d-flex align-items-center gap-2">
+                    <label htmlFor="dcCycleMaxInput" className="fw-semibold small text-dark mb-0">
+                      End Limit (Reset after DC number):
+                    </label>
+                    <input
+                      type="number"
+                      id="dcCycleMaxInput"
+                      min="1"
+                      max="99999"
+                      className="form-control form-control-sm font-monospace fw-bold text-center border-secondary-subtle"
+                      style={{ width: '90px' }}
+                      value={dcCycleLimitMax}
+                      onChange={(e) => setDcCycleLimitMax(e.target.value)}
+                      onBlur={() => handleSaveDcCycleLimit(true, dcCycleLimitMax)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          handleSaveDcCycleLimit(true, dcCycleLimitMax);
+                        }
+                      }}
+                    />
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-primary py-1 px-2.5 fw-semibold"
+                      style={{ fontSize: '0.78rem' }}
+                      onClick={() => handleSaveDcCycleLimit(true, dcCycleLimitMax)}
+                    >
+                      Save Limit
+                    </button>
+                  </div>
+                  <div className="small text-muted font-monospace">
+                    Loop pattern: <span className="text-primary fw-bold">1, 2, ... {dcCycleLimitMax || 50} → 1, 2, ... {dcCycleLimitMax || 50}</span>
+                  </div>
+                </div>
+              )}
             </div>
 
           </div>
@@ -1725,6 +2126,15 @@ export default function Settings() {
                   </div>
                 </div>
 
+                {dcCycleLimitEnabled && (
+                  <div className="alert alert-info py-2 px-3 mb-0 d-flex align-items-center justify-content-between rounded-3 border" style={{ fontSize: '0.8rem' }}>
+                    <div>
+                      <strong>🔄 Cycle Limit Active:</strong> Numbers will count up to <strong>{dcCycleLimitMax}</strong> and then reset to 1.
+                    </div>
+                    <span className="badge bg-primary">Set in Vehicle & Workflow</span>
+                  </div>
+                )}
+
                 <div className="pt-3 border-top d-flex gap-2">
                   <button 
                     type="button" 
@@ -1836,6 +2246,7 @@ export default function Settings() {
                 <div>
                   <label className="form-label fw-semibold text-secondary mb-1" style={{ fontSize: '0.78rem' }}>Indicator Brand / Protocol</label>
                   <select className="form-select form-select-sm border-secondary-subtle" value={commSettings.company || 'Weitex'} onChange={(e) => setCommSettings({ ...commSettings, company: e.target.value })}>
+                    <option value="K-Stream">K-Stream (Continuous 'k' delimited / e.g. k 0k 0)</option>
                     <option value="Weitex">Weitex (z-delimited continuous stream / 2400 baud)</option>
                     <option value="Icom">Icom (: delimited, /10 scale)</option>
                     <option value="Eassey">Eassey / Essae (: delimited, deduplicated)</option>
@@ -1914,6 +2325,7 @@ export default function Settings() {
                 <div>
                   <label className="form-label fw-semibold text-secondary mb-1" style={{ fontSize: '0.78rem' }}>Indicator Brand / Protocol</label>
                   <select className="form-select form-select-sm border-secondary-subtle" value={unmannedSettings.company || 'Icom'} onChange={(e) => setUnmannedSettings({ ...unmannedSettings, company: e.target.value })}>
+                    <option value="K-Stream">K-Stream (Continuous 'k' delimited / e.g. k 0k 0)</option>
                     <option value="Weitex">Weitex (z-delimited continuous stream / 2400 baud)</option>
                     <option value="Icom">Icom (: delimited, /10 scale)</option>
                     <option value="Eassey">Eassey / Essae (: delimited, deduplicated)</option>
@@ -2953,8 +3365,8 @@ export default function Settings() {
                 </span>
               )}
               <button
-                className="btn fw-bold px-4 py-1"
-                style={{ backgroundColor: '#E0E000', border: '1px solid #999', color: '#000', minWidth: '100px' }}
+                className="btn fw-bold px-4 py-1 text-white shadow-sm"
+                style={{ backgroundColor: '#C9A227', border: '1px solid #b38f20', minWidth: '100px' }}
                 onClick={handleSaveAddress}
               >
                 Save
@@ -3027,8 +3439,8 @@ export default function Settings() {
                 </div>
 
                 <div className="d-flex gap-2 justify-content-center mt-auto">
-                  <button type="submit" className="btn btn-sm fw-bold px-4 text-dark" style={{ backgroundColor: '#E0E000', border: '1px solid #666', minWidth: '80px' }}>Save</button>
-                  <button type="button" className="btn btn-sm fw-bold px-4 text-white" style={{ backgroundColor: '#C84B4B', border: '1px solid #666', minWidth: '80px' }} onClick={() => setRfidForm({ cardNumber: '', vehicle: '', material: 'BOULDERS', contractor: '' })}>Delete</button>
+                  <button type="submit" className="btn btn-sm fw-bold px-4 text-white shadow-sm" style={{ backgroundColor: '#C9A227', border: '1px solid #b38f20', minWidth: '80px' }}>Save</button>
+                  <button type="button" className="btn btn-sm fw-bold px-4 text-white shadow-sm" style={{ backgroundColor: '#C84B4B', border: '1px solid #a83838', minWidth: '80px' }} onClick={() => setRfidForm({ cardNumber: '', vehicle: '', material: 'BOULDERS', contractor: '' })}>Delete</button>
                 </div>
               </form>
             </div>
@@ -3104,8 +3516,8 @@ export default function Settings() {
               <div className="d-flex gap-2 justify-content-center mt-auto">
                 <button 
                   type="button" 
-                  className="btn btn-sm fw-bold px-4 text-dark" 
-                  style={{ backgroundColor: '#E0E000', border: '1px solid #666', minWidth: '80px' }}
+                  className="btn btn-sm fw-bold px-4 text-white shadow-sm" 
+                  style={{ backgroundColor: '#C9A227', border: '1px solid #b38f20', minWidth: '80px' }}
                   onClick={async () => {
                     const trans = (transporterForm.transporter || '').trim();
                     const veh = (transporterForm.vehicleNo || '').trim().toUpperCase();
@@ -3156,8 +3568,8 @@ export default function Settings() {
                 </button>
                 <button 
                   type="button" 
-                  className="btn btn-sm fw-bold px-4 text-white" 
-                  style={{ backgroundColor: '#C84B4B', border: '1px solid #666', minWidth: '80px' }}
+                  className="btn btn-sm fw-bold px-4 text-white shadow-sm" 
+                  style={{ backgroundColor: '#C84B4B', border: '1px solid #a83838', minWidth: '80px' }}
                   onClick={() => setTransporterForm({ transporter: '', vehicleNo: '', capacity: '' })}
                 >
                   Delete
@@ -3380,6 +3792,93 @@ export default function Settings() {
                   onClick={handleSaveRoyaltySettings}
                 >
                   Save Royalty Rates
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* BOULDERS MANUAL ENTRY PASSWORD VERIFICATION MODAL (NORIS@123) */}
+      {showBouldersPasswordModal && (
+        <div
+          className="position-fixed top-0 start-0 w-100 h-100 bg-dark bg-opacity-75 d-flex align-items-center justify-content-center p-3 animate-fade-in"
+          style={{ zIndex: 1100 }}
+        >
+          <div className="card shadow-lg border-0 w-100" style={{ maxWidth: '440px', borderRadius: '10px', overflow: 'hidden' }}>
+            <div className="card-header bg-dark text-white d-flex justify-content-between align-items-center py-2.5 px-3">
+              <span className="fw-bold d-flex align-items-center gap-2" style={{ fontSize: '0.92rem' }}>
+                🔐 Security Verification
+              </span>
+              <button
+                type="button"
+                className="btn-close btn-close-white"
+                onClick={() => {
+                  setShowBouldersPasswordModal(false);
+                  setBouldersPasswordInput('');
+                  setBouldersPasswordError('');
+                }}
+              ></button>
+            </div>
+            <div className="card-body p-4">
+              <p className="text-secondary small mb-3">
+                Please enter the administrative password to <strong>{bouldersTargetState ? 'ENABLE' : 'DISABLE'}</strong> manual weight entry for Boulders.
+              </p>
+
+              <div className="mb-3">
+                <label className="form-label fw-semibold text-dark small mb-1">
+                  Password
+                </label>
+                <div className="input-group">
+                  <input
+                    type={showBouldersPasswordText ? 'text' : 'password'}
+                    className={`form-control form-control-sm ${bouldersPasswordError ? 'is-invalid' : ''}`}
+                    placeholder="Enter password..."
+                    value={bouldersPasswordInput}
+                    onChange={(e) => {
+                      setBouldersPasswordInput(e.target.value);
+                      if (bouldersPasswordError) setBouldersPasswordError('');
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') handleConfirmBouldersPassword();
+                    }}
+                    autoFocus
+                  />
+                  <button
+                    type="button"
+                    className="btn btn-outline-secondary btn-sm"
+                    onClick={() => setShowBouldersPasswordText(!showBouldersPasswordText)}
+                    title={showBouldersPasswordText ? "Hide Password" : "Show Password"}
+                  >
+                    {showBouldersPasswordText ? '👁️' : '🔒'}
+                  </button>
+                </div>
+                {bouldersPasswordError && (
+                  <div className="text-danger small mt-1.5 fw-semibold d-flex align-items-center gap-1">
+                    ⚠️ {bouldersPasswordError}
+                  </div>
+                )}
+              </div>
+
+              <div className="d-flex justify-content-end gap-2 mt-4">
+                <button
+                  type="button"
+                  className="btn btn-sm btn-outline-secondary px-3"
+                  onClick={() => {
+                    setShowBouldersPasswordModal(false);
+                    setBouldersPasswordInput('');
+                    setBouldersPasswordError('');
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-sm btn-primary px-4 fw-semibold"
+                  style={{ backgroundColor: '#C9A227', borderColor: '#C9A227', color: '#1a1a1a' }}
+                  onClick={handleConfirmBouldersPassword}
+                >
+                  Confirm &amp; Apply
                 </button>
               </div>
             </div>

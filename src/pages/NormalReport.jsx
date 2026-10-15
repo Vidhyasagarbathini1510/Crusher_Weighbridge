@@ -227,7 +227,7 @@ export default function NormalReport() {
 
     printClassicSummaryReport({
       summaryTitle: 'Weighment Summary',
-      groupBy: activeTab === 'Material' ? 'Material' : 'Party',
+      groupBy: activeTab === 'Material' ? 'Material' : activeTab === 'Party' ? 'Party' : 'Vehicle',
       fromDate: from,
       toDate: to,
       filters: { party, material, vehicle },
@@ -416,7 +416,7 @@ export default function NormalReport() {
               </div>
 
               <ul className="nav nav-tabs border-bottom-0">
-                {['Report', 'Material', 'Party'].map(tab => (
+                {['Report', 'Material', 'Party', 'Vehicle'].map(tab => (
                   <li key={tab} className="nav-item">
                     <button className={`nav-link ${activeTab === tab ? 'active' : ''}`} onClick={() => setActiveTab(tab)}>{tab}</button>
                   </li>
@@ -498,7 +498,7 @@ export default function NormalReport() {
                 <table className="table table-sm table-hover align-middle" style={{ fontSize: '0.8rem' }}>
                   <thead className="table-light text-uppercase" style={{ fontSize: '0.72rem' }}>
                     <tr>
-                      <th>{activeTab === 'Material' ? 'Material Name' : 'Party / Customer Name'}</th>
+                      <th>{activeTab === 'Material' ? 'Material Name' : activeTab === 'Party' ? 'Party / Customer Name' : 'Vehicle Number'}</th>
                       <th className="text-center">Total Trips</th>
                       <th className="text-end">Total Gross (kg)</th>
                       <th className="text-end">Total Tare (kg)</th>

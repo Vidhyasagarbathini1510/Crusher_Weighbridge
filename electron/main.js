@@ -21,6 +21,7 @@ const NetronReader = require('./socket/NetronReader');
 const db = require('./database/db');
 const dbAdapter = require('./database/dbAdapter');
 const networkServer = require('./services/networkServer');
+const updaterService = require('./services/updaterService');
 
 /**
  * Software-owner password, used ONLY to unlock the Cloud Sync / Company ID
@@ -256,6 +257,9 @@ function registerDatabaseHandlers() {
   ipcMain.handle('db:getSources', async () => {
     return dbAdapter.call('getSources');
   });
+  ipcMain.handle('db:getDrivers', async () => {
+    return dbAdapter.call('getDrivers');
+  });
   ipcMain.handle('db:getVehicleTares', async () => {
     return dbAdapter.call('getVehicleTares');
   });
@@ -426,6 +430,26 @@ function registerDatabaseHandlers() {
   ipcMain.handle('app:report-error', async (event, errStr) => {
     reportApplicationError(errStr);
     return { ok: true };
+  });
+
+  // ---- Auto-Updater IPC Handlers ----
+  ipcMain.handle('app:check-for-updates', async () => {
+    return updaterService.checkForUpdate();
+  });
+
+  ipcMain.handle('app:start-update-download', async (event, downloadUrl) => {
+    updaterService.downloadAndInstallUpdate(downloadUrl, (progress) => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('app:update-progress', progress);
+      }
+    }).catch((err) => {
+      console.error('[Updater] Download error:', err);
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('app:update-error', err.message);
+      }
+    });
+
+    return { started: true };
   });
 }
 
@@ -653,6 +677,19 @@ function createWindow() {
 
   // Start local Python AI Material Detection Engine
   startAiService(win);
+
+  // Background Auto-Update Check (runs 4 seconds after boot)
+  setTimeout(async () => {
+    try {
+      const updateInfo = await updaterService.checkForUpdate();
+      if (updateInfo && updateInfo.hasUpdate && !win.isDestroyed()) {
+        console.log(`[Updater] New version detected: v${updateInfo.latestVersion} (Current: v${updateInfo.currentVersion})`);
+        win.webContents.send('app:update-available', updateInfo);
+      }
+    } catch (err) {
+      console.log('[Updater] Background check error:', err.message);
+    }
+  }, 4000);
 }
 
 // Single Instance Lock: Prevents duplicate instances running in Task Manager

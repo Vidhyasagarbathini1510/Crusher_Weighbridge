@@ -55,6 +55,11 @@ export function ScaleProvider({ children }) {
           setIsConnected(false);
         } else {
           setIsConnected(true);
+          const isBouldersManual = localStorage.getItem('noris_boulders_manual_entry') === 'true';
+          const isBouldersHash = typeof window !== 'undefined' && window.location.hash.toLowerCase().includes('boulders');
+          if (isBouldersManual && isBouldersHash) {
+            return;
+          }
           const numeric = valStr.replace(/[^0-9.-]/g, '');
           if (numeric) {
             setGross(numeric);

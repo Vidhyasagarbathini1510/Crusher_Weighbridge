@@ -81,6 +81,7 @@ export default function SalesWeighmentUnits() {
   const [party, setParty] = useState('');
   const [material, setMaterial] = useState('');
   const userManuallyChangedMaterialRef = useRef(false);
+  const userManuallyEditedSplitRef = useRef(false);
   const lastVehicleRef = useRef('');
   const [unitType, setUnitType] = useState('tonnes'); // tonnes or units
   const [unitsVal, setUnitsVal] = useState('');
@@ -797,7 +798,7 @@ export default function SalesWeighmentUnits() {
     setNettVal(Math.abs(g - t).toString());
   }, [grossVal, tareVal]);
 
-  // Calculate Payment Details & Auto-balance Credit
+  // Calculate Payment Details & Auto-balance Cash, UPI, and Credit
   useEffect(() => {
     const r = parseFloat(rate) || 0;
     const n = parseFloat(nettVal) || 0;
@@ -814,16 +815,60 @@ export default function SalesWeighmentUnits() {
     setGrandTotal(gtStr);
 
     if (payment === 'Pending') {
+      setCashAmount('0');
+      setUpiAmount('0');
       setCreditAmount('0');
+    } else if (!userManuallyEditedSplitRef.current) {
+      // Auto-assign entire grand total based on selected payment mode
+      if (payment === 'Cash') {
+        setCashAmount(gtStr);
+        setUpiAmount('0');
+        setCreditAmount('0');
+      } else if (payment === 'UPI') {
+        setCashAmount('0');
+        setUpiAmount(gtStr);
+        setCreditAmount('0');
+      } else {
+        // Credit (default)
+        setCashAmount('0');
+        setUpiAmount('0');
+        setCreditAmount(gtStr);
+      }
     } else {
+      // User manually customized the split
       const cashNum = parseFloat(cashAmount) || 0;
       const upiNum = parseFloat(upiAmount) || 0;
       const remaining = Math.max(0, gt - cashNum - upiNum);
       setCreditAmount(remaining > 0 ? remaining.toFixed(2) : '0');
     }
-  }, [rate, nettVal, unitsVal, unitType, transport, discount, royaltyAmount, cashAmount, upiAmount, payment]);
+  }, [rate, nettVal, unitsVal, unitType, transport, discount, royaltyAmount, payment]);
+
+  const handlePaymentModeChange = (mode) => {
+    userManuallyEditedSplitRef.current = false;
+    setPayment(mode);
+    const gtNum = parseFloat(grandTotal) || 0;
+    const gtFormatted = gtNum > 0 ? gtNum.toFixed(2) : '0';
+    if (mode === 'Cash') {
+      setCashAmount(gtFormatted);
+      setUpiAmount('0');
+      setCreditAmount('0');
+    } else if (mode === 'UPI') {
+      setCashAmount('0');
+      setUpiAmount(gtFormatted);
+      setCreditAmount('0');
+    } else if (mode === 'Credit') {
+      setCashAmount('0');
+      setUpiAmount('0');
+      setCreditAmount(gtFormatted);
+    } else if (mode === 'Pending') {
+      setCashAmount('0');
+      setUpiAmount('0');
+      setCreditAmount('0');
+    }
+  };
 
   const handleCashChange = (val) => {
+    userManuallyEditedSplitRef.current = true;
     setCashAmount(val);
     const cashNum = parseFloat(val) || 0;
     const upiNum = parseFloat(upiAmount) || 0;
@@ -832,10 +877,13 @@ export default function SalesWeighmentUnits() {
     setCreditAmount(remaining > 0 ? remaining.toFixed(2) : '0');
     if (cashNum > 0 && upiNum === 0 && remaining === 0) {
       setPayment('Cash');
+    } else if (cashNum === 0 && upiNum === 0 && remaining > 0) {
+      setPayment('Credit');
     }
   };
 
   const handleUpiChange = (val) => {
+    userManuallyEditedSplitRef.current = true;
     setUpiAmount(val);
     const upiNum = parseFloat(val) || 0;
     const cashNum = parseFloat(cashAmount) || 0;
@@ -844,6 +892,23 @@ export default function SalesWeighmentUnits() {
     setCreditAmount(remaining > 0 ? remaining.toFixed(2) : '0');
     if (upiNum > 0 && cashNum === 0 && remaining === 0) {
       setPayment('UPI');
+    } else if (cashNum === 0 && upiNum === 0 && remaining > 0) {
+      setPayment('Credit');
+    }
+  };
+
+  const handleCreditChange = (val) => {
+    userManuallyEditedSplitRef.current = true;
+    setCreditAmount(val);
+    const creditNum = parseFloat(val) || 0;
+    const upiNum = parseFloat(upiAmount) || 0;
+    const gtNum = parseFloat(grandTotal) || 0;
+    const remaining = Math.max(0, gtNum - creditNum - upiNum);
+    setCashAmount(remaining > 0 ? remaining.toFixed(2) : '0');
+    if (creditNum > 0 && upiNum === 0 && remaining === 0) {
+      setPayment('Credit');
+    } else if (creditNum === 0 && upiNum === 0 && remaining > 0) {
+      setPayment('Cash');
     }
   };
 
@@ -851,6 +916,7 @@ export default function SalesWeighmentUnits() {
 
   // Auto-detect GST vs Non-GST & open payment calculation when LOCAL SALE or LOCAL SALE - <Name> is selected
   useEffect(() => {
+    userManuallyEditedSplitRef.current = false;
     const isLocal = party && (party.trim().toUpperCase() === 'LOCAL SALE' || party.trim().toUpperCase().startsWith('LOCAL SALE'));
     if (isLocal) {
       setLocalScaleMode(true);
@@ -949,6 +1015,7 @@ export default function SalesWeighmentUnits() {
   };
 
   const handleResetForm = () => {
+    userManuallyEditedSplitRef.current = false;
     setSavedTicket(null);
     setIsSaved(false);
     setActiveLoadingSlip(null);
@@ -1433,7 +1500,6 @@ export default function SalesWeighmentUnits() {
                     }}
                     options={vehiclesList}
                     placeholder="Select Vehicle..."
-                    allowCustom={true}
                     required
                   />
                   {errors.vehicle && (
@@ -1603,15 +1669,7 @@ export default function SalesWeighmentUnits() {
                       cursor: isLocked ? 'not-allowed' : 'pointer'
                     }}
                     value={payment || 'Credit'}
-                    onChange={(e) => {
-                      const mode = e.target.value;
-                      setPayment(mode);
-                      if (mode === 'Pending') {
-                        setCashAmount('0');
-                        setUpiAmount('0');
-                        setCreditAmount('0');
-                      }
-                    }}
+                    onChange={(e) => handlePaymentModeChange(e.target.value)}
                   >
                     <option value="Credit" style={{ color: '#111827', backgroundColor: '#ffffff' }}>Credit</option>
                     <option value="Cash" style={{ color: '#111827', backgroundColor: '#ffffff' }}>Cash</option>
@@ -1675,7 +1733,6 @@ export default function SalesWeighmentUnits() {
                     }}
                     options={vehiclesList}
                     placeholder="Select Vehicle..."
-                    allowCustom={true}
                     required
                   />
                   {errors.vehicle && (
@@ -1844,15 +1901,7 @@ export default function SalesWeighmentUnits() {
                     className="form-select saas-input"
                     value={payment || 'Credit'}
                     disabled={isLocked}
-                    onChange={(e) => {
-                      const mode = e.target.value;
-                      setPayment(mode);
-                      if (mode === 'Pending') {
-                        setCashAmount('0');
-                        setUpiAmount('0');
-                        setCreditAmount('0');
-                      }
-                    }}
+                    onChange={(e) => handlePaymentModeChange(e.target.value)}
                   >
                     <option value="Credit">Credit</option>
                     <option value="Cash">Cash</option>
@@ -1955,7 +2004,7 @@ export default function SalesWeighmentUnits() {
                     </div>
                     <div className="col-4">
                       <label className="saas-label mb-0.5">Credit</label>
-                      <input type="number" className="form-control saas-input text-center fw-bold text-warning" value={creditAmount} onChange={(e) => setCreditAmount(e.target.value)} placeholder="0" />
+                      <input type="number" className="form-control saas-input text-center fw-bold text-warning" value={creditAmount} onChange={(e) => handleCreditChange(e.target.value)} placeholder="0" />
                     </div>
                   </div>
                 </div>
@@ -2000,7 +2049,7 @@ export default function SalesWeighmentUnits() {
                     </div>
                     <div className="col-4">
                       <label className="saas-label">Credit</label>
-                      <input type="number" className="form-control saas-input text-center fw-bold text-warning" value={creditAmount} onChange={(e) => setCreditAmount(e.target.value)} placeholder="0" />
+                      <input type="number" className="form-control saas-input text-center fw-bold text-warning" value={creditAmount} onChange={(e) => handleCreditChange(e.target.value)} placeholder="0" />
                     </div>
                   </div>
                 </div>

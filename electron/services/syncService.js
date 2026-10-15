@@ -495,6 +495,25 @@ function uploadRecord(syncUrl, record) {
       const grossValStr = String(record.gross !== undefined && record.gross !== null ? record.gross : (record.grossVal || 0));
       const nettValStr = String(record.net !== undefined && record.net !== null ? record.net : (record.nettVal || record.net_weight || 0));
 
+      // Separate party and customer_name strictly according to business requirements:
+      // Case 1: LOCAL SALE - SAGAR -> party: "LOCAL SALE", customer_name: "SAGAR"
+      // Case 2: LOCAL SALE -> party: "LOCAL SALE", customer_name: ""
+      // Case 3: RAMESH -> party: "RAMESH", customer_name: ""
+      const rawParty = String(record.party || record.contractor || '').trim();
+      let cleanParty = rawParty;
+      let customerName = '';
+      const localMatch = rawParty.match(/^LOCAL\s+SALE\s*-\s*(.*)$/i);
+      if (localMatch) {
+        cleanParty = 'LOCAL SALE';
+        customerName = localMatch[1].trim();
+      } else if (/^LOCAL\s+SALE$/i.test(rawParty)) {
+        cleanParty = 'LOCAL SALE';
+        customerName = (record.customer_name ? String(record.customer_name).trim() : '');
+      } else {
+        cleanParty = rawParty;
+        customerName = '';
+      }
+
       const payload = JSON.stringify({
         // Exact custom mapped fields
         ID: String(record.id || recordUuid),
@@ -512,7 +531,7 @@ function uploadRecord(syncUrl, record) {
         Qty: String(record.units_val || record.unitsVal || record.qty || nettValStr),
         Amount: record.amount !== undefined ? record.amount : null,
         Charges: record.charges !== undefined ? record.charges : null,
-        Party: record.party || record.contractor || null,
+        Party: cleanParty || null,
         SecondDateTime: formattedDateTime ? formattedDateTime.replace(/[\s\-\:]/g, '') : '',
 
         // Standard API backwards-compatibility fields
@@ -522,6 +541,13 @@ function uploadRecord(syncUrl, record) {
         id: record.id,
         date_time: formattedDateTime,
         tare_datetime: formattedTareDateTime,
+        saved_at: record.saved_at || record.savedAt || toSqlDateTime(formattedDateTime) || '',
+        savedAt: record.saved_at || record.savedAt || toSqlDateTime(formattedDateTime) || '',
+        SavedAt: record.saved_at || record.savedAt || toSqlDateTime(formattedDateTime) || '',
+        saved_date: record.saved_date || cleanGrossDate || '',
+        saved_time: record.saved_time || cleanGrossTime || '',
+        save_date: record.saved_date || cleanGrossDate || '',
+        save_time: record.saved_time || cleanGrossTime || '',
         vehicleNo: vehicleNo,
         vehicle_no: vehicleNo,
         dc_num: serialNoStr,
@@ -531,7 +557,9 @@ function uploadRecord(syncUrl, record) {
         dc: serialNoStr,
         your_dc: record.your_dc ?? record.yourDc ?? '',
         yourDc: record.your_dc ?? record.yourDc ?? '',
-        party: record.party || record.contractor || '',
+        party: cleanParty,
+        customer_name: customerName,
+        customerName: customerName,
         contractor: record.contractor || record.party || '',
         quarry: record.quarry || '',
         product: validMat,
@@ -918,7 +946,8 @@ async function syncMasterData() {
                           (data.transporters && data.transporters.length > 0) ||
                           (data.contractors && data.contractors.length > 0) ||
                           (rawCM && rawCM.length > 0) ||
-                          (data.sources && data.sources.length > 0);
+                          (data.sources && data.sources.length > 0) ||
+                          (data.drivers && data.drivers.length > 0);
 
       if (hasNewItems) {
         const isImported = db.savePendingData(data);

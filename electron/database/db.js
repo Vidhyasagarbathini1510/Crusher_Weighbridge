@@ -275,6 +275,7 @@ async function init() {
       operator TEXT DEFAULT 'Admin',
       rate REAL,
       amount REAL,
+      saved_at TEXT,
       sync_status INTEGER DEFAULT 0,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
@@ -289,6 +290,7 @@ async function init() {
       date_time TEXT NOT NULL,
       vehicle_no TEXT,
       party TEXT,
+      customer_name TEXT,
       material TEXT,
       unit_type TEXT,
       units_val REAL,
@@ -484,7 +486,8 @@ async function init() {
   }
   const salesRoyaltyCols = [
     "royalty_type TEXT DEFAULT 'None'",
-    "royalty_amount REAL DEFAULT 0"
+    "royalty_amount REAL DEFAULT 0",
+    "customer_name TEXT"
   ];
   for (const colDef of salesRoyaltyCols) {
     try { dbInstance.run(`ALTER TABLE sales_weighment_units ADD COLUMN ${colDef};`); } catch (e) { }
@@ -496,6 +499,9 @@ async function init() {
   } catch (e) { }
   try {
     dbInstance.run(`ALTER TABLE boulders ADD COLUMN amount REAL;`);
+  } catch (e) { }
+  try {
+    dbInstance.run(`ALTER TABLE boulders ADD COLUMN saved_at TEXT;`);
   } catch (e) { }
 
   // Auto-migrate image_path, image_base64, image_path_2, and image_base64_2 for all tables
@@ -632,6 +638,21 @@ async function init() {
       id INTEGER PRIMARY KEY,
       sourceName TEXT,
       status TEXT,
+      online TEXT
+    );
+  `);
+
+  dbInstance.run(`
+    CREATE TABLE IF NOT EXISTS drivers (
+      id INTEGER PRIMARY KEY,
+      empCode TEXT,
+      driverName TEXT,
+      mobile TEXT,
+      altMobile TEXT,
+      drivingLicence TEXT,
+      designation TEXT,
+      status TEXT,
+      site TEXT,
       online TEXT
     );
   `);
@@ -1698,6 +1719,35 @@ function savePendingData(data) {
     insertStmt.free();
   }
 
+  // Process drivers
+  if (data.drivers && Array.isArray(data.drivers)) {
+    const insertStmt = dbInstance.prepare(`
+      INSERT OR REPLACE INTO drivers (id, empCode, driverName, mobile, altMobile, drivingLicence, designation, status, site, online)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    for (const d of data.drivers) {
+      if (isInactiveStatus(d.status, d)) {
+        dbInstance.run('DELETE FROM drivers WHERE id = ?', [d.id]);
+        deletedCount++;
+      } else {
+        insertStmt.run([
+          d.id,
+          d.empCode ?? null,
+          d.driverName ?? d.driver ?? null,
+          d.mobile ?? null,
+          d.altMobile ?? null,
+          d.drivingLicence ?? null,
+          d.designation ?? null,
+          d.status ?? null,
+          d.site ?? null,
+          d.online ?? null
+        ]);
+        insertedCount++;
+      }
+    }
+    insertStmt.free();
+  }
+
   // Purge any lingering inactive records and orphans across all master tables
   try {
     const inactiveCleanFilter = "LOWER(TRIM(COALESCE(status, ''))) IN ('inactive', 'deleted', 'delete', 'disabled', 'deactive', '0', 'false', 'remove', 'removed', 'trash') OR status = 0 OR status = '0'";
@@ -1708,6 +1758,7 @@ function savePendingData(data) {
     dbInstance.run(`DELETE FROM contractors WHERE ${inactiveCleanFilter}`);
     dbInstance.run(`DELETE FROM contractor_materials WHERE ${inactiveCleanFilter}`);
     dbInstance.run(`DELETE FROM sources WHERE ${inactiveCleanFilter}`);
+    dbInstance.run(`DELETE FROM drivers WHERE ${inactiveCleanFilter}`);
 
     // Cleanup orphaned records where parent debitor/contractor no longer exists
     dbInstance.run("DELETE FROM materials WHERE debitorId IS NOT NULL AND debitorId NOT IN (SELECT id FROM debitors)");
@@ -1786,6 +1837,16 @@ function getContractorMaterials() {
 
 function getSources() {
   const stmt = dbInstance.prepare(`SELECT * FROM sources WHERE ${MASTER_ACTIVE_FILTER}`);
+  const rows = [];
+  while (stmt.step()) {
+    rows.push(stmt.getAsObject());
+  }
+  stmt.free();
+  return rows;
+}
+
+function getDrivers() {
+  const stmt = dbInstance.prepare(`SELECT * FROM drivers WHERE ${MASTER_ACTIVE_FILTER}`);
   const rows = [];
   while (stmt.step()) {
     rows.push(stmt.getAsObject());
@@ -2045,9 +2106,9 @@ function addBoulderTransaction(tx, base64Image) {
     INSERT INTO boulders (
       uuid, dc_num, date_time, vehicle_no, contractor, quarry,
       material, gross, tare, net, driver, transporter, destination, operator, image_path, image_base64, image_path_2, image_base64_2, sync_status,
-      tare_date, tare_time, rate, amount
+      tare_date, tare_time, rate, amount, saved_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)
   `, [
     uuid,
     officialDc,
@@ -2071,7 +2132,8 @@ function addBoulderTransaction(tx, base64Image) {
     tx.tare_date || tx.tareDate || '',
     tx.tare_time || tx.tareTime || '',
     tx.rate !== undefined ? Number(tx.rate) : null,
-    tx.amount !== undefined ? Number(tx.amount) : null
+    tx.amount !== undefined ? Number(tx.amount) : null,
+    tx.saved_at || tx.savedAt || null
   ]);
 
   pushToSyncQueue('boulders', uuid);
@@ -2133,9 +2195,30 @@ function addSalesWeighmentUnits(tx, base64Image) {
   tx.dc_num = officialDc;
   tx.dcNum = officialDc;
 
+  // Separate party and customer_name:
+  // Case 1: LOCAL SALE - SAGAR -> party: "LOCAL SALE", customer_name: "SAGAR"
+  // Case 2: LOCAL SALE -> party: "LOCAL SALE", customer_name: ""
+  // Case 3: RAMESH -> party: "RAMESH", customer_name: ""
+  const rawParty = String(tx.party || '').trim();
+  let cleanParty = rawParty;
+  let customerName = '';
+  const localMatch = rawParty.match(/^LOCAL\s+SALE\s*-\s*(.*)$/i);
+  if (localMatch) {
+    cleanParty = 'LOCAL SALE';
+    customerName = localMatch[1].trim();
+  } else if (/^LOCAL\s+SALE$/i.test(rawParty)) {
+    cleanParty = 'LOCAL SALE';
+    customerName = (tx.customer_name ? String(tx.customer_name).trim() : '');
+  } else {
+    cleanParty = rawParty;
+    customerName = '';
+  }
+  tx.party = cleanParty;
+  tx.customer_name = customerName;
+
   dbInstance.run(`
     INSERT INTO sales_weighment_units (
-      uuid, dc_num, your_dc, date_time, vehicle_no, party, material, unit_type, units_val,
+      uuid, dc_num, your_dc, date_time, vehicle_no, party, customer_name, material, unit_type, units_val,
       destination, source, transporter, driver, phone, stationary, po_number, po_date,
       payment, gross, tare, net, rate, amount, bill_type, transport, discount, grand_total,
       cash_amount, upi_amount, credit_amount, operator, image_path, image_base64, image_path_2, image_base64_2, sync_status,
@@ -2143,14 +2226,15 @@ function addSalesWeighmentUnits(tx, base64Image) {
       transporter_rate, transporter_measurement, transporter_amount, destination_rate, destination_amount,
       royalty_type, royalty_amount
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `, [
     uuid,
     officialDc,
     tx.your_dc || tx.yourDc || '',
     tx.date_time || new Date().toLocaleString(),
     tx.vehicle_no || tx.vehicle || '',
-    tx.party || '',
+    cleanParty,
+    customerName,
     tx.material || '',
     tx.unit_type || tx.unitType || 'units',
     Number(tx.units_val || tx.unitsVal || 0),
@@ -2641,6 +2725,7 @@ function markMasterDataUpdated() {
     dbInstance.run("UPDATE contractors SET online = 'synced' WHERE online = 'wait'");
     dbInstance.run("UPDATE contractor_materials SET online = 'synced' WHERE online = 'wait'");
     dbInstance.run("UPDATE sources SET online = 'synced' WHERE online = 'wait'");
+    dbInstance.run("UPDATE drivers SET online = 'synced' WHERE online = 'wait'");
     saveToDisk();
     console.log('[SQLite] Marked all local master data as synced');
   } catch (e) {
@@ -3168,7 +3253,21 @@ function updateRecordFromPending(tableName, tx, options = {}) {
     const your_dc = tx.your_dc || tx.yourDc || (existing ? existing.your_dc : '');
     const date_time = tx.date_time || tx.dateTime || (existing ? existing.date_time : new Date().toLocaleString());
     const vehicle_no = tx.vehicle_no || tx.vehicle || (existing ? existing.vehicle_no : '');
-    const party = tx.party || (existing ? existing.party : '');
+    const rawIncomingParty = tx.party || (existing ? existing.party : '');
+    let party = rawIncomingParty;
+    let customer_name = '';
+    const incomingMatch = String(rawIncomingParty).trim().match(/^LOCAL\s+SALE\s*-\s*(.*)$/i);
+    if (incomingMatch) {
+      party = 'LOCAL SALE';
+      customer_name = incomingMatch[1].trim();
+    } else if (/^LOCAL\s+SALE$/i.test(String(rawIncomingParty).trim())) {
+      party = 'LOCAL SALE';
+      customer_name = (tx.customer_name ? String(tx.customer_name).trim() : (existing ? (existing.customer_name || '') : ''));
+    } else {
+      party = rawIncomingParty;
+      customer_name = '';
+    }
+
     const material = tx.material || (existing ? existing.material : '');
     const unit_type = tx.unit_type || tx.unitType || (existing ? existing.unit_type : 'units');
     const units_val = (tx.units_val !== undefined && tx.units_val !== null) ? Number(tx.units_val) : (existing ? existing.units_val : 0);
@@ -3206,6 +3305,7 @@ function updateRecordFromPending(tableName, tx, options = {}) {
       date_time,
       vehicle_no,
       party,
+      customer_name,
       material,
       unit_type,
       units_val,
@@ -3245,7 +3345,7 @@ function updateRecordFromPending(tableName, tx, options = {}) {
         // it, which would reset the local id and created_at.
         dbInstance.run(`
           UPDATE sales_weighment_units SET
-            dc_num = ?, your_dc = ?, date_time = ?, vehicle_no = ?, party = ?,
+            dc_num = ?, your_dc = ?, date_time = ?, vehicle_no = ?, party = ?, customer_name = ?,
             material = ?, unit_type = ?, units_val = ?, destination = ?, source = ?,
             transporter = ?, driver = ?, phone = ?, stationary = ?, po_number = ?,
             po_date = ?, payment = ?, gross = ?, tare = ?, net = ?, rate = ?,
@@ -3265,13 +3365,13 @@ function updateRecordFromPending(tableName, tx, options = {}) {
 
       dbInstance.run(`
         INSERT INTO sales_weighment_units (
-          uuid, dc_num, your_dc, date_time, vehicle_no, party, material, unit_type, units_val,
+          uuid, dc_num, your_dc, date_time, vehicle_no, party, customer_name, material, unit_type, units_val,
           destination, source, transporter, driver, phone, stationary, po_number, po_date,
           payment, gross, tare, net, rate, amount, bill_type, transport, discount, grand_total,
           cash_amount, upi_amount, credit_amount, operator, image_path, image_base64,
           image_path_2, image_base64_2, tare_date, tare_time, sync_status
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
       `, [uuid, ...values]);
       saveToDisk();
       return { applied: true, action: 'inserted' };
@@ -3436,6 +3536,28 @@ function getMaxExistingDcNumber(normModule, normType, currentCycle) {
   return maxSeq;
 }
 
+function getDcCycleLimitSettings() {
+  if (!dbInstance) return { enabled: false, max: 50 };
+  try {
+    const stmt = dbInstance.prepare("SELECT key, value FROM settings WHERE key IN ('dc_cycle_limit_enabled', 'dc_cycle_limit_max')");
+    let enabled = false;
+    let max = 50;
+    while (stmt.step()) {
+      const row = stmt.getAsObject();
+      if (row.key === 'dc_cycle_limit_enabled') {
+        enabled = String(row.value).toLowerCase() === 'true' || row.value === '1';
+      } else if (row.key === 'dc_cycle_limit_max') {
+        const parsed = parseInt(row.value, 10);
+        if (!isNaN(parsed) && parsed > 0) max = parsed;
+      }
+    }
+    stmt.free();
+    return { enabled, max };
+  } catch (_) {
+    return { enabled: false, max: 50 };
+  }
+}
+
 /**
  * Read-only preview of next DC number (does NOT increment sequence counter).
  */
@@ -3447,6 +3569,27 @@ function peekNextDcNumber(type = 'NON-GST', prefix = 'DC-', moduleKey = 'sales')
   const pfx = prefix || 'DC-';
 
   try {
+    const cycleLimit = getDcCycleLimitSettings();
+    if (cycleLimit.enabled) {
+      const maxLimit = Math.max(1, cycleLimit.max);
+      const stmt = dbInstance.prepare('SELECT seq_value, cycle_value FROM dc_sequences WHERE module_key = ? AND type_key = ?');
+      stmt.bind([normModule, normType]);
+      let seq = 1;
+      if (stmt.step()) {
+        const row = stmt.getAsObject();
+        if (row.cycle_value === currentCycle) {
+          seq = Number(row.seq_value) || 1;
+        }
+      }
+      stmt.free();
+
+      if (seq > maxLimit || seq < 1) {
+        seq = 1;
+      }
+      const seqStr = pfx === 'SN-' ? String(seq).padStart(2, '0') : String(seq);
+      return `${pfx}${seqStr}`;
+    }
+
     const stmt = dbInstance.prepare('SELECT seq_value, cycle_value FROM dc_sequences WHERE module_key = ? AND type_key = ?');
     stmt.bind([normModule, normType]);
     let seq = 1;
@@ -3483,6 +3626,36 @@ function getAndAssignDc(type = 'NON-GST', prefix = 'DC-', moduleKey = 'sales') {
   const pfx = prefix || 'DC-';
 
   try {
+    const cycleLimit = getDcCycleLimitSettings();
+    if (cycleLimit.enabled) {
+      const maxLimit = Math.max(1, cycleLimit.max);
+      const stmt = dbInstance.prepare('SELECT seq_value, cycle_value FROM dc_sequences WHERE module_key = ? AND type_key = ?');
+      stmt.bind([normModule, normType]);
+      let currentSeq = 1;
+      if (stmt.step()) {
+        const row = stmt.getAsObject();
+        if (row.cycle_value === currentCycle) {
+          currentSeq = Number(row.seq_value) || 1;
+        }
+      }
+      stmt.free();
+
+      if (currentSeq > maxLimit || currentSeq < 1) {
+        currentSeq = 1;
+      }
+
+      const seqStr = pfx === 'SN-' ? String(currentSeq).padStart(2, '0') : String(currentSeq);
+      const assignedDc = `${pfx}${seqStr}`;
+      
+      // When currentSeq reaches maxLimit (e.g. 50), the NEXT sequence resets and continues from 1
+      const nextSeq = currentSeq >= maxLimit ? 1 : currentSeq + 1;
+
+      dbInstance.run('INSERT OR REPLACE INTO dc_sequences (module_key, type_key, seq_value, cycle_value) VALUES (?, ?, ?, ?)', [normModule, normType, nextSeq, currentCycle]);
+
+      saveToDisk();
+      return assignedDc;
+    }
+
     const stmt = dbInstance.prepare('SELECT seq_value, cycle_value FROM dc_sequences WHERE module_key = ? AND type_key = ?');
     stmt.bind([normModule, normType]);
     let currentSeq = 1;
@@ -3675,6 +3848,7 @@ module.exports = {
   getContractors,
   getContractorMaterials,
   getSources,
+  getDrivers,
   getVehicleTares,
   saveVehicleTare,
   deleteVehicleTare,

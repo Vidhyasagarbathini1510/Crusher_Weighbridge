@@ -35,6 +35,7 @@ import { ToastProvider } from './context/ToastContext.jsx';
 import Footer from './components/Footer.jsx';
 import WeighbridgeGuard from './components/WeighbridgeGuard.jsx';
 import AdminGuard from './components/AdminGuard.jsx';
+import UpdateModal from './components/UpdateModal.jsx';
 
 // Wraps protected pages in the app shell (sidebar + navbar) and redirects to
 // /login when there is no token.
@@ -73,6 +74,7 @@ export default function App() {
     <ScaleProvider>
       <ToastProvider>
         <AuthProvider>
+          <UpdateModal />
           <Routes>
             <Route path="/login" element={<Login />} />
             <Route path="/" element={<Protected><Dashboard /></Protected>} />

@@ -6,7 +6,7 @@ import SearchableSelect from '../components/SearchableSelect.jsx';
 
 import { captureCameraSnapshot } from '../utils/cameraSnapshot.js';
 import { useAuth } from '../context/AuthContext.jsx';
-import { printTicket, getDcPrintTemplate } from '../utils/printHelper.js';
+import { printTicket, getSelectedTemplate } from '../utils/printHelper.js';
 
 export default function SecondWeighment() {
   const { user } = useAuth();
@@ -17,6 +17,7 @@ export default function SecondWeighment() {
   const [material, setMaterial] = useState('');
   const [qty, setQty] = useState('');
   const [stationary, setStationary] = useState('');
+  const [savedTicket, setSavedTicket] = useState(null);
 
   // 1st Weighment Lookup & Auto-fill state
   const [pendingFirstWeighments, setPendingFirstWeighments] = useState([]);
@@ -173,9 +174,21 @@ export default function SecondWeighment() {
     const finalGross = Math.max(g, t).toString();
     const finalTare = Math.min(g, t).toString();
 
+    const now = new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    const day = pad(now.getDate());
+    const month = pad(now.getMonth() + 1);
+    const year = now.getFullYear();
+    const hours = pad(now.getHours());
+    const minutes = pad(now.getMinutes());
+    const seconds = pad(now.getSeconds());
+
+    const nowDateFormatted = `${day}-${month}-${year}`;
+    const nowTimeFormatted = `${hours}:${minutes}:${seconds}`;
+
     const txData = {
       dc_num: serialNo || (selectedRecord ? selectedRecord.dc_num : `SN-${Math.floor(100000 + Math.random() * 900000)}`),
-      date_time: new Date().toLocaleString(),
+      date_time: `${nowDateFormatted} ${nowTimeFormatted}`,
       vehicle_no: cleanVehicle,
       party: party ? party.toUpperCase() : '',
       material: material ? material.toUpperCase() : '',
@@ -195,6 +208,30 @@ export default function SecondWeighment() {
       if (api.addSecondWeighment) {
         await api.addSecondWeighment(txData, base64Img);
       }
+      setSavedTicket({
+        dcNum: txData.dc_num,
+        serial_no: txData.dc_num,
+        token: txData.dc_num,
+        vehicle: cleanVehicle,
+        vehicle_no: cleanVehicle,
+        party: txData.party,
+        material: txData.material,
+        gross: finalGross,
+        tare: finalTare,
+        net: nettVal,
+        nett: nettVal,
+        qty: qty || nettVal,
+        units_val: qty || nettVal,
+        stationary: stationary || '',
+        date: nowDateFormatted,
+        time: nowTimeFormatted,
+        date_time: `${nowDateFormatted} ${nowTimeFormatted}`,
+        tare_date: selectedRecord ? (selectedRecord.tare_date || selectedRecord.date_time || '') : '',
+        tare_time: selectedRecord ? (selectedRecord.tare_time || '') : '',
+        operator: user?.username || 'Operator',
+        card: '2ND WEIGHMENT',
+        ticket_type: '2ND WEIGHMENT'
+      });
       setMsgType('success');
       setMsg('Second Weighment Saved successfully!');
       setTimeout(() => setMsg(''), 4000);
@@ -218,19 +255,27 @@ export default function SecondWeighment() {
   };
 
   const handlePrint = () => {
-    const cleanVehicle = vehicle.trim().toUpperCase();
-    if (!cleanVehicle) {
-      setMsgType('warning');
-      setMsg('Please enter a vehicle number before printing.');
-      return;
-    }
+    const cleanVehicle = (vehicle || '').trim().toUpperCase();
     const g = parseFloat(grossVal) || 0;
     const t = parseFloat(tareVal) || 0;
     const finalGross = Math.max(g, t).toString();
     const finalTare = Math.min(g, t).toString();
-    const ticketData = {
-      dcNum: serialNo || '1',
-      serial_no: serialNo || '1',
+    const now = new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    const day = pad(now.getDate());
+    const month = pad(now.getMonth() + 1);
+    const year = now.getFullYear();
+    const hours = pad(now.getHours());
+    const minutes = pad(now.getMinutes());
+    const seconds = pad(now.getSeconds());
+
+    const nowDateFormatted = `${day}-${month}-${year}`;
+    const nowTimeFormatted = `${hours}:${minutes}:${seconds}`;
+
+    const target = cleanVehicle ? {
+      dcNum: serialNo || (selectedRecord ? selectedRecord.dc_num : '1'),
+      serial_no: serialNo || (selectedRecord ? selectedRecord.dc_num : '1'),
+      token: serialNo || (selectedRecord ? selectedRecord.dc_num : '1'),
       vehicle: cleanVehicle,
       vehicle_no: cleanVehicle,
       party: party ? party.toUpperCase() : '',
@@ -242,14 +287,24 @@ export default function SecondWeighment() {
       qty: qty || nettVal,
       units_val: qty || nettVal,
       stationary: stationary || '',
-      date: new Date().toLocaleDateString('en-GB'),
-      time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      date_time: new Date().toLocaleString(),
+      date: nowDateFormatted,
+      time: nowTimeFormatted,
+      date_time: `${nowDateFormatted} ${nowTimeFormatted}`,
       tare_date: selectedRecord ? (selectedRecord.tare_date || selectedRecord.date_time || '') : '',
       tare_time: selectedRecord ? (selectedRecord.tare_time || '') : '',
-      operator: user?.username || 'Operator'
-    };
-    printTicket(ticketData, getDcPrintTemplate(), 'DC');
+      operator: user?.username || 'Operator',
+      card: '2ND WEIGHMENT',
+      ticket_type: '2ND WEIGHMENT'
+    } : savedTicket;
+
+    if (!target || !target.vehicle) {
+      setMsgType('warning');
+      setMsg('Please enter a vehicle number or save a weighment before printing.');
+      setTimeout(() => setMsg(''), 4000);
+      return;
+    }
+
+    printTicket(target, getSelectedTemplate(), 'PRINT');
   };
 
   if (!cameras) return <Loader label="Loading weighbridge cameras..." />;

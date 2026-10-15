@@ -178,6 +178,12 @@ export const api = {
           uuid: recordUuid,
           dc_num: txData.dc_num || txData.token || 'N/A',
           date_time: txData.date_time || new Date().toLocaleString(),
+          saved_at: txData.saved_at || txData.savedAt || new Date().toISOString().replace('T', ' ').slice(0, 19),
+          savedAt: txData.saved_at || txData.savedAt || new Date().toISOString().replace('T', ' ').slice(0, 19),
+          saved_date: txData.saved_date || txData.savedDate || '',
+          saved_time: txData.saved_time || txData.savedTime || '',
+          save_date: txData.saved_date || txData.save_date || '',
+          save_time: txData.saved_time || txData.save_time || '',
           vehicle_no: txData.vehicle_no || txData.vehicle || '',
           vehicleNo: txData.vehicle_no || txData.vehicle || '',
           contractor: txData.contractor || txData.party || 'N/A',
@@ -207,6 +213,27 @@ export const api = {
   },
 
   addSalesUnits: async (txData, base64Image) => {
+    // Separate party and customer_name strictly according to business requirements:
+    // Case 1: LOCAL SALE - SAGAR -> party: "LOCAL SALE", customer_name: "SAGAR"
+    // Case 2: LOCAL SALE -> party: "LOCAL SALE", customer_name: ""
+    // Case 3: RAMESH -> party: "RAMESH", customer_name: ""
+    const rawParty = String(txData.party || '').trim();
+    let cleanParty = rawParty;
+    let customerName = '';
+    const localMatch = rawParty.match(/^LOCAL\s+SALE\s*-\s*(.*)$/i);
+    if (localMatch) {
+      cleanParty = 'LOCAL SALE';
+      customerName = localMatch[1].trim();
+    } else if (/^LOCAL\s+SALE$/i.test(rawParty)) {
+      cleanParty = 'LOCAL SALE';
+      customerName = (txData.customer_name ? String(txData.customer_name).trim() : '');
+    } else {
+      cleanParty = rawParty;
+      customerName = '';
+    }
+    txData.party = cleanParty;
+    txData.customer_name = customerName;
+
     if (window.electronAPI && window.electronAPI.addSalesUnits) {
       return window.electronAPI.addSalesUnits({ tx: txData, base64Image });
     }
@@ -231,7 +258,8 @@ export const api = {
           date_time: txData.date_time || new Date().toLocaleString(),
           vehicle_no: txData.vehicle_no || txData.vehicle || '',
           vehicleNo: txData.vehicle_no || txData.vehicle || '',
-          party: txData.party || 'N/A',
+          party: cleanParty,
+          customer_name: customerName,
           material: txData.material || 'N/A',
           unit_type: txData.unit_type || txData.unitType || 'units',
           units_val: Number(txData.units_val || txData.unitsVal || 0),
@@ -436,6 +464,14 @@ export const api = {
       return window.electronAPI.getSources();
     }
     return [];
+  },
+
+  getDrivers: async () => {
+    if (window.electronAPI && window.electronAPI.getDrivers) {
+      return window.electronAPI.getDrivers();
+    }
+    const cached = localStorage.getItem('noris_drivers');
+    return cached ? JSON.parse(cached) : [];
   },
 
   getVehicleTares: async () => {

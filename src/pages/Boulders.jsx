@@ -24,9 +24,9 @@ export default function Boulders() {
   const [dcNum, setDcNum] = useState('');
   const {
     vehicle: vehicleNo, setVehicle: setVehicleNo,
-    gross: grossVal, setGross: setGrossVal,
-    tare: tareVal, setTare: setTareVal,
-    nett: nettVal, setNett: setNettVal
+    gross: scaleGross, setGross: setScaleGross,
+    tare: scaleTare, setTare: setScaleTare,
+    nett: scaleNett, setNett: setScaleNett
   } = useScale();
 
   // Vehicle lives in the shared scale context so the bottom status bar mirrors
@@ -52,7 +52,77 @@ export default function Boulders() {
 
   // Scale / status states
   const [netronWeight, setNetronWeight] = useState('0');
-  const [manualMode, setManualMode] = useState(false);
+  const [manualMode, setManualMode] = useState(() => {
+    return localStorage.getItem('noris_boulders_manual_entry') === 'true';
+  });
+
+  // Dedicated weight states for manual mode — isolates completely from live scale readings
+  const [localGross, setLocalGross] = useState('');
+  const [localTare, setLocalTare] = useState('');
+  const [localNett, setLocalNett] = useState('0');
+
+  const grossVal = manualMode ? localGross : scaleGross;
+  const tareVal = manualMode ? localTare : scaleTare;
+  const nettVal = manualMode ? localNett : scaleNett;
+
+  const setGrossVal = (val) => {
+    if (manualMode) {
+      setLocalGross(val);
+      if (setScaleGross) setScaleGross(val);
+    } else {
+      if (setScaleGross) setScaleGross(val);
+    }
+  };
+
+  const setTareVal = (val) => {
+    if (manualMode) {
+      setLocalTare(val);
+      if (setScaleTare) setScaleTare(val);
+    } else {
+      if (setScaleTare) setScaleTare(val);
+    }
+  };
+
+  const setNettVal = (val) => {
+    if (manualMode) {
+      setLocalNett(val);
+      if (setScaleNett) setScaleNett(val);
+    } else {
+      if (setScaleNett) setScaleNett(val);
+    }
+  };
+
+  useEffect(() => {
+    if (manualMode) {
+      setLocalGross('');
+      setLocalTare('');
+      setLocalNett('0');
+      if (setScaleGross) setScaleGross('');
+      if (setScaleTare) setScaleTare('');
+      if (setScaleNett) setScaleNett('0');
+    }
+  }, [manualMode]);
+
+  useEffect(() => {
+    const syncManualMode = () => {
+      setManualMode(localStorage.getItem('noris_boulders_manual_entry') === 'true');
+    };
+    if (api.getSettings) {
+      api.getSettings().then(s => {
+        if (s && s.boulders_manual_entry !== undefined) {
+          const enabled = s.boulders_manual_entry === 'true' || s.boulders_manual_entry === true;
+          setManualMode(enabled);
+          localStorage.setItem('noris_boulders_manual_entry', enabled ? 'true' : 'false');
+        }
+      }).catch(() => {});
+    }
+    window.addEventListener('boulders-manual-entry-changed', syncManualMode);
+    window.addEventListener('storage', syncManualMode);
+    return () => {
+      window.removeEventListener('boulders-manual-entry-changed', syncManualMode);
+      window.removeEventListener('storage', syncManualMode);
+    };
+  }, []);
 
   // Master data lists
   const [rawContractorMaterials, setRawContractorMaterials] = useState([]);
@@ -82,7 +152,8 @@ export default function Boulders() {
         sourcesData,
         transportersData,
         vehicleTaresData,
-        materialsData
+        materialsData,
+        driversData
       ] = await Promise.all([
         api.boulders ? api.boulders().catch(() => []) : [],
         api.transactions().catch(() => []),
@@ -91,7 +162,8 @@ export default function Boulders() {
         api.getSources ? api.getSources().catch(() => []) : Promise.resolve([]),
         api.getTransporters ? api.getTransporters().catch(() => []) : Promise.resolve([]),
         api.getVehicleTares ? api.getVehicleTares().catch(() => []) : Promise.resolve([]),
-        api.getMaterials ? api.getMaterials().catch(() => []) : Promise.resolve([])
+        api.getMaterials ? api.getMaterials().catch(() => []) : Promise.resolve([]),
+        api.getDrivers ? api.getDrivers().catch(() => []) : Promise.resolve([])
       ]);
 
       setRawContractorMaterials(contractorMaterialsData || []);
@@ -109,6 +181,20 @@ export default function Boulders() {
 
       // Extract unique list values for suggestions
       const unique = (arr) => [...new Set(arr.filter(Boolean))];
+
+      let cachedDrivers = [];
+      try {
+        const stored = localStorage.getItem('noris_drivers');
+        if (stored) cachedDrivers = JSON.parse(stored);
+      } catch (_) {}
+
+      const masterDrivers = (driversData || []).map(d => d.driverName || d.driver || d.name);
+      const cachedDriverNames = (cachedDrivers || []).map(d => typeof d === 'string' ? d : (d.driverName || d.driver || d.name));
+      const listDrivers = unique([
+        ...masterDrivers,
+        ...cachedDriverNames,
+        ...txs.map(t => t.driver)
+      ]);
       
       const cmContractors = (contractorMaterialsData || []).map(cm => cm.contractorName);
       const listContractors = unique([
@@ -164,7 +250,7 @@ export default function Boulders() {
           contractor: unique([...listContractors, ...txs.map(t => t.contractor || t.party)]).filter(c => c && c.trim().toUpperCase() !== 'OTHERS'),
           quarry: unique([...listQuarries, ...txs.map(t => t.quarry || t.source)]),
           material: unique([...listMaterials, ...txs.map(t => t.material || t.product)]),
-          driver: unique(txs.map(t => t.driver)),
+          driver: listDrivers,
           transporter: unique([...listTransporters, ...txs.map(t => t.transporter)]),
           destination: unique([...prev.destination, ...txs.map(t => t.destination)])
         }));
@@ -230,13 +316,13 @@ export default function Boulders() {
         setVehicleNo(data.vehicleNo);
         if (data.material) setMaterial(data.material);
         if (data.contractor) setContractor(data.contractor);
-        if (data.tareWeight) setTareVal(data.tareWeight.toString());
+        if (!manualMode && data.tareWeight) setTareVal(data.tareWeight.toString());
       }
     });
     return () => {
       if (unsubscribe) unsubscribe();
     };
-  }, []);
+  }, [manualMode]);
 
   // RFID Auto-Weigh Success listener (reloads report table on RFID scan)
   useEffect(() => {
@@ -255,6 +341,7 @@ export default function Boulders() {
 
   // Auto-lookup tare weight from vehicle_tares master list when vehicleNo changes
   useEffect(() => {
+    if (manualMode) return;
     if (!vehicleNo) return;
     const cleanVeh = vehicleNo.trim().toUpperCase().replace(/[\s\-\.]/g, '');
     const match = vehicleTares.find(vt => (vt.vehicle || '').trim().toUpperCase().replace(/[\s\-\.]/g, '') === cleanVeh);
@@ -264,7 +351,7 @@ export default function Boulders() {
         setTareVal(tareNum.toString());
       }
     }
-  }, [vehicleNo, vehicleTares]);
+  }, [vehicleNo, vehicleTares, manualMode]);
 
   const handleManualSync = async () => {
     setSyncingMaster(true);
@@ -296,17 +383,19 @@ export default function Boulders() {
         const numeric = data.value.replace(/[^0-9.-]/g, '');
         if (numeric) {
           setNetronWeight(numeric);
-          if (!manualMode) {
-            const liveNum = parseFloat(numeric) || 0;
-            const savedNum = parseFloat(savedWeight) || 0;
-            if (savedNum > 0 && liveNum > 0) {
-              const high = Math.max(liveNum, savedNum).toString();
-              const low  = Math.min(liveNum, savedNum).toString();
-              setGrossVal(high);
-              setTareVal(low);
-            } else {
-              setGrossVal(numeric);
-            }
+          // In manual mode: completely ignore live scale weight! Do not touch Gross or Tare.
+          if (manualMode) {
+            return;
+          }
+          const liveNum = parseFloat(numeric) || 0;
+          const savedNum = parseFloat(savedWeight) || 0;
+          if (savedNum > 0 && liveNum > 0) {
+            const high = Math.max(liveNum, savedNum).toString();
+            const low  = Math.min(liveNum, savedNum).toString();
+            setGrossVal(high);
+            setTareVal(low);
+          } else {
+            setGrossVal(numeric);
           }
         } else {
           setNetronWeight(data.value);
@@ -325,22 +414,25 @@ export default function Boulders() {
     setNettVal(Math.abs(g - t).toString());
   }, [grossVal, tareVal]);
 
-  // Auto-populate gross and tare weights when vehicle is selected
+  // Auto-populate gross and tare weights when vehicle is selected (Only in standard automatic mode)
   useEffect(() => {
+    if (manualMode) {
+      // In manual mode: Do NOT auto-populate Gross or Tare! Both are 100% manual entry.
+      return;
+    }
     if (!vehicleNo) {
       setSavedWeight('');
       setTareVal('');
       return;
     }
-    const cleanVehicle = vehicleNo.replace(/\s+/g, '').toUpperCase();
 
+    const cleanVehicle = vehicleNo.replace(/\s+/g, '').toUpperCase();
     const cachedTares = localStorage.getItem('noris_vehicle_tares');
     let localTares = [];
     if (cachedTares) {
       try { localTares = JSON.parse(cachedTares); } catch (e) {}
     }
     const combined = [...vehicleTares, ...localTares];
-
     const matched = combined.find(
       t => t.vehicle && t.vehicle.replace(/\s+/g, '').toUpperCase() === cleanVehicle
     );
@@ -368,7 +460,7 @@ export default function Boulders() {
         setGrossVal(currentScaleWeight.toString());
       }
     }
-  }, [vehicleNo, netronWeight, vehicleTares]);
+  }, [vehicleNo, netronWeight, vehicleTares, manualMode]);
 
   // Dynamic contractor options
   const uniqueHelper = (arr) => [...new Set(arr.filter(Boolean))];
@@ -382,7 +474,7 @@ export default function Boulders() {
   // Compute quarries available strictly for the selected contractor
   const availableQuarries = (() => {
     if (!contractor) {
-      return [];
+      return manualMode ? (suggestions.quarry || []) : [];
     }
     const cleanContractor = contractor.trim().toUpperCase();
     const matchedCM = rawContractorMaterials.filter(cm => (cm.contractorName || '').trim().toUpperCase() === cleanContractor);
@@ -395,13 +487,13 @@ export default function Boulders() {
       const qList = uniqueHelper(matchedC.map(c => c.quarryName || c.quarry));
       if (qList.length > 0) return qList;
     }
-    return [];
+    return manualMode ? (suggestions.quarry || []) : [];
   })();
 
   // Compute materials available strictly for the selected contractor & quarry
   const availableMaterials = (() => {
     if (!contractor) {
-      return [];
+      return manualMode ? (suggestions.material || []) : [];
     }
     const cleanContractor = contractor.trim().toUpperCase();
     const cleanQuarry = (quarry || '').trim().toUpperCase();
@@ -416,14 +508,16 @@ export default function Boulders() {
       const mList = uniqueHelper(matchedCM.map(cm => cm.material));
       if (mList.length > 0) return mList;
     }
-    return [];
+    return manualMode ? (suggestions.material || []) : [];
   })();
 
   const handleContractorChange = (selectedVal) => {
     setContractor(selectedVal);
     if (!selectedVal) {
-      setQuarry('');
-      setMaterial('');
+      if (!manualMode) {
+        setQuarry('');
+        setMaterial('');
+      }
       return;
     }
 
@@ -463,10 +557,12 @@ export default function Boulders() {
       const match = rawContractors.find(c => (c.contractorName || c.contractor) === selectedVal);
       if (match && (match.quarryName || match.quarry)) {
         setQuarry(match.quarryName || match.quarry);
-      } else {
+      } else if (!manualMode) {
         setQuarry('');
       }
-      setMaterial('');
+      if (!manualMode) {
+        setMaterial('');
+      }
     }
   };
 
@@ -581,15 +677,34 @@ export default function Boulders() {
       vt => vt.vehicle && vt.vehicle.replace(/\s+/g, '').toUpperCase() === vehicleKey
     );
 
-    const nowFormatted = new Date().toLocaleString();
-    const nowDateFormatted = new Date().toLocaleDateString('en-IN');
-    const nowTimeFormatted = new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
+    const now = new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    const day = pad(now.getDate());
+    const month = pad(now.getMonth() + 1);
+    const year = now.getFullYear();
+    const hours = pad(now.getHours());
+    const minutes = pad(now.getMinutes());
+    const seconds = pad(now.getSeconds());
+
+    const nowDateFormatted = `${day}-${month}-${year}`;
+    const nowTimeFormatted = `${hours}:${minutes}:${seconds}`;
+    const nowFormatted = `${nowDateFormatted} ${nowTimeFormatted}`;
+    // Separate new column for exact save datetime in YYYY-MM-DD HH:mm:ss format
+    const savedAtFormatted = `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+
+    const formatTimeWithSec = (tStr) => {
+      if (!tStr) return nowTimeFormatted;
+      const clean = tStr.trim();
+      const parts = clean.split(':');
+      if (parts.length === 2) return `${parts[0].padStart(2, '0')}:${parts[1].padStart(2, '0')}:00`;
+      return clean;
+    };
 
     const liveWeight = parseFloat(netronWeight) || 0;
     const previousWeight = matched ? (parseFloat(String(matched.weight).replace(/,/g, '')) || 0) : 0;
     const previousDate = matched ? (matched.date || matched.tare_date || matched.date_time || '') : '';
     const previousTime = matched ? (matched.time || matched.tare_time || '') : '';
-    const previousDateTime = previousDate ? (previousDate + (previousTime ? ' ' + previousTime : '')) : nowFormatted;
+    const previousDateTime = previousDate ? (previousDate + (previousTime ? ' ' + formatTimeWithSec(previousTime) : '')) : nowFormatted;
 
     let finalGross = '0';
     let finalTare = '0';
@@ -597,14 +712,20 @@ export default function Boulders() {
     let tareDate = '';
     let tareTime = '';
 
-    if (matched && previousWeight > 0 && liveWeight > 0) {
+    if (manualMode) {
+      finalGross = (parseFloat(grossVal) || 0).toString();
+      finalTare = (parseFloat(tareVal) || 0).toString();
+      grossDateTime = nowFormatted;
+      tareDate = tareDate || nowDateFormatted;
+      tareTime = tareTime ? formatTimeWithSec(tareTime) : nowTimeFormatted;
+    } else if (matched && previousWeight > 0 && liveWeight > 0) {
       if (liveWeight >= previousWeight) {
         // Case 1: Live scale is higher (Gross was weighed NOW, Tare was from Master/Previous)
         finalGross = liveWeight.toString();
         finalTare = previousWeight.toString();
         grossDateTime = nowFormatted;
         tareDate = previousDate || nowDateFormatted;
-        tareTime = previousTime || nowTimeFormatted;
+        tareTime = previousTime ? formatTimeWithSec(previousTime) : nowTimeFormatted;
       } else {
         // Case 2: Live scale is lower (Tare is weighed NOW, Gross was from Master/Previous)
         finalGross = previousWeight.toString();
@@ -621,7 +742,7 @@ export default function Boulders() {
         finalTare = t.toString();
         grossDateTime = nowFormatted;
         tareDate = previousDate || nowDateFormatted;
-        tareTime = previousTime || nowTimeFormatted;
+        tareTime = previousTime ? formatTimeWithSec(previousTime) : nowTimeFormatted;
       } else {
         finalGross = t.toString();
         finalTare = g.toString();
@@ -631,23 +752,32 @@ export default function Boulders() {
       }
     }
 
+    const finalNet = Math.abs((parseFloat(finalGross) || 0) - (parseFloat(finalTare) || 0)).toString();
+
     // Auto-swap form state to match finalGross and finalTare
     setGrossVal(finalGross);
     setTareVal(finalTare);
+    setNettVal(finalNet);
 
     const rateVal = rate;
-    const netWeightTons = (parseFloat(nettVal) || 0) / 1000;
+    const netWeightTons = (parseFloat(finalNet) || 0) / 1000;
     const amountVal = Math.round(rateVal * netWeightTons * 100) / 100;
 
     const txData = {
       uuid: typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : 'uuid-' + Date.now(),
       date_time: grossDateTime,
+      saved_at: savedAtFormatted,
+      savedAt: savedAtFormatted,
+      saved_date: nowDateFormatted,
+      saved_time: nowTimeFormatted,
+      save_date: nowDateFormatted,
+      save_time: nowTimeFormatted,
       vehicle_no: cleanVehicle,
       party: contractor || '',
       product: material || '',
       gross: finalGross,
       tare: finalTare,
-      net: nettVal,
+      net: finalNet,
       operator: user?.username || 'Operator',
       card: 'BOULDERS',
       vehicle_type: 'Truck',
@@ -691,11 +821,10 @@ export default function Boulders() {
         source: quarry || '',
         gross: finalGross,
         tare: finalTare,
-        net: nettVal || '0',
+        net: finalNet || nettVal || '0',
         transporter: transporter || '',
-        driver: driver || '',
-        date: new Date().toLocaleDateString('en-IN'),
-        time: new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
+        date: nowDateFormatted,
+        time: nowTimeFormatted,
         tareDate: tareDate || nowDateFormatted,
         tareTime: tareTime || nowTimeFormatted,
         tare_date: tareDate || nowDateFormatted,
@@ -904,6 +1033,7 @@ export default function Boulders() {
                       onChange={setVehicleNo}
                       options={suggestions.vehicleNo}
                       placeholder="TYPE OR SELECT VEHICLE..."
+                      allowCustom={manualMode}
                       required
                     />
                   </div>
@@ -916,6 +1046,7 @@ export default function Boulders() {
                       onChange={handleContractorChange}
                       options={availableContractorOptions}
                       placeholder="Type or select contractor..."
+                      allowCustom={manualMode}
                     />
                   </div>
 
@@ -926,7 +1057,8 @@ export default function Boulders() {
                       value={quarry}
                       onChange={handleQuarryChange}
                       options={availableQuarries}
-                      placeholder={!contractor ? "-- Select Contractor First --" : (availableQuarries.length > 0 ? "Type or select quarry..." : "-- No Quarry Mapped --")}
+                      placeholder={manualMode ? (quarry || (availableQuarries.length > 0 ? "Type or select quarry..." : "Type quarry...")) : (!contractor ? "-- Select Contractor First --" : (availableQuarries.length > 0 ? "Type or select quarry..." : "-- No Quarry Mapped --"))}
+                      allowCustom={manualMode}
                     />
                   </div>
 
@@ -937,7 +1069,8 @@ export default function Boulders() {
                       value={material}
                       onChange={setMaterial}
                       options={availableMaterials}
-                      placeholder={!contractor ? "-- Select Contractor First --" : (availableMaterials.length > 0 ? "Type or select material..." : "-- No Material Mapped --")}
+                      placeholder={manualMode ? (material || (availableMaterials.length > 0 ? "Type or select material..." : "Type material...")) : (!contractor ? "-- Select Contractor First --" : (availableMaterials.length > 0 ? "Type or select material..." : "-- No Material Mapped --"))}
+                      allowCustom={manualMode}
                     />
                   </div>
                 </div>
@@ -949,12 +1082,13 @@ export default function Boulders() {
                 <div className="row g-2">
                   <div className="col-md-4">
                     <label className="saas-label">Driver</label>
-                    <input
-                      type="text"
-                      className="form-control saas-input"
-                      placeholder="Driver name..."
+                    <SearchableSelect
+                      className="saas-input"
                       value={driver}
-                      onChange={(e) => setDriver(e.target.value)}
+                      onChange={setDriver}
+                      options={suggestions.driver}
+                      placeholder="Type or select driver..."
+                      allowCustom={true}
                     />
                   </div>
 
@@ -995,20 +1129,22 @@ export default function Boulders() {
                     <label className="saas-label" style={{ color: 'var(--primary-ink)' }}>Gross (kg)</label>
                     <input
                       type="text"
-                      className="form-control saas-input saas-input-readonly text-center fw-bold"
+                      className={`form-control saas-input ${!manualMode ? 'saas-input-readonly' : ''} text-center fw-bold`}
                       style={{ color: 'var(--primary-ink)', fontSize: '0.9rem !important', backgroundColor: '#ffffff !important' }}
                       value={grossVal}
-                      readOnly
+                      onChange={manualMode ? (e) => setGrossVal(e.target.value.replace(/[^0-9.]/g, '')) : undefined}
+                      readOnly={!manualMode}
                     />
                   </div>
                   <div className="col-4">
                     <label className="saas-label" style={{ color: '#16a34a' }}>Tare (kg)</label>
                     <input
                       type="text"
-                      className="form-control saas-input saas-input-readonly text-center fw-bold"
+                      className={`form-control saas-input ${!manualMode ? 'saas-input-readonly' : ''} text-center fw-bold`}
                       style={{ color: '#16a34a', fontSize: '0.9rem !important', backgroundColor: '#ffffff !important' }}
                       value={tareVal}
-                      readOnly
+                      onChange={manualMode ? (e) => setTareVal(e.target.value.replace(/[^0-9.]/g, '')) : undefined}
+                      readOnly={!manualMode}
                     />
                   </div>
                   <div className="col-4">

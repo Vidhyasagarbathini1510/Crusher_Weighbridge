@@ -6,6 +6,7 @@ import Loader from '../components/Loader.jsx';
 import { captureCameraSnapshot } from '../utils/cameraSnapshot.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import { getNextDcNumber, incrementDcNumber } from '../utils/dcHelper.js';
+import { printTicket, getSelectedTemplate } from '../utils/printHelper.js';
 
 export default function FirstWeighment() {
   const { user } = useAuth();
@@ -16,6 +17,7 @@ export default function FirstWeighment() {
   const [material, setMaterial] = useState('');
   const [qty, setQty] = useState('');
   const [weight, setWeight] = useState('');
+  const [savedTicket, setSavedTicket] = useState(null);
 
   const [netronWeight, setNetronWeight] = useState('0');
   const [manualMode, setManualMode] = useState(false);
@@ -55,6 +57,54 @@ export default function FirstWeighment() {
     };
   }, [manualMode]);
 
+  const handlePrint = () => {
+    const cleanVehicle = (vehicle || '').trim().toUpperCase();
+    const currentWeight = weight || netronWeight || '0';
+    const now = new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    const day = pad(now.getDate());
+    const month = pad(now.getMonth() + 1);
+    const year = now.getFullYear();
+    const hours = pad(now.getHours());
+    const minutes = pad(now.getMinutes());
+    const seconds = pad(now.getSeconds());
+
+    const nowDateFormatted = `${day}-${month}-${year}`;
+    const nowTimeFormatted = `${hours}:${minutes}:${seconds}`;
+
+    const target = cleanVehicle ? {
+      dcNum: serialNo || 'SN-01',
+      serial_no: serialNo || 'SN-01',
+      token: serialNo || 'SN-01',
+      vehicle: cleanVehicle,
+      vehicle_no: cleanVehicle,
+      party: party ? party.toUpperCase() : '',
+      material: material ? material.toUpperCase() : '',
+      gross: currentWeight,
+      tare: '0',
+      net: currentWeight,
+      nett: currentWeight,
+      first_weight: currentWeight,
+      qty: qty || currentWeight,
+      units_val: qty || currentWeight,
+      date: nowDateFormatted,
+      time: nowTimeFormatted,
+      date_time: `${nowDateFormatted} ${nowTimeFormatted}`,
+      operator: user?.username || 'Operator',
+      card: '1ST WEIGHMENT',
+      ticket_type: '1ST WEIGHMENT'
+    } : savedTicket;
+
+    if (!target || !target.vehicle) {
+      setMsgType('warning');
+      setMsg('Please enter a vehicle number or save a weighment before printing.');
+      setTimeout(() => setMsg(''), 4000);
+      return;
+    }
+
+    printTicket(target, getSelectedTemplate(), 'PRINT');
+  };
+
   const handleSave = async (e) => {
     e.preventDefault();
     const cleanVehicle = (vehicle || '').trim().toUpperCase();
@@ -69,9 +119,21 @@ export default function FirstWeighment() {
     const assignedSn = await incrementDcNumber('NON-GST', 'SN-', 'first_weighment');
     const finalSn = assignedSn || serialNo || 'SN-01';
 
+    const now = new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    const day = pad(now.getDate());
+    const month = pad(now.getMonth() + 1);
+    const year = now.getFullYear();
+    const hours = pad(now.getHours());
+    const minutes = pad(now.getMinutes());
+    const seconds = pad(now.getSeconds());
+
+    const nowDateFormatted = `${day}-${month}-${year}`;
+    const nowTimeFormatted = `${hours}:${minutes}:${seconds}`;
+
     const txData = {
       dc_num: finalSn,
-      date_time: new Date().toLocaleString(),
+      date_time: `${nowDateFormatted} ${nowTimeFormatted}`,
       vehicle_no: cleanVehicle,
       party: party ? party.toUpperCase() : '',
       material: material ? material.toUpperCase() : '',
@@ -85,6 +147,28 @@ export default function FirstWeighment() {
       if (api.addFirstWeighment) {
         await api.addFirstWeighment(txData, base64Img);
       }
+      setSavedTicket({
+        dcNum: finalSn,
+        serial_no: finalSn,
+        token: finalSn,
+        vehicle: cleanVehicle,
+        vehicle_no: cleanVehicle,
+        party: party ? party.toUpperCase() : '',
+        material: material ? material.toUpperCase() : '',
+        gross: weight || '0',
+        tare: '0',
+        net: weight || '0',
+        nett: weight || '0',
+        first_weight: weight || '0',
+        qty: qty || weight || '0',
+        units_val: qty || weight || '0',
+        date: nowDateFormatted,
+        time: nowTimeFormatted,
+        date_time: `${nowDateFormatted} ${nowTimeFormatted}`,
+        operator: user?.username || 'Operator',
+        card: '1ST WEIGHMENT',
+        ticket_type: '1ST WEIGHMENT'
+      });
       setMsgType('success');
       setMsg(`First Weighment Saved successfully! Ticket #${finalSn}`);
       setTimeout(() => setMsg(''), 4000);
@@ -227,7 +311,7 @@ export default function FirstWeighment() {
 
               {/* Action Buttons */}
               <div className="col-12 d-flex gap-2 mt-4 justify-content-end">
-                <button type="button" className="saas-btn-print">PRINT</button>
+                <button type="button" className="saas-btn-print" onClick={handlePrint}>PRINT</button>
                 <button type="submit" className="saas-btn-save">SAVE</button>
               </div>
             </form>

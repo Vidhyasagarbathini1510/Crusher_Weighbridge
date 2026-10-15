@@ -3,11 +3,41 @@ import { api } from '../api/client.js';
 import { printReport, printSingleTicketSlip } from '../utils/reportPrinter.js';
 import { printClassicSalesReport, printClassicSummaryReport, toReportStamp } from '../utils/classicReportPrinter.js';
 import SearchableSelect from '../components/SearchableSelect.jsx';
+import {
+  getSalesSummaryPrintMode,
+  SALES_SUMMARY_PRINT_MODES,
+  generateDotMatrixPreviewText,
+  generateDotMatrixQuarryReportText,
+  generateSummarySalesMPreviewText,
+  generateSummarySalesMReportText,
+  sendRawToPrinter
+} from '../utils/salesSummaryPrinter.js';
 
 export default function BouldersReport() {
   const [transactions, setTransactions] = useState([]);
   const [filtered, setFiltered] = useState([]);
   const [showFilters, setShowFilters] = useState(true);
+  const [printMode, setPrintMode] = useState(() => getSalesSummaryPrintMode());
+  const [showDotMatrixModal, setShowDotMatrixModal] = useState(false);
+  const [dotMatrixTitle, setDotMatrixTitle] = useState('🖨️ Dot Matrix Print Preview');
+  const [dotMatrixPreviewText, setDotMatrixPreviewText] = useState('');
+  const [dotMatrixRawText, setDotMatrixRawText] = useState('');
+  const [isSendingPrint, setIsSendingPrint] = useState(false);
+  const [dotMatrixTheme, setDotMatrixTheme] = useState(() => {
+    return localStorage.getItem('noris_dot_matrix_preview_theme') || 'white';
+  });
+
+  useEffect(() => {
+    const handleModeUpdate = () => {
+      setPrintMode(getSalesSummaryPrintMode());
+    };
+    window.addEventListener('storage', handleModeUpdate);
+    window.addEventListener('sales-summary-print-mode-changed', handleModeUpdate);
+    return () => {
+      window.removeEventListener('storage', handleModeUpdate);
+      window.removeEventListener('sales-summary-print-mode-changed', handleModeUpdate);
+    };
+  }, []);
   
   // Filters
   const [contractor, setContractor] = useState('');
@@ -254,13 +284,14 @@ export default function BouldersReport() {
     filterData(transactions, '', '', '', '', '', minD, maxD);
   };
 
-  // Grouped summary calculation for Quarry and Contractor tabs
+  // Grouped summary calculation for Quarry, Contractor, and Vehicle tabs
   const getGroupedSummary = (keyName) => {
     const groups = {};
     filtered.forEach(t => {
       let val = '';
       if (keyName === 'quarry') val = t.quarry || t.source || 'UNSPECIFIED';
       else if (keyName === 'contractor') val = t.contractor || t.party || 'UNSPECIFIED';
+      else if (keyName === 'vehicle') val = t.vehicle_no || t.vehicle || 'UNSPECIFIED';
 
       val = String(val).trim() ? String(val).trim().toUpperCase() : 'UNSPECIFIED';
 
@@ -280,6 +311,57 @@ export default function BouldersReport() {
     const from = toReportStamp(fromDate, false);
     const to = toReportStamp(toDate, true);
 
+    if (printMode === SALES_SUMMARY_PRINT_MODES.DOT_MATRIX) {
+      if (activeTab === 'Report') {
+        const payload = {
+          title: 'QUARRY Report / Summary',
+          filters: { party: contractor, contractor, quarry, vehicle, transporter, destination },
+          fromDate: from,
+          toDate: to,
+          rows: filtered,
+          totals: {
+            gross: metrics.gross,
+            tare: metrics.tare,
+            nett: metrics.nett,
+            trips: metrics.trips
+          }
+        };
+        const preview = generateDotMatrixPreviewText(payload);
+        const raw = generateDotMatrixQuarryReportText(payload);
+        setDotMatrixTitle('🖨️ Dot Matrix Print Preview — QUARRY Report / Summary');
+        setDotMatrixPreviewText(preview);
+        setDotMatrixRawText(raw);
+        setShowDotMatrixModal(true);
+        return;
+      }
+
+      // Grouped Summary Dot Matrix Report (Image 5 format: QUARRY SUMMARY :Vehicle, etc.)
+      const summaryName = activeTab;
+      const columnName = activeTab;
+      const groups = getGroupedSummary(activeTab.toLowerCase());
+      const totalTrips = groups.reduce((acc, g) => acc + Number(g.trips || 0), 0);
+      const totalNett = groups.reduce((acc, g) => acc + Number(g.nett || 0), 0);
+
+      const payload = {
+        reportTitle: 'QUARRY SUMMARY',
+        summaryName,
+        columnName,
+        filters: { party: contractor, contractor, quarry, vehicle, transporter, destination },
+        fromDate: from,
+        toDate: to,
+        groups,
+        totalTrips,
+        totalNett
+      };
+      const preview = generateSummarySalesMPreviewText(payload);
+      const raw = generateSummarySalesMReportText(payload);
+      setDotMatrixTitle(`🖨️ Dot Matrix Print Preview — QUARRY SUMMARY :${summaryName}`);
+      setDotMatrixPreviewText(preview);
+      setDotMatrixRawText(raw);
+      setShowDotMatrixModal(true);
+      return;
+    }
+
     if (activeTab === 'Report') {
       printClassicSalesReport({
         reportTitle: 'Boulders Report',
@@ -292,12 +374,25 @@ export default function BouldersReport() {
 
     printClassicSummaryReport({
       summaryTitle: 'Boulders Summary',
-      groupBy: activeTab === 'Quarry' ? 'Quarry' : 'Contractor',
+      groupBy: activeTab,
       fromDate: from,
       toDate: to,
-      filters: { party: contractor, source: quarry, destination },
+      filters: { party: contractor, source: quarry, destination, vehicle },
       groups: getGroupedSummary(activeTab.toLowerCase())
     });
+  };
+
+  const handleExecuteDotMatrixPrint = async () => {
+    try {
+      setIsSendingPrint(true);
+      await sendRawToPrinter(dotMatrixRawText);
+      setShowDotMatrixModal(false);
+    } catch (err) {
+      console.error('[BouldersReport] Failed to print:', err);
+      alert('Failed to print: ' + (err?.message || err));
+    } finally {
+      setIsSendingPrint(false);
+    }
   };
 
   return (
@@ -480,16 +575,17 @@ export default function BouldersReport() {
                 </button>
                 <button
                   type="button"
-                  className="btn btn-sm btn-dark fw-bold ms-1"
+                  className={`btn btn-sm ${printMode === SALES_SUMMARY_PRINT_MODES.DOT_MATRIX ? 'btn-success text-white' : 'btn-dark'} fw-bold ms-1`}
                   onClick={handlePrint}
                   style={{ fontSize: '0.75rem', padding: '0.25rem 0.65rem' }}
+                  title={printMode === SALES_SUMMARY_PRINT_MODES.DOT_MATRIX ? 'Dot Matrix Printer (ESC/P 120-Column Quarry Report)' : 'Normal A4 Print Window'}
                 >
-                  🖨️ Print Full Report
+                  🖨️ Print Full Report {printMode === SALES_SUMMARY_PRINT_MODES.DOT_MATRIX ? '⚡ (Dot Matrix)' : ''}
                 </button>
               </div>
 
               <ul className="nav nav-tabs border-bottom-0">
-                {['Report', 'Quarry', 'Contractor'].map(tab => (
+                {['Report', 'Quarry', 'Contractor', 'Vehicle'].map(tab => (
                   <li key={tab} className="nav-item">
                     <button className={`nav-link ${activeTab === tab ? 'active' : ''}`} onClick={() => setActiveTab(tab)}>{tab}</button>
                   </li>
@@ -566,7 +662,7 @@ export default function BouldersReport() {
                 <table className="table table-sm table-hover align-middle" style={{ fontSize: '0.8rem' }}>
                   <thead className="table-light text-uppercase" style={{ fontSize: '0.72rem' }}>
                     <tr>
-                      <th>{activeTab === 'Quarry' ? 'Quarry / Source' : 'Contractor / Party'}</th>
+                      <th>{activeTab === 'Quarry' ? 'Quarry / Source' : activeTab === 'Contractor' ? 'Contractor / Party' : 'Vehicle Number'}</th>
                       <th className="text-center">Total Trips</th>
                       <th className="text-end">Total Gross (kg)</th>
                       <th className="text-end">Total Tare (kg)</th>
@@ -595,6 +691,96 @@ export default function BouldersReport() {
           </div>
         </div>
       </div>
+
+      {/* DOT MATRIX PRINT PREVIEW MODAL */}
+      {showDotMatrixModal && (
+        <div
+          className="position-fixed top-0 start-0 w-100 h-100 bg-dark bg-opacity-75 d-flex align-items-center justify-content-center p-3 animate-fade-in"
+          style={{ zIndex: 1060 }}
+        >
+          <div className="card shadow-lg w-100 d-flex flex-column border-0" style={{ maxWidth: '1080px', maxHeight: '92vh', borderRadius: '10px', overflow: 'hidden' }}>
+            <div className="card-header bg-dark text-white d-flex justify-content-between align-items-center py-2.5 px-3">
+              <div className="d-flex align-items-center gap-2">
+                <span className="fw-bold" style={{ fontSize: '0.92rem' }}>
+                  {dotMatrixTitle}
+                </span>
+                <span className="badge bg-success text-white" style={{ fontSize: '0.72rem' }}>
+                  {activeTab === 'Report' ? `${filtered.length} Rows` : `${getGroupedSummary(activeTab.toLowerCase()).length} Groups`}
+                </span>
+              </div>
+              <div className="d-flex align-items-center gap-2">
+                {/* Theme toggle: White Paper vs Dark Terminal */}
+                <button
+                  type="button"
+                  className={`btn btn-sm ${dotMatrixTheme === 'white' ? 'btn-light text-dark fw-bold' : 'btn-outline-light'} px-2 py-1.5`}
+                  style={{ fontSize: '0.78rem' }}
+                  onClick={() => {
+                    const next = dotMatrixTheme === 'white' ? 'dark' : 'white';
+                    setDotMatrixTheme(next);
+                    localStorage.setItem('noris_dot_matrix_preview_theme', next);
+                  }}
+                  title="Toggle White Paper / Dark Terminal mode"
+                >
+                  {dotMatrixTheme === 'white' ? '📄 White Paper' : '🌙 Dark Terminal'}
+                </button>
+
+                <button
+                  type="button"
+                  className="btn-close btn-close-white"
+                  onClick={() => setShowDotMatrixModal(false)}
+                ></button>
+              </div>
+            </div>
+
+            <div
+              className="card-body p-3 overflow-auto flex-grow-1"
+              style={{
+                backgroundColor: dotMatrixTheme === 'white' ? '#ffffff' : '#0c1017',
+                color: dotMatrixTheme === 'white' ? '#000000' : '#39ff14',
+                fontFamily: '"Courier New", Courier, monospace',
+                fontSize: '0.76rem',
+                lineHeight: '1.25',
+                whiteSpace: 'pre',
+                border: dotMatrixTheme === 'white' ? '1px solid #d0d7de' : 'none'
+              }}
+            >
+              {dotMatrixPreviewText}
+            </div>
+
+            <div className="card-footer bg-light d-flex justify-content-between align-items-center py-2 px-3 border-top">
+              <span className="text-muted small">
+                Continuous stationery format • ESC/P high-speed dot matrix output
+              </span>
+              <div className="d-flex gap-2">
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm fw-semibold"
+                  onClick={() => setShowDotMatrixModal(false)}
+                >
+                  Close
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-success btn-sm fw-bold px-3 d-flex align-items-center gap-1.5"
+                  onClick={handleExecuteDotMatrixPrint}
+                  disabled={isSendingPrint}
+                >
+                  {isSendingPrint ? (
+                    <>
+                      <span className="spinner-border spinner-border-sm me-1" role="status"></span>
+                      Sending...
+                    </>
+                  ) : (
+                    <>
+                      🖨️ Print Direct to Dot Matrix
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Image Preview Modal */}
       {selectedImage && (

@@ -238,9 +238,18 @@ export default function SearchableSelect({
         onKeyDown={handleKeyDown}
       />
 
-      {open && rect && (filtered.length > 0 || (!allowCustom && noResultsText)) && createPortal(
+      {open && rect && (filtered.length > 0 || (!allowCustom && noResultsText) || (allowCustom && query.trim() !== '')) && createPortal(
         <div className="ss-menu" ref={menuRef} style={menuStyle()}>
           {filtered.length === 0 && !allowCustom && noResultsText && <div className="ss-empty">{noResultsText}</div>}
+          {allowCustom && query.trim() !== '' && !filtered.some(o => o.label.toLowerCase() === query.trim().toLowerCase()) && (
+            <div
+              className="ss-item active fw-bold text-primary"
+              onMouseDown={(e) => { e.preventDefault(); select({ value: query.trim() }); }}
+              style={{ borderBottom: filtered.length > 0 ? '1px solid var(--line-soft, #e5e7eb)' : 'none', cursor: 'pointer' }}
+            >
+              ➕ Use &quot;{query.trim()}&quot; (Custom)
+            </div>
+          )}
           {filtered.map((opt, idx) => (
             <div
               key={String(opt.value) + '::' + idx}

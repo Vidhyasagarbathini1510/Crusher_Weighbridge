@@ -9,9 +9,10 @@
  *  - Eassey: Frame delimiter ':', deduplicated repeating character pattern
  *  - Generic / Avery / Netron: Frame delimiter '\r\n', standard signed decimal
  */
-
+ 
 const INDICATOR_PROTOCOLS = {
   WEITEX: 'Weitex',
+  K_STREAM: 'K-Stream',
   ICOM: 'Icom',
   EASSEY: 'Eassey',
   AVERY: 'Avery',
@@ -26,6 +27,9 @@ function getProtocolDelimiter(protocolName) {
   if (norm.includes('weitex')) {
     return 'z';
   }
+  if (norm.includes('k-stream') || norm.includes('kstream') || norm === 'k') {
+    return /[kK]/;
+  }
   if (norm.includes('icom') || norm.includes('eassey')) {
     return ':';
   }
@@ -36,7 +40,7 @@ function getProtocolDelimiter(protocolName) {
 /**
  * Parse a single frame/chunk according to the selected indicator protocol.
  * @param {string} chunk - Raw text between packet delimiters
- * @param {string} protocolName - Protocol name ('Weitex', 'Icom', 'Eassey', 'Avery', etc.)
+ * @param {string} protocolName - Protocol name ('Weitex', 'K-Stream', 'Icom', 'Eassey', 'Avery', etc.)
  * @returns {{ value: string|null, isStable?: boolean, raw: string }}
  */
 function parseIndicatorFrame(chunk, protocolName) {
@@ -46,7 +50,33 @@ function parseIndicatorFrame(chunk, protocolName) {
 
   const norm = String(protocolName || '').trim().toLowerCase();
 
-  // 1. WEITEX INDICATOR (e.g., 's  b    0', 's  -20', 's  100', 's  50')
+  // 1. K-STREAM / CONTINUOUS 'k' DELIMITED (e.g. 'k      0k      0' -> '      0' -> 0)
+  if (norm.includes('k-stream') || norm.includes('kstream') || norm === 'k') {
+    const signedMatch = raw.match(/([+-]?\s*\d+(\.\d+)?)/);
+    if (signedMatch) {
+      const cleanNumStr = signedMatch[1].replace(/\s+/g, '');
+      const parsedNum = parseFloat(cleanNumStr);
+      if (!isNaN(parsedNum)) {
+        return {
+          value: Number.isInteger(parsedNum) ? String(parsedNum) : String(parsedNum),
+          isStable: true,
+          raw
+        };
+      }
+    }
+    const digits = raw.replace(/[^0-9]/g, '');
+    if (digits) {
+      const val = parseInt(digits, 10);
+      return {
+        value: String(isNaN(val) ? 0 : val),
+        isStable: true,
+        raw
+      };
+    }
+    return { value: null, raw };
+  }
+
+  // 2. WEITEX INDICATOR (e.g., 's  b    0', 's  -20', 's  100', 's  50')
   if (norm.includes('weitex')) {
     const isStable = raw.startsWith('s') || raw.startsWith('S');
 
@@ -78,7 +108,7 @@ function parseIndicatorFrame(chunk, protocolName) {
     return { value: null, isStable, raw };
   }
 
-  // 2. ICOM INDICATOR (e.g. ': 0012340 :' -> 1234.0 or 1234)
+  // 3. ICOM INDICATOR (e.g. ': 0012340 :' -> 1234.0 or 1234)
   if (norm.includes('icom')) {
     // Extract signed number or digits
     const cleaned = raw.replace(/[^0-9.-]/g, '');
@@ -99,7 +129,7 @@ function parseIndicatorFrame(chunk, protocolName) {
     return { value: null, raw };
   }
 
-  // 3. EASSEY INDICATOR (Legacy half-string deduplication)
+  // 4. EASSEY INDICATOR (Legacy half-string deduplication)
   if (norm.includes('eassey')) {
     let digits = raw.replace(/[^0-9]/g, '');
     if (digits.length > 2) {
@@ -123,7 +153,7 @@ function parseIndicatorFrame(chunk, protocolName) {
     return { value: null, raw };
   }
 
-  // 4. GENERIC / AVERY / ASCII STANDARD
+  // 5. GENERIC / AVERY / ASCII STANDARD
   const numeric = raw.replace(/[^0-9.-]/g, '');
   if (numeric && !isNaN(Number(numeric))) {
     // Clean redundant negative signs or points

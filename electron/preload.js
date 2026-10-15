@@ -82,6 +82,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getContractors: () => ipcRenderer.invoke('db:getContractors'),
   getContractorMaterials: () => ipcRenderer.invoke('db:getContractorMaterials'),
   getSources: () => ipcRenderer.invoke('db:getSources'),
+  getDrivers: () => ipcRenderer.invoke('db:getDrivers'),
   getVehicleTares: () => ipcRenderer.invoke('db:getVehicleTares'),
   saveVehicleTare: (payload) => ipcRenderer.invoke('db:saveVehicleTare', payload),
   deleteVehicleTare: (id) => ipcRenderer.invoke('db:deleteVehicleTare', id),
@@ -141,6 +142,25 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const listener = (event, data) => callback(data);
     ipcRenderer.on('rfid-auto-weigh-success', listener);
     return () => ipcRenderer.removeListener('rfid-auto-weigh-success', listener);
+  },
+
+  // ---- Auto-Updater operations ----
+  checkForUpdates: () => ipcRenderer.invoke('app:check-for-updates'),
+  startUpdateDownload: (downloadUrl) => ipcRenderer.invoke('app:start-update-download', downloadUrl),
+  onUpdateAvailable: (callback) => {
+    const listener = (event, data) => callback(data);
+    ipcRenderer.on('app:update-available', listener);
+    return () => ipcRenderer.removeListener('app:update-available', listener);
+  },
+  onUpdateProgress: (callback) => {
+    const listener = (event, data) => callback(data);
+    ipcRenderer.on('app:update-progress', listener);
+    return () => ipcRenderer.removeListener('app:update-progress', listener);
+  },
+  onUpdateError: (callback) => {
+    const listener = (event, data) => callback(data);
+    ipcRenderer.on('app:update-error', listener);
+    return () => ipcRenderer.removeListener('app:update-error', listener);
   },
 
   // allow the UI to detach listeners when a component unmounts

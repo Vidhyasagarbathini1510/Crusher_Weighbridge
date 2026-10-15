@@ -1,7 +1,6 @@
 {
   "name": "noris-cctv-desktop",
-  "version": "1.0.1"
-,
+  "version": "1.0.2",
   "description": "NORIS Weighbridge Desktop Application",
   "main": "electron/main.js",
   "author": "Noris Solutions",
@@ -91,6 +90,7 @@
     },
 
     "nsis": {
+      "artifactName": "Crusher-Weighbridge-Setup-${version}.${ext}",
       "oneClick": false,
       "allowElevation": true,
       "allowToChangeInstallationDirectory": true,
