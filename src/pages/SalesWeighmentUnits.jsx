@@ -11,6 +11,7 @@ import { captureCameraSnapshot } from '../utils/cameraSnapshot.js';
 import { useScale } from '../context/ScaleContext.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
 import { getVehicleOptionMode, filterVehiclesBySetting, fetchAllTransactions, cleanupVehicleOnWeighmentCompletion } from '../utils/vehicleFilterUtil.js';
+import { PRINT_ONCE_MODES, getPrintOnceHideMode } from '../utils/duplicateBillUtil.js';
 
 
 
@@ -188,6 +189,12 @@ export default function SalesWeighmentUnits() {
   const [isSaved, setIsSaved] = useState(false);
   const [errors, setErrors] = useState({});
 
+  // Print Once Hide Mode (STAY vs HIDE)
+  const [printOnceHideMode, setPrintOnceHideMode] = useState(() => {
+    return localStorage.getItem('noris_print_once_hide_mode') || PRINT_ONCE_MODES.STAY;
+  });
+  const [printedItems, setPrintedItems] = useState({ ticket: false, dc: false, gatePass: false });
+
   const loadMasterData = () => {
     Promise.all([
       fetchAllTransactions(),
@@ -306,6 +313,9 @@ export default function SalesWeighmentUnits() {
     api.cameras().then(setCameras).catch(() => setCameras([]));
 
     loadMasterData();
+    getPrintOnceHideMode().then(m => {
+      if (m) setPrintOnceHideMode(m);
+    });
 
     // Trigger an immediate background sync on mount to fetch the latest from server
     if (api.syncMasterData) {
@@ -319,10 +329,14 @@ export default function SalesWeighmentUnits() {
     const onRefresh = () => handleResetForm();
     window.addEventListener('page-refresh', onRefresh);
 
-    const onSlipSaved = () => loadMasterData();
-    window.addEventListener('loading-slip-saved', onSlipSaved);
-    window.addEventListener('workflow-setting-changed', onSlipSaved);
-    window.addEventListener('storage', onSlipSaved);
+    const onWorkflowChanged = () => {
+      loadMasterData();
+      const m = localStorage.getItem('noris_print_once_hide_mode') || PRINT_ONCE_MODES.STAY;
+      setPrintOnceHideMode(m);
+    };
+    window.addEventListener('loading-slip-saved', onWorkflowChanged);
+    window.addEventListener('workflow-setting-changed', onWorkflowChanged);
+    window.addEventListener('storage', onWorkflowChanged);
 
     let unsubscribeSync = null;
     if (window.electronAPI && window.electronAPI.onMasterDataSynced) {
@@ -333,9 +347,9 @@ export default function SalesWeighmentUnits() {
 
     return () => {
       window.removeEventListener('page-refresh', onRefresh);
-      window.removeEventListener('loading-slip-saved', onSlipSaved);
-      window.removeEventListener('workflow-setting-changed', onSlipSaved);
-      window.removeEventListener('storage', onSlipSaved);
+      window.removeEventListener('loading-slip-saved', onWorkflowChanged);
+      window.removeEventListener('workflow-setting-changed', onWorkflowChanged);
+      window.removeEventListener('storage', onWorkflowChanged);
       if (unsubscribeSync) unsubscribeSync();
     };
   }, []);
@@ -1002,22 +1016,32 @@ export default function SalesWeighmentUnits() {
   const handlePrint = () => {
     if (!savedTicket) return;
     printTicket(savedTicket, getSelectedTemplate(), 'TICKET');
+    if (printOnceHideMode === PRINT_ONCE_MODES.HIDE) {
+      setPrintedItems(prev => ({ ...prev, ticket: true }));
+    }
   };
 
   const handleDcPrint = () => {
     if (!savedTicket) return;
     printTicket(savedTicket, getDcPrintTemplate(), 'DC');
+    if (printOnceHideMode === PRINT_ONCE_MODES.HIDE) {
+      setPrintedItems(prev => ({ ...prev, dc: true }));
+    }
   };
 
   const handleGatePassPrint = () => {
     if (!savedTicket) return;
     printTicket(savedTicket, getGatePassTemplate(), 'GATE_PASS');
+    if (printOnceHideMode === PRINT_ONCE_MODES.HIDE) {
+      setPrintedItems(prev => ({ ...prev, gatePass: true }));
+    }
   };
 
   const handleResetForm = () => {
     userManuallyEditedSplitRef.current = false;
     setSavedTicket(null);
     setIsSaved(false);
+    setPrintedItems({ ticket: false, dc: false, gatePass: false });
     setActiveLoadingSlip(null);
     setErrors({});
     setVehicle('');
@@ -1301,6 +1325,7 @@ export default function SalesWeighmentUnits() {
 
       setSavedTicket(ticketSnapshot);
       setIsSaved(true);
+      setPrintedItems({ ticket: false, dc: false, gatePass: false });
       await cleanupVehicleOnWeighmentCompletion(cleanVehicle, 'OTHERS');
       loadMasterData();
       setMsg('Sales Transaction (Units Mode) Saved successfully!');
@@ -2062,15 +2087,21 @@ export default function SalesWeighmentUnits() {
                   <span className="text-secondary w-100 text-end mb-1" style={{ fontSize: '0.75rem' }}>
                     Saved as <b>{savedTicket.dcNum}</b>
                   </span>
-                  <button type="button" onClick={handlePrint} className="btn btn-danger saas-btn flex-grow-1" style={{ backgroundColor: '#ef4444' }}>
-                    Print
-                  </button>
-                  <button type="button" onClick={handleDcPrint} className="btn btn-dark saas-btn flex-grow-1">
-                    DC Print
-                  </button>
-                  <button type="button" onClick={handleGatePassPrint} className="btn btn-secondary saas-btn flex-grow-1">
-                    Gate Pass
-                  </button>
+                  {!(printOnceHideMode === PRINT_ONCE_MODES.HIDE && printedItems.ticket) && (
+                    <button type="button" onClick={handlePrint} className="btn btn-danger saas-btn flex-grow-1" style={{ backgroundColor: '#ef4444' }}>
+                      Print
+                    </button>
+                  )}
+                  {!(printOnceHideMode === PRINT_ONCE_MODES.HIDE && printedItems.dc) && (
+                    <button type="button" onClick={handleDcPrint} className="btn btn-dark saas-btn flex-grow-1">
+                      DC Print
+                    </button>
+                  )}
+                  {!(printOnceHideMode === PRINT_ONCE_MODES.HIDE && printedItems.gatePass) && (
+                    <button type="button" onClick={handleGatePassPrint} className="btn btn-secondary saas-btn flex-grow-1">
+                      Gate Pass
+                    </button>
+                  )}
                 </>
               ) : (
                 <button type="button" onClick={handleSave} className={`btn btn-success saas-btn w-100 ${layoutDesign === 'compact' ? 'btn-action-save' : ''}`}>

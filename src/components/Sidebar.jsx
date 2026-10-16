@@ -3,6 +3,7 @@ import { NavLink } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useScale } from '../context/ScaleContext.jsx';
 import logoImg from '../assets/logo.jpg';
+import { DUPLICATE_BILL_MODES, getDuplicateBillsMode } from '../utils/duplicateBillUtil.js';
 
 export default function Sidebar() {
   const [activeDropdown, setActiveDropdown] = useState(null);
@@ -16,8 +17,14 @@ export default function Sidebar() {
     if (saved) return saved;
     return localStorage.getItem('noris_enable_loading_slip') === 'true' ? 'both' : 'vehicles';
   });
+  const [duplicateBillsMode, setDuplicateBillsMode] = useState(() => {
+    return localStorage.getItem('noris_duplicate_bills_mode') || DUPLICATE_BILL_MODES.SHOW;
+  });
 
   useEffect(() => {
+    getDuplicateBillsMode().then(m => {
+      if (m) setDuplicateBillsMode(m);
+    });
     const handleUpdate = () => {
       const saved = localStorage.getItem('noris_loading_slip_menu_mode');
       if (saved) {
@@ -26,6 +33,8 @@ export default function Sidebar() {
         setMenuMode(localStorage.getItem('noris_enable_loading_slip') === 'true' ? 'both' : 'vehicles');
       }
       setIsSlipEnabled(localStorage.getItem('noris_enable_loading_slip') === 'true');
+      const dupMode = localStorage.getItem('noris_duplicate_bills_mode') || DUPLICATE_BILL_MODES.SHOW;
+      setDuplicateBillsMode(dupMode);
     };
     window.addEventListener('storage', handleUpdate);
     window.addEventListener('workflow-setting-changed', handleUpdate);
@@ -180,7 +189,7 @@ export default function Sidebar() {
           'Boulders',
           [
             { to: '/boulders/weighment', label: 'Weighment' },
-            { to: '/boulders/duplicate', label: 'Duplicate' },
+            ...(duplicateBillsMode === DUPLICATE_BILL_MODES.HIDE ? [] : [{ to: '/boulders/duplicate', label: 'Duplicate' }]),
             { to: '/boulders/quarry', label: 'Quarry Enable' }
           ],
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -195,7 +204,7 @@ export default function Sidebar() {
           'Sales',
           [
             { to: '/sales/weighment-units', label: 'Weighment - Units' },
-            { to: '/sales/duplicate-bill', label: 'Duplicate Bill' }
+            ...(duplicateBillsMode === DUPLICATE_BILL_MODES.HIDE ? [] : [{ to: '/sales/duplicate-bill', label: 'Duplicate Bill' }])
           ],
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <circle cx="9" cy="21" r="1"></circle>
@@ -209,7 +218,7 @@ export default function Sidebar() {
           'Yard',
           [
             { to: '/yard/weighment', label: 'Yard Weighment' },
-            { to: '/yard/duplicate', label: 'Duplicate Yard' }
+            ...(duplicateBillsMode === DUPLICATE_BILL_MODES.HIDE ? [] : [{ to: '/yard/duplicate', label: 'Duplicate Yard' }])
           ],
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z" />
@@ -223,7 +232,7 @@ export default function Sidebar() {
           [
             { to: '/weighment/first', label: 'First Weighment' },
             { to: '/weighment/second', label: 'Second Weighment' },
-            { to: '/weighment/duplicate-bill', label: 'Duplicate Bill' }
+            ...(duplicateBillsMode === DUPLICATE_BILL_MODES.HIDE ? [] : [{ to: '/weighment/duplicate-bill', label: 'Duplicate Bill' }])
           ],
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <path d="M16 16v1a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2v-1"></path>

@@ -3,12 +3,26 @@ import { api } from '../api/client.js';
 import CameraPlayer from '../components/CameraPlayer.jsx';
 import Loader from '../components/Loader.jsx';
 import { printTicket, getSelectedTemplate, getDcPrintTemplate } from '../utils/printHelper.js';
+import {
+  DUPLICATE_BILL_MODES,
+  PRINT_ONCE_MODES,
+  getDuplicateBillsMode,
+  getPrintOnceHideMode
+} from '../utils/duplicateBillUtil.js';
 
 export default function DuplicateBill() {
   const [cameras, setCameras] = useState(null);
   const [loadedMatch, setLoadedMatch] = useState(null);
   const [msg, setMsg] = useState('');
   const [msgType, setMsgType] = useState('success');
+
+  const [duplicateBillsMode, setDuplicateBillsMode] = useState(() => {
+    return localStorage.getItem('noris_duplicate_bills_mode') || DUPLICATE_BILL_MODES.SHOW;
+  });
+  const [printOnceHideMode, setPrintOnceHideMode] = useState(() => {
+    return localStorage.getItem('noris_print_once_hide_mode') || PRINT_ONCE_MODES.STAY;
+  });
+  const [isPrinted, setIsPrinted] = useState(false);
   
   // Fields
   const [dcNumber, setDcNumber] = useState('');
@@ -28,6 +42,19 @@ export default function DuplicateBill() {
 
   useEffect(() => {
     api.cameras().then(setCameras).catch(() => setCameras([]));
+    getDuplicateBillsMode().then(m => { if (m) setDuplicateBillsMode(m); });
+    getPrintOnceHideMode().then(m => { if (m) setPrintOnceHideMode(m); });
+
+    const handleWorkflowChange = () => {
+      setDuplicateBillsMode(localStorage.getItem('noris_duplicate_bills_mode') || DUPLICATE_BILL_MODES.SHOW);
+      setPrintOnceHideMode(localStorage.getItem('noris_print_once_hide_mode') || PRINT_ONCE_MODES.STAY);
+    };
+    window.addEventListener('storage', handleWorkflowChange);
+    window.addEventListener('workflow-setting-changed', handleWorkflowChange);
+    return () => {
+      window.removeEventListener('storage', handleWorkflowChange);
+      window.removeEventListener('workflow-setting-changed', handleWorkflowChange);
+    };
   }, []);
 
   const showNotice = (text, type = 'success') => {
@@ -90,6 +117,7 @@ export default function DuplicateBill() {
         setGrossVal(match.gross || match.grossVal || '');
         setTareVal(match.tare || match.tareVal || '');
         setNettVal(match.net || match.nettVal || match.units_val || '');
+        setIsPrinted(false);
         showNotice('Sales Transaction Bill Loaded Successfully!', 'success');
       } else {
         showNotice('No matching sales transaction bill found.', 'warning');
@@ -104,6 +132,15 @@ export default function DuplicateBill() {
 
   return (
     <div className="container-fluid p-0 animate-fade-in" style={{ fontFamily: 'Segoe UI, sans-serif' }}>
+      {duplicateBillsMode === DUPLICATE_BILL_MODES.HIDE && (
+        <div className="alert alert-warning py-2 px-3 mb-2 shadow-sm d-flex align-items-center gap-2" role="alert" style={{ fontSize: '0.85rem' }}>
+          <span>⚠️</span>
+          <div>
+            <strong>Notice:</strong> Duplicate Bills are currently hidden and disabled by administrator in <b>Settings ➔ 🚚 Vehicle & Workflow</b>.
+          </div>
+        </div>
+      )}
+
       {msg && (
         <div className={`alert alert-${msgType} alert-dismissible fade show py-2 px-3 mb-2 shadow-sm`} role="alert" style={{ fontSize: '0.85rem' }}>
           <strong>Notice:</strong> {msg}
@@ -254,105 +291,144 @@ export default function DuplicateBill() {
                 </div>
               </div>
 
-              <div className="col-12 d-flex gap-2 mt-4 justify-content-end">
-                <button 
-                  type="button" 
-                  className="btn btn-danger saas-btn px-4" 
-                  style={{ backgroundColor: '#ef4444' }}
-                  onClick={() => {
-                    const ticket = loadedMatch ? {
-                      ...loadedMatch,
-                      dcNum: dcNumber || loadedMatch.dc_num,
-                      vehicle: vehicle || loadedMatch.vehicle_no,
-                      material: material || loadedMatch.product,
-                      party: party || loadedMatch.party,
-                      destination: destination || loadedMatch.destination,
-                      source: source || loadedMatch.quarry,
-                      gross: grossVal || loadedMatch.gross,
-                      tare: tareVal || loadedMatch.tare,
-                      net: nettVal || loadedMatch.net,
-                      transporter: transporter || loadedMatch.transporter,
-                      driver: driver || loadedMatch.driver,
-                      tareDate: loadedMatch.tare_date || loadedMatch.tareDate,
-                      tareTime: loadedMatch.tare_time || loadedMatch.tareTime,
-                      tare_date: loadedMatch.tare_date || loadedMatch.tareDate,
-                      tare_time: loadedMatch.tare_time || loadedMatch.tareTime,
-                      billType: billType,
-                      bill_type: billType,
-                      gstin: gstin,
-                      partyGstin: gstin,
-                      isGst: billType === 'GST'
-                    } : {
-                      dcNum: dcNumber || '1',
-                      vehicle: vehicle || 'TEST',
-                      material: material || 'Gravel',
-                      party: party || 'BMW',
-                      destination: destination || 'Stock',
-                      source: source || 'BMW',
-                      gross: grossVal || '0',
-                      tare: tareVal || '0',
-                      net: nettVal || '0',
-                      transporter: transporter || 'GSM INFRA',
-                      billType: billType,
-                      bill_type: billType,
-                      gstin: gstin,
-                      partyGstin: gstin,
-                      isGst: billType === 'GST'
-                    };
-                    printTicket(ticket, getSelectedTemplate(), 'TICKET');
-                  }}
-                >
-                  Print Bill
-                </button>
-                <button 
-                  type="button" 
-                  className="btn btn-dark saas-btn px-3"
-                  onClick={() => {
-                    const ticket = loadedMatch ? {
-                      ...loadedMatch,
-                      dcNum: dcNumber || loadedMatch.dc_num,
-                      vehicle: vehicle || loadedMatch.vehicle_no,
-                      material: material || loadedMatch.product,
-                      party: party || loadedMatch.party,
-                      destination: destination || loadedMatch.destination,
-                      source: source || loadedMatch.quarry,
-                      gross: grossVal || loadedMatch.gross,
-                      tare: tareVal || loadedMatch.tare,
-                      net: nettVal || loadedMatch.net,
-                      transporter: transporter || loadedMatch.transporter,
-                      driver: driver || loadedMatch.driver,
-                      tareDate: loadedMatch.tare_date || loadedMatch.tareDate,
-                      tareTime: loadedMatch.tare_time || loadedMatch.tareTime,
-                      tare_date: loadedMatch.tare_date || loadedMatch.tareDate,
-                      tare_time: loadedMatch.tare_time || loadedMatch.tareTime,
-                      billType: billType,
-                      bill_type: billType,
-                      gstin: gstin,
-                      partyGstin: gstin,
-                      isGst: billType === 'GST'
-                    } : {
-                      dcNum: dcNumber || '1',
-                      vehicle: vehicle || 'TEST',
-                      material: material || 'Gravel',
-                      party: party || 'BMW',
-                      destination: destination || 'Stock',
-                      source: source || 'BMW',
-                      gross: grossVal || '0',
-                      tare: tareVal || '0',
-                      net: nettVal || '0',
-                      transporter: transporter || 'GSM INFRA',
-                      billType: billType,
-                      bill_type: billType,
-                      gstin: gstin,
-                      partyGstin: gstin,
-                      isGst: billType === 'GST'
-                    };
-                    printTicket(ticket, getDcPrintTemplate(), 'DC');
-                  }}
-                >
-                  DC Print
-                </button>
-              </div>
+              {!(printOnceHideMode === PRINT_ONCE_MODES.HIDE && isPrinted) ? (
+                <div className="col-12 d-flex gap-2 mt-4 justify-content-end">
+                  <button 
+                    type="button" 
+                    className="btn btn-danger saas-btn px-4" 
+                    style={{ backgroundColor: '#ef4444' }}
+                    onClick={() => {
+                      const ticket = loadedMatch ? {
+                        ...loadedMatch,
+                        dcNum: dcNumber || loadedMatch.dc_num,
+                        vehicle: vehicle || loadedMatch.vehicle_no,
+                        material: material || loadedMatch.product,
+                        party: party || loadedMatch.party,
+                        destination: destination || loadedMatch.destination,
+                        source: source || loadedMatch.quarry,
+                        gross: grossVal || loadedMatch.gross,
+                        tare: tareVal || loadedMatch.tare,
+                        net: nettVal || loadedMatch.net,
+                        transporter: transporter || loadedMatch.transporter,
+                        driver: driver || loadedMatch.driver,
+                        tareDate: loadedMatch.tare_date || loadedMatch.tareDate,
+                        tareTime: loadedMatch.tare_time || loadedMatch.tareTime,
+                        tare_date: loadedMatch.tare_date || loadedMatch.tareDate,
+                        tare_time: loadedMatch.tare_time || loadedMatch.tareTime,
+                        billType: billType,
+                        bill_type: billType,
+                        gstin: gstin,
+                        partyGstin: gstin,
+                        isGst: billType === 'GST'
+                      } : {
+                        dcNum: dcNumber || '1',
+                        vehicle: vehicle || 'TEST',
+                        material: material || 'Gravel',
+                        party: party || 'BMW',
+                        destination: destination || 'Stock',
+                        source: source || 'BMW',
+                        gross: grossVal || '0',
+                        tare: tareVal || '0',
+                        net: nettVal || '0',
+                        transporter: transporter || 'GSM INFRA',
+                        billType: billType,
+                        bill_type: billType,
+                        gstin: gstin,
+                        partyGstin: gstin,
+                        isGst: billType === 'GST'
+                      };
+                      printTicket(ticket, getSelectedTemplate(), 'TICKET');
+                      if (printOnceHideMode === PRINT_ONCE_MODES.HIDE) {
+                        setIsPrinted(true);
+                        showNotice('Bill printed successfully! Print button hidden as per single-print setting.', 'success');
+                      }
+                    }}
+                  >
+                    Print Bill
+                  </button>
+                  <button 
+                    type="button" 
+                    className="btn btn-dark saas-btn px-3"
+                    onClick={() => {
+                      const ticket = loadedMatch ? {
+                        ...loadedMatch,
+                        dcNum: dcNumber || loadedMatch.dc_num,
+                        vehicle: vehicle || loadedMatch.vehicle_no,
+                        material: material || loadedMatch.product,
+                        party: party || loadedMatch.party,
+                        destination: destination || loadedMatch.destination,
+                        source: source || loadedMatch.quarry,
+                        gross: grossVal || loadedMatch.gross,
+                        tare: tareVal || loadedMatch.tare,
+                        net: nettVal || loadedMatch.net,
+                        transporter: transporter || loadedMatch.transporter,
+                        driver: driver || loadedMatch.driver,
+                        tareDate: loadedMatch.tare_date || loadedMatch.tareDate,
+                        tareTime: loadedMatch.tare_time || loadedMatch.tareTime,
+                        tare_date: loadedMatch.tare_date || loadedMatch.tareDate,
+                        tare_time: loadedMatch.tare_time || loadedMatch.tareTime,
+                        billType: billType,
+                        bill_type: billType,
+                        gstin: gstin,
+                        partyGstin: gstin,
+                        isGst: billType === 'GST'
+                      } : {
+                        dcNum: dcNumber || '1',
+                        vehicle: vehicle || 'TEST',
+                        material: material || 'Gravel',
+                        party: party || 'BMW',
+                        destination: destination || 'Stock',
+                        source: source || 'BMW',
+                        gross: grossVal || '0',
+                        tare: tareVal || '0',
+                        net: nettVal || '0',
+                        transporter: transporter || 'GSM INFRA',
+                        billType: billType,
+                        bill_type: billType,
+                        gstin: gstin,
+                        partyGstin: gstin,
+                        isGst: billType === 'GST'
+                      };
+                      printTicket(ticket, getDcPrintTemplate(), 'DC');
+                      if (printOnceHideMode === PRINT_ONCE_MODES.HIDE) {
+                        setIsPrinted(true);
+                        showNotice('DC Print sent successfully! Print button hidden as per single-print setting.', 'success');
+                      }
+                    }}
+                  >
+                    DC Print
+                  </button>
+                </div>
+              ) : (
+                <div className="col-12 mt-4 d-flex justify-content-between align-items-center bg-light p-2.5 rounded border">
+                  <span className="badge bg-success-subtle text-success border border-success-subtle px-2.5 py-1.5 fw-semibold" style={{ fontSize: '0.82rem' }}>
+                    ✓ Bill Printed (Single Print Enforced)
+                  </span>
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-outline-secondary"
+                    onClick={() => {
+                      setIsPrinted(false);
+                      setDcNumber('');
+                      setLoadedMatch(null);
+                      setVehicle('');
+                      setParty('');
+                      setMaterial('');
+                      setSource('');
+                      setDestination('');
+                      setTransporter('');
+                      setDriver('');
+                      setStationary('');
+                      setGstin('');
+                      setGrossVal('');
+                      setTareVal('');
+                      setNettVal('');
+                    }}
+                  >
+                    🔍 Search Another Bill
+                  </button>
+                </div>
+              )}
             </form>
           </div>
         </div>

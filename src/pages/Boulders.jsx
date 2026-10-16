@@ -43,6 +43,24 @@ export default function Boulders() {
   const [savedWeight, setSavedWeight] = useState('');
   const [syncingMaster, setSyncingMaster] = useState(false);
 
+  // Screen Layout State ('compact' = New Type screen-fit without scroll, 'classic' = Old Design)
+  const [layoutDesign, setLayoutDesign] = useState(
+    () => localStorage.getItem('noris_boulders_layout_design') || 'compact'
+  );
+
+  useEffect(() => {
+    const handleLayoutChange = (e) => {
+      const mode = e?.detail?.design || localStorage.getItem('noris_boulders_layout_design') || 'compact';
+      setLayoutDesign(mode);
+    };
+    window.addEventListener('boulders-layout-changed', handleLayoutChange);
+    window.addEventListener('storage', handleLayoutChange);
+    return () => {
+      window.removeEventListener('boulders-layout-changed', handleLayoutChange);
+      window.removeEventListener('storage', handleLayoutChange);
+    };
+  }, []);
+
   // The ticket for the weighment that was last written to the database. Holding
   // the printed values rather than reading the form back means a re-print still
   // produces the saved DC, even though saving advances the DC number and leaves
@@ -113,6 +131,10 @@ export default function Boulders() {
           const enabled = s.boulders_manual_entry === 'true' || s.boulders_manual_entry === true;
           setManualMode(enabled);
           localStorage.setItem('noris_boulders_manual_entry', enabled ? 'true' : 'false');
+        }
+        if (s && s.boulders_layout_design) {
+          setLayoutDesign(s.boulders_layout_design);
+          localStorage.setItem('noris_boulders_layout_design', s.boulders_layout_design);
         }
       }).catch(() => {});
     }
@@ -962,6 +984,67 @@ export default function Boulders() {
           gap: 0.5rem;
         }
         .saas-btn-print:hover { background-color: #dc2626; }
+
+        /* ✨ Compact Screen-Fit Layout (No Vertical Scroll) */
+        .saas-card-compact {
+          padding: 0.45rem 0.8rem 0.55rem 0.8rem !important;
+          margin-bottom: 0.15rem !important;
+        }
+        .saas-card-compact .saas-header {
+          padding-bottom: 0.25rem !important;
+          margin-bottom: 0.35rem !important;
+        }
+        .saas-card-compact .saas-title {
+          font-size: 0.88rem !important;
+        }
+        .saas-card-compact .saas-label {
+          font-size: 0.65rem !important;
+          margin-bottom: 0.08rem !important;
+          letter-spacing: 0.02em;
+        }
+        .saas-card-compact .saas-input,
+        .saas-card-compact .ss-input {
+          height: 29px !important;
+          font-size: 0.77rem !important;
+          padding: 0.18rem 0.45rem !important;
+        }
+        .saas-card-compact select.saas-input,
+        .saas-card-compact .form-select.saas-input {
+          height: 29px !important;
+          padding-right: 1.8rem !important;
+          color: #111827 !important;
+          background-color: #ffffff !important;
+          font-weight: 600 !important;
+          font-size: 0.77rem !important;
+          line-height: 1.2 !important;
+        }
+        .boulders-compact-no-scroll {
+          overflow-y: hidden !important;
+          padding-bottom: 4px !important;
+        }
+        .saas-card-compact .saas-section {
+          padding: 0.45rem 0.65rem !important;
+          margin-bottom: 0.35rem !important;
+          border-radius: 5px !important;
+        }
+        .saas-card-compact .saas-section-title {
+          font-size: 0.68rem !important;
+          margin-bottom: 0.25rem !important;
+          padding-bottom: 0.12rem !important;
+        }
+        .saas-card-compact .weight-display-input {
+          height: 31px !important;
+          font-size: 0.92rem !important;
+          font-weight: 700 !important;
+          padding: 0.18rem 0.5rem !important;
+        }
+        .saas-card-compact .saas-btn-save,
+        .saas-card-compact .saas-btn-print {
+          height: 32px !important;
+          font-size: 0.82rem !important;
+          font-weight: 700 !important;
+          padding: 0.25rem 1.1rem !important;
+        }
       `}</style>
 
       {msg && (
@@ -973,8 +1056,8 @@ export default function Boulders() {
 
       <div className="row g-2">
         {/* Left Column: Input Form */}
-        <div className="col-12 col-lg-8">
-          <div className="saas-card">
+        <div className={layoutDesign === 'compact' ? 'col-12 col-lg-8 boulders-compact-no-scroll' : 'col-12 col-lg-8'}>
+          <div className={layoutDesign === 'compact' ? 'saas-card saas-card-compact' : 'saas-card'}>
             <div className="saas-header d-flex justify-content-between align-items-center">
               <div className="d-flex align-items-center gap-2">
                 <span className="saas-title">Boulders Weighment Form</span>
@@ -1001,7 +1084,7 @@ export default function Boulders() {
               {/* Section 1: Logistics Information */}
               <div className="saas-section">
                 <div className="saas-section-title">Logistics Details</div>
-                <div className="row g-2">
+                <div className={`row ${layoutDesign === 'compact' ? 'g-1.5' : 'g-2'}`}>
                   <div className="col-md-6">
                     <div className="d-flex justify-content-between align-items-center mb-1">
                       <label className="saas-label mb-0">DC Num</label>
@@ -1038,7 +1121,7 @@ export default function Boulders() {
                     />
                   </div>
 
-                  <div className="col-md-6">
+                  <div className={layoutDesign === 'compact' ? 'col-md-4' : 'col-md-6'}>
                     <label className="saas-label">Contractor</label>
                     <SearchableSelect
                       className="saas-input"
@@ -1050,7 +1133,7 @@ export default function Boulders() {
                     />
                   </div>
 
-                  <div className="col-md-6">
+                  <div className={layoutDesign === 'compact' ? 'col-md-4' : 'col-md-6'}>
                     <label className="saas-label">Quarry / Source</label>
                     <SearchableSelect
                       className="saas-input"
@@ -1062,7 +1145,7 @@ export default function Boulders() {
                     />
                   </div>
 
-                  <div className="col-md-12">
+                  <div className={layoutDesign === 'compact' ? 'col-md-4' : 'col-md-12'}>
                     <label className="saas-label">Material</label>
                     <SearchableSelect
                       className="saas-input"
@@ -1079,7 +1162,7 @@ export default function Boulders() {
               {/* Section 2: Driver & Transport Details */}
               <div className="saas-section">
                 <div className="saas-section-title">Driver & Destination Details</div>
-                <div className="row g-2">
+                <div className={`row ${layoutDesign === 'compact' ? 'g-1.5' : 'g-2'}`}>
                   <div className="col-md-4">
                     <label className="saas-label">Driver</label>
                     <SearchableSelect
@@ -1120,17 +1203,17 @@ export default function Boulders() {
 
               {/* Section 3: Weighment Details */}
               <div className="saas-section" style={{ backgroundColor: 'var(--surface-2)' }}>
-                <div className="d-flex justify-content-between align-items-center mb-2">
+                <div className="d-flex justify-content-between align-items-center mb-1">
                   <div className="saas-section-title mb-0" style={{ color: 'var(--ink)' }}>Weighment Values</div>
                 </div>
 
-                <div className="row g-2">
+                <div className={`row ${layoutDesign === 'compact' ? 'g-1.5' : 'g-2'}`}>
                   <div className="col-4">
                     <label className="saas-label" style={{ color: 'var(--primary-ink)' }}>Gross (kg)</label>
                     <input
                       type="text"
-                      className={`form-control saas-input ${!manualMode ? 'saas-input-readonly' : ''} text-center fw-bold`}
-                      style={{ color: 'var(--primary-ink)', fontSize: '0.9rem !important', backgroundColor: '#ffffff !important' }}
+                      className={`form-control saas-input weight-display-input ${!manualMode ? 'saas-input-readonly' : ''} text-center fw-bold`}
+                      style={{ color: 'var(--primary-ink)', backgroundColor: '#ffffff' }}
                       value={grossVal}
                       onChange={manualMode ? (e) => setGrossVal(e.target.value.replace(/[^0-9.]/g, '')) : undefined}
                       readOnly={!manualMode}
@@ -1140,8 +1223,8 @@ export default function Boulders() {
                     <label className="saas-label" style={{ color: '#16a34a' }}>Tare (kg)</label>
                     <input
                       type="text"
-                      className={`form-control saas-input ${!manualMode ? 'saas-input-readonly' : ''} text-center fw-bold`}
-                      style={{ color: '#16a34a', fontSize: '0.9rem !important', backgroundColor: '#ffffff !important' }}
+                      className={`form-control saas-input weight-display-input ${!manualMode ? 'saas-input-readonly' : ''} text-center fw-bold`}
+                      style={{ color: '#16a34a', backgroundColor: '#ffffff' }}
                       value={tareVal}
                       onChange={manualMode ? (e) => setTareVal(e.target.value.replace(/[^0-9.]/g, '')) : undefined}
                       readOnly={!manualMode}
@@ -1151,8 +1234,8 @@ export default function Boulders() {
                     <label className="saas-label" style={{ color: '#dc2626' }}>Nett (kg)</label>
                     <input
                       type="text"
-                      className="form-control saas-input saas-input-readonly text-center fw-bold"
-                      style={{ color: '#dc2626', fontSize: '0.9rem !important', backgroundColor: '#ffffff !important' }}
+                      className="form-control saas-input weight-display-input saas-input-readonly text-center fw-bold"
+                      style={{ color: '#dc2626', backgroundColor: '#ffffff' }}
                       value={nettVal}
                       readOnly
                     />
@@ -1161,7 +1244,7 @@ export default function Boulders() {
               </div>
 
               {/* Form Action Buttons */}
-              <div className="d-flex gap-2 justify-content-end align-items-center">
+              <div className={`d-flex gap-2 justify-content-end align-items-center ${layoutDesign === 'compact' ? 'mt-2' : 'mt-4'}`}>
                 {savedTicket ? (
                   <>
                     <span className="text-secondary" style={{ fontSize: '0.75rem' }}>
@@ -1183,7 +1266,7 @@ export default function Boulders() {
 
         {/* Right Column: Live Camera Views */}
         <div className="col-12 col-lg-4">
-          <div className="saas-card overflow-auto" style={{ maxHeight: 'calc(100vh - 130px)' }}>
+          <div className="saas-card overflow-auto" style={{ maxHeight: layoutDesign === 'compact' ? 'calc(100vh - 160px)' : 'calc(100vh - 130px)' }}>
             <div className="saas-header">
               <span className="saas-title">Live Camera Views</span>
               <div className="d-flex align-items-center gap-1 text-success small fw-semibold" style={{ fontSize: '0.72rem' }}>

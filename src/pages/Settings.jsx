@@ -17,6 +17,14 @@ import {
 import { useScale } from '../context/ScaleContext.jsx';
 import { VEHICLE_OPTION_MODES, getVehicleOptionMode, setVehicleOptionMode } from '../utils/vehicleFilterUtil.js';
 import { SALES_SUMMARY_PRINT_MODES, getSalesSummaryPrintMode, setSalesSummaryPrintMode } from '../utils/salesSummaryPrinter.js';
+import {
+  DUPLICATE_BILL_MODES,
+  PRINT_ONCE_MODES,
+  getDuplicateBillsMode,
+  setDuplicateBillsMode,
+  getPrintOnceHideMode,
+  setPrintOnceHideMode
+} from '../utils/duplicateBillUtil.js';
 
 
 // Display names for the slip templates. The `id` is the value stored in
@@ -249,6 +257,35 @@ export default function Settings() {
     setMsg(`Vehicle Option Type updated to "${labels[mode] || mode}"`);
   };
 
+  // Duplicate Bills Feature State (SHOW / HIDE)
+  const [duplicateBillsMode, setDuplicateBillsModeState] = useState(DUPLICATE_BILL_MODES.SHOW);
+
+  // Print Once Hide State (STAY / HIDE)
+  const [printOnceHideMode, setPrintOnceHideModeState] = useState(PRINT_ONCE_MODES.STAY);
+
+  useEffect(() => {
+    getDuplicateBillsMode().then(mode => {
+      if (mode) setDuplicateBillsModeState(mode);
+    });
+    getPrintOnceHideMode().then(mode => {
+      if (mode) setPrintOnceHideModeState(mode);
+    });
+  }, []);
+
+  const handleSaveDuplicateBillsMode = async (mode) => {
+    await setDuplicateBillsMode(mode);
+    setDuplicateBillsModeState(mode);
+    setMsg(`Duplicate Bills setting updated to "${mode === DUPLICATE_BILL_MODES.SHOW ? 'Show Duplicate Bills' : 'Hide Duplicate Bills'}".`);
+    setTimeout(() => setMsg(''), 4000);
+  };
+
+  const handleSavePrintOnceHideMode = async (mode) => {
+    await setPrintOnceHideMode(mode);
+    setPrintOnceHideModeState(mode);
+    setMsg(`Print Action setting updated to "${mode === PRINT_ONCE_MODES.HIDE ? 'Hide Print button once clicked' : 'Stay visible after click'}".`);
+    setTimeout(() => setMsg(''), 4000);
+  };
+
   // Loading Slip Workflow State
   const [loadingSlipWorkflow, setLoadingSlipWorkflow] = useState(() => localStorage.getItem('noris_enable_loading_slip') === 'true');
   const [loadingSlipMenuMode, setLoadingSlipMenuMode] = useState(
@@ -303,6 +340,27 @@ export default function Settings() {
     setTimeout(() => setMsg(''), 4000);
   };
 
+  // Boulders Weighment Screen Layout State ('compact' = New Type screen-fit without scroll, 'classic' = Old Design)
+  const [bouldersLayoutDesign, setBouldersLayoutDesign] = useState(
+    () => localStorage.getItem('noris_boulders_layout_design') || 'compact'
+  );
+
+  const handleSaveBouldersLayoutDesign = async (design) => {
+    localStorage.setItem('noris_boulders_layout_design', design);
+    setBouldersLayoutDesign(design);
+    if (api && api.saveSetting) {
+      try {
+        await api.saveSetting('boulders_layout_design', design);
+      } catch (e) {
+        console.warn('Failed to save boulders_layout_design setting:', e);
+      }
+    }
+    window.dispatchEvent(new Event('storage'));
+    window.dispatchEvent(new CustomEvent('boulders-layout-changed', { detail: { design } }));
+    setMsg(`Boulders Weighment layout updated to "${design === 'compact' ? 'New Design (Screen-Fit / No Scroll)' : 'Old Design (Classic / Standard)'}".`);
+    setTimeout(() => setMsg(''), 4000);
+  };
+
   // Sales Summary Report Print Mode State ('NORMAL' or 'DOT_MATRIX')
   const [salesSummaryPrintMode, setSalesSummaryPrintModeState] = useState(
     () => getSalesSummaryPrintMode()
@@ -336,6 +394,10 @@ export default function Settings() {
             const m = String(s.dc_cycle_limit_max || '50');
             setDcCycleLimitMax(m);
             localStorage.setItem('noris_dc_cycle_limit_max', m);
+          }
+          if (s.boulders_layout_design) {
+            setBouldersLayoutDesign(s.boulders_layout_design);
+            localStorage.setItem('noris_boulders_layout_design', s.boulders_layout_design);
           }
         }
       }).catch(() => {});
@@ -1684,6 +1746,86 @@ export default function Settings() {
               </div>
             </div>
 
+            {/* Boulders Weighment Screen Layout Setting */}
+            <div className="mt-4 pt-3 border-top">
+              <div className="d-flex justify-content-between align-items-center mb-2">
+                <div>
+                  <h6 className="fw-bold mb-1" style={{ color: 'var(--ink)' }}>🪨 Boulders Weighment Screen Layout</h6>
+                  <p className="text-muted mb-0 small">
+                    Choose between the new screen-fit compact layout (neat &amp; clean, fits exactly on screen without vertical scrollbar) or the original classic layout.
+                  </p>
+                </div>
+                <div className="btn-group btn-group-sm" role="group">
+                  <button
+                    type="button"
+                    className={`btn ${bouldersLayoutDesign === 'compact' ? 'btn-primary active fw-bold' : 'btn-outline-secondary'}`}
+                    onClick={() => handleSaveBouldersLayoutDesign('compact')}
+                    style={{ fontSize: '0.82rem', padding: '0.35rem 0.9rem' }}
+                  >
+                    ✨ New (Screen-Fit)
+                  </button>
+                  <button
+                    type="button"
+                    className={`btn ${bouldersLayoutDesign === 'classic' ? 'btn-primary active fw-bold' : 'btn-outline-secondary'}`}
+                    onClick={() => handleSaveBouldersLayoutDesign('classic')}
+                    style={{ fontSize: '0.82rem', padding: '0.35rem 0.9rem' }}
+                  >
+                    🏛️ Old Design
+                  </button>
+                </div>
+              </div>
+
+              <div className="row g-2 mt-2">
+                <div className="col-12 col-md-6">
+                  <div 
+                    className={`p-3 rounded-3 border transition-all h-100 ${bouldersLayoutDesign === 'compact' ? 'border-primary bg-primary-subtle text-dark shadow-sm' : 'border-secondary-subtle bg-white text-secondary'}`}
+                    style={{ cursor: 'pointer' }}
+                    onClick={() => handleSaveBouldersLayoutDesign('compact')}
+                  >
+                    <div className="d-flex align-items-center gap-2 mb-1">
+                      <input 
+                        type="radio" 
+                        name="bouldersLayoutDesign" 
+                        id="boulders_layout_compact"
+                        checked={bouldersLayoutDesign === 'compact'} 
+                        onChange={() => handleSaveBouldersLayoutDesign('compact')} 
+                      />
+                      <label htmlFor="boulders_layout_compact" className="fw-bold mb-0 cursor-pointer" style={{ fontSize: '0.9rem' }}>
+                        ✨ New Design (Screen-Fit / No Scroll)
+                      </label>
+                    </div>
+                    <p className="mb-0 text-muted" style={{ fontSize: '0.78rem' }}>
+                      Clean compact input grid with balanced spacing so all input boxes and weighment values fit exactly on screen without any vertical scrollbar.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="col-12 col-md-6">
+                  <div 
+                    className={`p-3 rounded-3 border transition-all h-100 ${bouldersLayoutDesign === 'classic' ? 'border-primary bg-primary-subtle text-dark shadow-sm' : 'border-secondary-subtle bg-white text-secondary'}`}
+                    style={{ cursor: 'pointer' }}
+                    onClick={() => handleSaveBouldersLayoutDesign('classic')}
+                  >
+                    <div className="d-flex align-items-center gap-2 mb-1">
+                      <input 
+                        type="radio" 
+                        name="bouldersLayoutDesign" 
+                        id="boulders_layout_classic"
+                        checked={bouldersLayoutDesign === 'classic'} 
+                        onChange={() => handleSaveBouldersLayoutDesign('classic')} 
+                      />
+                      <label htmlFor="boulders_layout_classic" className="fw-bold mb-0 cursor-pointer" style={{ fontSize: '0.9rem' }}>
+                        🏛️ Old Design (Original Stacked)
+                      </label>
+                    </div>
+                    <p className="mb-0 text-muted" style={{ fontSize: '0.78rem' }}>
+                      Original full-width stacked fields with standard spacing and vertical scroll.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
             {/* Boulders Manual Weight Entry Setting (Password Protected: Noris@123) */}
             <div className="mt-4 pt-3 border-top">
               <div className="d-flex justify-content-between align-items-center mb-2">
@@ -1885,6 +2027,166 @@ export default function Settings() {
                   </div>
                 </div>
               )}
+            </div>
+
+            {/* Duplicate Bills Feature & Visibility Setting */}
+            <div className="mt-4 pt-3 border-top">
+              <div className="d-flex justify-content-between align-items-center mb-2">
+                <div>
+                  <h6 className="fw-bold mb-1" style={{ color: 'var(--ink)' }}>📑 Duplicate Bills Feature Option</h6>
+                  <p className="text-muted mb-0 small">
+                    Control whether Duplicate Bill options are displayed in the navigation menus (Sales, Boulders, Yard, Weighments) or completely hidden.
+                  </p>
+                </div>
+                <div className="btn-group btn-group-sm" role="group">
+                  <button
+                    type="button"
+                    className={`btn ${duplicateBillsMode === DUPLICATE_BILL_MODES.SHOW ? 'btn-primary active fw-bold' : 'btn-outline-secondary'}`}
+                    onClick={() => handleSaveDuplicateBillsMode(DUPLICATE_BILL_MODES.SHOW)}
+                    style={{ fontSize: '0.82rem', padding: '0.35rem 0.9rem' }}
+                  >
+                    ✓ Show Duplicate Bills
+                  </button>
+                  <button
+                    type="button"
+                    className={`btn ${duplicateBillsMode === DUPLICATE_BILL_MODES.HIDE ? 'btn-danger active fw-bold' : 'btn-outline-secondary'}`}
+                    onClick={() => handleSaveDuplicateBillsMode(DUPLICATE_BILL_MODES.HIDE)}
+                    style={{ fontSize: '0.82rem', padding: '0.35rem 0.9rem' }}
+                  >
+                    🚫 Hide Duplicate Bills
+                  </button>
+                </div>
+              </div>
+
+              <div className="row g-2 mt-2">
+                <div className="col-12 col-md-6">
+                  <div
+                    className={`p-3 rounded-3 border transition-all h-100 ${duplicateBillsMode === DUPLICATE_BILL_MODES.SHOW ? 'border-primary bg-primary-subtle text-dark shadow-sm' : 'border-secondary-subtle bg-white text-secondary'}`}
+                    style={{ cursor: 'pointer' }}
+                    onClick={() => handleSaveDuplicateBillsMode(DUPLICATE_BILL_MODES.SHOW)}
+                  >
+                    <div className="d-flex align-items-center gap-2 mb-1">
+                      <input
+                        type="radio"
+                        name="dupBillsModeRadio"
+                        id="dup_mode_show"
+                        checked={duplicateBillsMode === DUPLICATE_BILL_MODES.SHOW}
+                        onChange={() => handleSaveDuplicateBillsMode(DUPLICATE_BILL_MODES.SHOW)}
+                      />
+                      <label htmlFor="dup_mode_show" className="fw-bold mb-0 cursor-pointer" style={{ fontSize: '0.9rem' }}>
+                        👁️ Show Duplicate Bills (Enabled)
+                      </label>
+                    </div>
+                    <p className="mb-0 text-muted" style={{ fontSize: '0.78rem' }}>
+                      Duplicate Bill options remain visible in top dropdown menus for Sales, Boulders, Yard, and Weighments so operators can search and re-print tickets.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="col-12 col-md-6">
+                  <div
+                    className={`p-3 rounded-3 border transition-all h-100 ${duplicateBillsMode === DUPLICATE_BILL_MODES.HIDE ? 'border-danger bg-danger-subtle text-dark shadow-sm' : 'border-secondary-subtle bg-white text-secondary'}`}
+                    style={{ cursor: 'pointer' }}
+                    onClick={() => handleSaveDuplicateBillsMode(DUPLICATE_BILL_MODES.HIDE)}
+                  >
+                    <div className="d-flex align-items-center gap-2 mb-1">
+                      <input
+                        type="radio"
+                        name="dupBillsModeRadio"
+                        id="dup_mode_hide"
+                        checked={duplicateBillsMode === DUPLICATE_BILL_MODES.HIDE}
+                        onChange={() => handleSaveDuplicateBillsMode(DUPLICATE_BILL_MODES.HIDE)}
+                      />
+                      <label htmlFor="dup_mode_hide" className="fw-bold mb-0 cursor-pointer" style={{ fontSize: '0.9rem' }}>
+                        🚫 Hide Duplicate Bills (Disabled)
+                      </label>
+                    </div>
+                    <p className="mb-0 text-muted" style={{ fontSize: '0.78rem' }}>
+                      Duplicate Bill options are completely hidden from all navigation menus to restrict operators from accessing duplicate ticket re-prints.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Print Once Auto-Hide Setting (Sales Weighment & Bills) */}
+            <div className="mt-4 pt-3 border-top">
+              <div className="d-flex justify-content-between align-items-center mb-2">
+                <div>
+                  <h6 className="fw-bold mb-1" style={{ color: 'var(--ink)' }}>🖨️ Sales Weighment &amp; Bill Print Action (Hide Print on Click)</h6>
+                  <p className="text-muted mb-0 small">
+                    Configure what happens when an operator clicks the Print button in Sales Weighment (Units) and Duplicate Bills: choose to keep the button visible or hide it immediately after the first click.
+                  </p>
+                </div>
+                <div className="btn-group btn-group-sm" role="group">
+                  <button
+                    type="button"
+                    className={`btn ${printOnceHideMode === PRINT_ONCE_MODES.STAY ? 'btn-primary active fw-bold' : 'btn-outline-secondary'}`}
+                    onClick={() => handleSavePrintOnceHideMode(PRINT_ONCE_MODES.STAY)}
+                    style={{ fontSize: '0.82rem', padding: '0.35rem 0.9rem' }}
+                  >
+                    📌 Stay Visible
+                  </button>
+                  <button
+                    type="button"
+                    className={`btn ${printOnceHideMode === PRINT_ONCE_MODES.HIDE ? 'btn-warning active fw-bold' : 'btn-outline-secondary'}`}
+                    onClick={() => handleSavePrintOnceHideMode(PRINT_ONCE_MODES.HIDE)}
+                    style={{ fontSize: '0.82rem', padding: '0.35rem 0.9rem' }}
+                  >
+                    🔒 Hide Once Clicked
+                  </button>
+                </div>
+              </div>
+
+              <div className="row g-2 mt-2">
+                <div className="col-12 col-md-6">
+                  <div
+                    className={`p-3 rounded-3 border transition-all h-100 ${printOnceHideMode === PRINT_ONCE_MODES.STAY ? 'border-primary bg-primary-subtle text-dark shadow-sm' : 'border-secondary-subtle bg-white text-secondary'}`}
+                    style={{ cursor: 'pointer' }}
+                    onClick={() => handleSavePrintOnceHideMode(PRINT_ONCE_MODES.STAY)}
+                  >
+                    <div className="d-flex align-items-center gap-2 mb-1">
+                      <input
+                        type="radio"
+                        name="printOnceHideModeRadio"
+                        id="print_once_stay"
+                        checked={printOnceHideMode === PRINT_ONCE_MODES.STAY}
+                        onChange={() => handleSavePrintOnceHideMode(PRINT_ONCE_MODES.STAY)}
+                      />
+                      <label htmlFor="print_once_stay" className="fw-bold mb-0 cursor-pointer" style={{ fontSize: '0.9rem' }}>
+                        📌 Stay Visible (Allow Re-Print)
+                      </label>
+                    </div>
+                    <p className="mb-0 text-muted" style={{ fontSize: '0.78rem' }}>
+                      The Print, DC Print, and Gate Pass buttons stay visible after being clicked, allowing the operator to print multiple copies if needed.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="col-12 col-md-6">
+                  <div
+                    className={`p-3 rounded-3 border transition-all h-100 ${printOnceHideMode === PRINT_ONCE_MODES.HIDE ? 'border-warning bg-warning-subtle text-dark shadow-sm' : 'border-secondary-subtle bg-white text-secondary'}`}
+                    style={{ cursor: 'pointer' }}
+                    onClick={() => handleSavePrintOnceHideMode(PRINT_ONCE_MODES.HIDE)}
+                  >
+                    <div className="d-flex align-items-center gap-2 mb-1">
+                      <input
+                        type="radio"
+                        name="printOnceHideModeRadio"
+                        id="print_once_hide"
+                        checked={printOnceHideMode === PRINT_ONCE_MODES.HIDE}
+                        onChange={() => handleSavePrintOnceHideMode(PRINT_ONCE_MODES.HIDE)}
+                      />
+                      <label htmlFor="print_once_hide" className="fw-bold mb-0 cursor-pointer" style={{ fontSize: '0.9rem' }}>
+                        🔒 Hide Print Once Clicked (Single Print Enforcement)
+                      </label>
+                    </div>
+                    <p className="mb-0 text-muted" style={{ fontSize: '0.78rem' }}>
+                      Once the operator clicks Print, the button immediately hides to strictly prevent duplicate or accidental multiple printouts.
+                    </p>
+                  </div>
+                </div>
+              </div>
             </div>
 
           </div>
