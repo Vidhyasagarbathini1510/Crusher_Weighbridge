@@ -44,16 +44,22 @@ export default function SecondWeighment() {
       const secondsArr = Array.isArray(seconds) ? seconds : [];
 
       const completedIds = new Set();
-      const completedDcs = new Set();
+      // Serial numbers restart (e.g. SN-01 after a reset), so a serial match only counts
+      // when that second weighment was created after the first one.
+      const latestSecondByDc = new Map();
       secondsArr.forEach(s => {
         if (s.first_weighment_id) completedIds.add(s.first_weighment_id);
-        if (s.dc_num) completedDcs.add((s.dc_num || '').trim().toUpperCase());
+        const dc = (s.dc_num || '').trim().toUpperCase();
+        if (!dc) return;
+        const at = String(s.created_at || '');
+        if (!latestSecondByDc.has(dc) || at > latestSecondByDc.get(dc)) latestSecondByDc.set(dc, at);
       });
 
       const pending = firstsArr.filter(f => {
-        const isIdDone = f.uuid && completedIds.has(f.uuid);
-        const isDcDone = f.dc_num && completedDcs.has((f.dc_num || '').trim().toUpperCase());
-        return !isIdDone && !isDcDone;
+        if (f.uuid && completedIds.has(f.uuid)) return false;
+        const dc = (f.dc_num || '').trim().toUpperCase();
+        if (!dc || !latestSecondByDc.has(dc)) return true;
+        return !(latestSecondByDc.get(dc) >= String(f.created_at || ''));
       });
 
       setPendingFirstWeighments(pending);
@@ -81,6 +87,7 @@ export default function SecondWeighment() {
 
   // Helper to auto-fill form fields from a selected 1st Weighment record
   const applyFirstWeighmentRecord = (record) => {
+    if (savedTicket) setSavedTicket(null);
     if (!record) {
       setSelectedRecord(null);
       setSerialNo('');
@@ -108,7 +115,23 @@ export default function SecondWeighment() {
     setMsg(`✔ Auto-filled 1st Weighment details for Vehicle ${record.vehicle_no || record.vehicle} (Ticket #${record.dc_num})`);
   };
 
+  const handleResetForm = () => {
+    setSavedTicket(null);
+    setSelectedRecord(null);
+    setSerialNo('');
+    setVehicle('');
+    setParty('');
+    setMaterial('');
+    setQty('');
+    setStationary('');
+    setGrossVal('');
+    setTareVal('');
+    setNettVal('0');
+    loadPendingFirstWeighments();
+  };
+
   const handleTicketChange = (val) => {
+    if (savedTicket) setSavedTicket(null);
     setSerialNo(val);
     if (!val) return;
     const cleanVal = val.trim().toUpperCase();
@@ -119,6 +142,7 @@ export default function SecondWeighment() {
   };
 
   const handleVehicleChange = (val) => {
+    if (savedTicket) setSavedTicket(null);
     setVehicle(val);
     if (!val) return;
     const cleanInput = val.trim().toUpperCase();
@@ -141,7 +165,8 @@ export default function SecondWeighment() {
         const numeric = data.value.replace(/[^0-9.-]/g, '');
         if (numeric) {
           setNetronWeight(numeric);
-          if (!manualMode) setGrossVal(numeric);
+          // Frozen once saved, so the saved/printed weights stay on screen
+          if (!manualMode && !savedTicket) setGrossVal(numeric);
         } else {
           setNetronWeight(data.value);
         }
@@ -150,7 +175,7 @@ export default function SecondWeighment() {
     return () => {
       if (unsubscribe) unsubscribe();
     };
-  }, [manualMode]);
+  }, [manualMode, savedTicket]);
 
   // Calculate Net Weight (higher value - lower value = net)
   useEffect(() => {
@@ -233,17 +258,8 @@ export default function SecondWeighment() {
         ticket_type: '2ND WEIGHMENT'
       });
       setMsgType('success');
-      setMsg('Second Weighment Saved successfully!');
+      setMsg(`Second Weighment Saved successfully! Ticket #${txData.dc_num}`);
       setTimeout(() => setMsg(''), 4000);
-      setSerialNo('');
-      setVehicle('');
-      setParty('');
-      setMaterial('');
-      setQty('');
-      setStationary('');
-      setGrossVal('');
-      setTareVal('');
-      setSelectedRecord(null);
 
       // Refresh 1st weighment list
       loadPendingFirstWeighments();
@@ -255,56 +271,14 @@ export default function SecondWeighment() {
   };
 
   const handlePrint = () => {
-    const cleanVehicle = (vehicle || '').trim().toUpperCase();
-    const g = parseFloat(grossVal) || 0;
-    const t = parseFloat(tareVal) || 0;
-    const finalGross = Math.max(g, t).toString();
-    const finalTare = Math.min(g, t).toString();
-    const now = new Date();
-    const pad = (n) => String(n).padStart(2, '0');
-    const day = pad(now.getDate());
-    const month = pad(now.getMonth() + 1);
-    const year = now.getFullYear();
-    const hours = pad(now.getHours());
-    const minutes = pad(now.getMinutes());
-    const seconds = pad(now.getSeconds());
-
-    const nowDateFormatted = `${day}-${month}-${year}`;
-    const nowTimeFormatted = `${hours}:${minutes}:${seconds}`;
-
-    const target = cleanVehicle ? {
-      dcNum: serialNo || (selectedRecord ? selectedRecord.dc_num : '1'),
-      serial_no: serialNo || (selectedRecord ? selectedRecord.dc_num : '1'),
-      token: serialNo || (selectedRecord ? selectedRecord.dc_num : '1'),
-      vehicle: cleanVehicle,
-      vehicle_no: cleanVehicle,
-      party: party ? party.toUpperCase() : '',
-      material: material ? material.toUpperCase() : '',
-      gross: finalGross,
-      tare: finalTare,
-      net: nettVal,
-      nett: nettVal,
-      qty: qty || nettVal,
-      units_val: qty || nettVal,
-      stationary: stationary || '',
-      date: nowDateFormatted,
-      time: nowTimeFormatted,
-      date_time: `${nowDateFormatted} ${nowTimeFormatted}`,
-      tare_date: selectedRecord ? (selectedRecord.tare_date || selectedRecord.date_time || '') : '',
-      tare_time: selectedRecord ? (selectedRecord.tare_time || '') : '',
-      operator: user?.username || 'Operator',
-      card: '2ND WEIGHMENT',
-      ticket_type: '2ND WEIGHMENT'
-    } : savedTicket;
-
-    if (!target || !target.vehicle) {
+    if (!savedTicket) {
       setMsgType('warning');
-      setMsg('Please enter a vehicle number or save a weighment before printing.');
+      setMsg('Please save the weighment first before printing.');
       setTimeout(() => setMsg(''), 4000);
       return;
     }
 
-    printTicket(target, getSelectedTemplate(), 'PRINT');
+    printTicket(savedTicket, getSelectedTemplate(), 'PRINT');
   };
 
   if (!cameras) return <Loader label="Loading weighbridge cameras..." />;
@@ -387,11 +361,24 @@ export default function SecondWeighment() {
         {/* Left Column: Form */}
         <div className="col-lg-6">
           <div className="saas-card">
-            <div className="saas-header">
+            <div className="saas-header d-flex justify-content-between align-items-center">
               <span className="saas-title">Second Weighment Form</span>
-              <span className="badge bg-primary bg-opacity-10 text-primary border border-primary border-opacity-25 px-2 py-1" style={{ fontSize: '0.72rem' }}>
-                {pendingFirstWeighments.length} Pending 1st Weighment(s)
-              </span>
+              <div className="d-flex align-items-center gap-2">
+                {savedTicket && (
+                  <button
+                    type="button"
+                    onClick={handleResetForm}
+                    className="btn btn-outline-secondary btn-sm d-flex align-items-center gap-1"
+                    style={{ fontSize: '0.72rem', fontWeight: '600', padding: '0.25rem 0.65rem', borderRadius: '4px' }}
+                    title="Clear form and load next ticket"
+                  >
+                    ↻ New Entry
+                  </button>
+                )}
+                <span className="badge bg-primary bg-opacity-10 text-primary border border-primary border-opacity-25 px-2 py-1" style={{ fontSize: '0.72rem' }}>
+                  {pendingFirstWeighments.length} Pending 1st Weighment(s)
+                </span>
+              </div>
             </div>
 
             <form onSubmit={handleSave} className="row g-2">
@@ -442,11 +429,11 @@ export default function SecondWeighment() {
                 <div className="row g-2">
                   <div className="col-4">
                     <label className="saas-label" style={{ color: 'var(--primary-ink)' }}>Gross (kg)</label>
-                    <input type="number" className="form-control saas-input saas-input-readonly text-center fw-bold" style={{ color: 'var(--primary-ink)' }} value={grossVal} readOnly />
+                    <input type="number" className="form-control saas-input saas-input-readonly text-center fw-bold" style={{ color: 'var(--primary-ink)' }} value={tareVal === '' ? grossVal : Math.max(parseFloat(grossVal) || 0, parseFloat(tareVal) || 0)} readOnly />
                   </div>
                   <div className="col-4">
                     <label className="saas-label" style={{ color: '#16a34a' }}>Tare (kg)</label>
-                    <input type="number" className="form-control saas-input saas-input-readonly text-center fw-bold" style={{ color: '#16a34a' }} value={tareVal} readOnly />
+                    <input type="number" className="form-control saas-input saas-input-readonly text-center fw-bold" style={{ color: '#16a34a' }} value={tareVal === '' ? tareVal : Math.min(parseFloat(grossVal) || 0, parseFloat(tareVal) || 0)} readOnly />
                   </div>
                   <div className="col-4">
                     <label className="saas-label" style={{ color: '#dc2626' }}>Nett (kg)</label>
@@ -456,9 +443,44 @@ export default function SecondWeighment() {
               </div>
 
               {/* Action Buttons */}
-              <div className="col-12 d-flex gap-2 mt-2 justify-content-end">
-                <button type="button" className="saas-btn-print" onClick={handlePrint}>PRINT</button>
-                <button type="submit" className="saas-btn-save">SAVE</button>
+              <div className="col-12 d-flex gap-2 mt-4 justify-content-end align-items-center">
+                {savedTicket ? (
+                  <>
+                    <span className="text-secondary small me-auto">
+                      Saved as <b>{savedTicket.dcNum || savedTicket.serial_no}</b>
+                    </span>
+                    <button
+                      type="button"
+                      className="btn btn-outline-secondary"
+                      style={{ fontSize: '0.8rem', fontWeight: 600, padding: '0.45rem 1.25rem' }}
+                      onClick={handleResetForm}
+                    >
+                      + NEW ENTRY
+                    </button>
+                    <button
+                      type="button"
+                      className="saas-btn-print"
+                      onClick={handlePrint}
+                    >
+                      PRINT
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      className="saas-btn-print"
+                      disabled
+                      style={{ opacity: 0.45, cursor: 'not-allowed' }}
+                      title="Save first to open Print button"
+                    >
+                      PRINT
+                    </button>
+                    <button type="submit" className="saas-btn-save">
+                      SAVE
+                    </button>
+                  </>
+                )}
               </div>
             </form>
           </div>

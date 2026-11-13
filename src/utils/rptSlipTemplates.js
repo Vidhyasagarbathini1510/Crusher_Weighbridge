@@ -8,7 +8,8 @@
 //   RPT-SALESBILL9   SalesBill9.rpt    DELIVERY CHALLAN SLIP with GSTIN
 //   RPT-SLIPPRINT    SlipPrint.rpt     two-up Loading Slip / Loading DC
 //   RPT-SLIPPRINT2   SlipPrint2.rpt    two-up Delivery Challan with RST
-//   RPT-CHALLAN-A4   full-page DELIVERY CHALLAN + weighment slip footer
+//   RPT-CHALLAN-A4   full-page DELIVERY CHALLAN + weighment slip footer (A4)
+//   RPT-CHALLAN-A5   full-page DELIVERY CHALLAN + weighment slip footer (A5)
 //   RPT-SALESRECEIPT two-up SALES RECEIPT with OUT/IN times
 //   RPT-WEIGHSLIP2   two-up weighment slip with transporter line
 //
@@ -17,18 +18,25 @@
 
 export const RPT_TEMPLATE_CATALOGUE = [
   { id: 'RPT-SALESBILL1', name: 'Weighment Slip (Boxed)', detail: 'SalesBill1.rpt — boxed, amount + driver', paper: 'A5 L' },
+  { id: 'RPT-SALESBILL1-A4-2UP', name: 'A4 Two Slips', detail: 'SalesBill1.rpt — boxed slip, two per A4 page', paper: 'A4' },
   { id: 'RPT-SALESBILLSR', name: 'Weighment (Ruled)', detail: 'SalesBillSR.rpt — operator + receiver sign', paper: 'A5 L' },
   { id: 'RPT-SALESBILL2', name: 'Weighment 4-Up', detail: 'SalesBill2.rpt — four slips per page', paper: 'A4' },
   { id: 'RPT-SALESBILL2-3UP', name: 'Weighment 3-Up', detail: 'SalesBill2.rpt — three slips per A4 page', paper: 'A4' },
   { id: 'RPT-SALESBILL2-2UP', name: 'Weighment 2-Up', detail: 'SalesBill2.rpt — two slips per A4 page', paper: 'A4' },
   { id: 'RPT-SALESBILL2-NOGATEPASS', name: 'Weighment 4-Up (No Gate Pass)', detail: 'SalesBill2.rpt — four slips per page without Gate Pass box', paper: 'A4' },
   { id: 'RPT-SALESBILL9', name: 'Delivery Challan Slip', detail: 'SalesBill9.rpt — customer + GSTIN', paper: 'A5 L' },
+  { id: 'RPT-SALESBILL9-DEST', name: 'Delivery Challan Slip (with Destination)', detail: 'SalesBill9.rpt — customer + GSTIN + destination', paper: 'A5 L' },
   { id: 'RPT-SALESBILL9-2UP', name: 'Delivery Challan Slip 2-Up (A4)', detail: 'SalesBill9.rpt — two Delivery Challan slips on one A4 page', paper: 'A4' },
+  { id: 'RPT-SALESBILL9-DEST-2UP', name: 'Delivery Challan Slip 2-Up (with Destination)', detail: 'SalesBill9.rpt — two slips on A4 with GSTIN + destination', paper: 'A4' },
   { id: 'RPT-SLIPPRINT', name: 'Loading Slip 2-Up', detail: 'SlipPrint.rpt — slip + loading DC', paper: 'A5 L' },
   { id: 'RPT-SLIPPRINT2', name: 'Delivery Challan 2-Up', detail: 'SlipPrint2.rpt — with RST number', paper: 'A5 L' },
   { id: 'RPT-CHALLAN-A4', name: 'Delivery Challan (Full)', detail: 'HSN table + weighment slip', paper: 'A4' },
+  { id: 'RPT-CHALLAN-A5', name: 'Delivery Challan (Full)', detail: 'HSN table + weighment slip', paper: 'A5 P' },
   { id: 'RPT-SALESRECEIPT', name: 'Sales Receipt 2-Up', detail: 'Sl. Num, OUT / IN times', paper: 'A5 L' },
   { id: 'RPT-WEIGHSLIP2', name: 'Weighment Slip 2-Up', detail: 'Two slips, transporter + driver', paper: 'A4' },
+  { id: 'RPT-WEIGHSLIP-A5', name: 'Weighment Slip', detail: 'Single slip on A5, transporter + driver', paper: 'A5 L' },
+  { id: 'RPT-WEIGHSLIP2-A5', name: 'Weighment Slip 2-Up (A5 Portrait)', detail: 'Two slips vertically on A5 paper (Photo Exact Match)', paper: 'A5 P' },
+  { id: 'IMAGE-9', name: 'IMAGE-9 (Weighment Slip 2-Up A5 Vertical Photo Match)', detail: 'Two slips vertically on A5 paper (Exact Photo Match)', paper: 'A5 P' },
   { id: 'RPT-CCTV-A4', name: 'Weighment CCTV 2-Up (AMR)', detail: 'SlipPrintCCTV.rpt — A4 2-Up dual slip with CCTV camera images', paper: 'A4' },
   { id: 'RPT-CHALLAN-DUAL-A5', name: 'Delivery Challan A5 Dual (2-Up)', detail: 'Twin side-by-side Delivery Challan slips on A5 paper with Operator Signature', paper: 'A5 L' }
 ];
@@ -41,7 +49,7 @@ export const RPT_TEMPLATE_CATALOGUE = [
 
 export const RPT_TEMPLATE_IDS = RPT_TEMPLATE_CATALOGUE.map(t => t.id);
 
-import { renderRptPageHeader, getCompanyHeaderLines } from './rptPageHeader.js';
+import { renderRptPageHeader, getCompanyHeaderLines, getRptHeaderMode } from './rptPageHeader.js';
 import { getCompanyDetails } from './classicReportPrinter.js';
 
 function esc(value) {
@@ -175,8 +183,8 @@ const INK = 'print-color-adjust:exact;-webkit-print-color-adjust:exact;';
 // 13px rather than 11px: these forms were drawn for a half sheet, so at their
 // original size the lettering reads small once it lands on A4. Every size below
 // is raised by roughly the same fifth so the slips stay in proportion.
-const wrap = (inner, { width = '100%', font = '13.5px', data = {} } = {}) => `
-  <div style="font-family:${SANS};font-size:${font};color:#000;background:#fff;max-width:100%;width:100%;margin:0 auto;padding:4px 6px;box-sizing:border-box;">
+const wrap = (inner, { width = '100%', font = '13.5px', padding = '4px 6px', data = {} } = {}) => `
+  <div style="font-family:${SANS};font-size:${font};color:#000;background:#fff;max-width:100%;width:100%;margin:0 auto;padding:${padding};box-sizing:border-box;">
     ${renderRptPageHeader(data)}
     ${inner}
   </div>`;
@@ -230,7 +238,7 @@ const billIdRow = (l1, v1, l2, v2, o = {}, edge = '') => `
   <tr>
     <td style="${BILL_LBL}${edge}${o.b1 ? 'font-weight:bold;' : ''}">${esc(l1)}</td>
     <td style="${BILL_SEP}${edge}">:</td>
-    <td style="${BILL_VAL}${edge}${o.v1 ? 'font-weight:bold;' : ''}">${esc(v1)}</td>
+    <td style="${BILL_VAL}${edge}white-space:normal;word-break:break-word;${o.v1 ? 'font-weight:bold;' : ''}">${esc(v1)}</td>
     <td style="${BILL_LBL}${edge}${o.b2 ? 'font-weight:bold;' : ''}">${esc(l2)}</td>
     <td style="${BILL_SEP}${edge}">:</td>
     <td colspan="4" style="${BILL_VAL}${edge}${o.v2 ? 'font-weight:bold;' : ''}">${esc(v2)}</td>
@@ -252,11 +260,13 @@ const billWeightRow = (l1, v1, l2, v2, l3, v3, edge = '') => `
     <td style="${BILL_VAL}${edge}">${esc(v3)}</td>
   </tr>`;
 
-function salesBill1(f) {
+// The slip itself without the page wrapper, so the single and the two-per-A4
+// layouts print exactly the same form.
+function salesBill1Body(f) {
   const rule = 'border-bottom:1px solid #000;';
   const dots = 'border-bottom:1px dotted #555;';
 
-  return wrap(`
+  return `
     <table style="width:100%;border-collapse:collapse;border:1px solid #000;table-layout:fixed;">
       ${BILL_COLS}
       ${band('WEIGHMENT SLIP', 9)}
@@ -266,10 +276,28 @@ function salesBill1(f) {
       ${band('WEIGHT', 9)}
       ${billWeightRow('GROSS', f.gross, 'DATE', f.grossDate, 'TIME', f.grossTime, dots)}
       ${billWeightRow('TARE', f.tare, 'DATE', f.tareDate, 'TIME', f.tareTime, dots)}
-      ${billWeightRow('NETT', f.nett, 'TRANSPORTER', f.transporter, f.amount ? 'AMOUNT' : '', f.amount)}
+      ${billWeightRow('NETT', f.nett, 'STATIONARY', f.stationary, '', '')}
     </table>
     ${signRow('OPERATOR SIGNATURE', `DRIVER NAME${f.driver ? `    ${f.driver}` : ''}`)}
-  `, { data: f });
+  `;
+}
+
+function salesBill1(f) {
+  return wrap(salesBill1Body(f), { data: f });
+}
+
+// The same boxed slip, two to an A4 page: one in each half with a cut line
+// between them.
+function salesBill1TwoUp(f) {
+  // Each half carries its own company header, so the lower slip is headed the
+  // same way as the upper one (wrap() would only put one at the top of the page).
+  const half = `<div style="height:138mm;box-sizing:border-box;padding:3mm 0 0;overflow:hidden;">${renderRptPageHeader(f)}${salesBill1Body(f)}</div>`;
+  return `
+    <div style="font-family:${SANS};font-size:13.5px;color:#000;background:#fff;max-width:100%;width:100%;margin:0 auto;padding:4px 6px;box-sizing:border-box;">
+      ${half}
+      <div style="border-top:1px dashed #777;"></div>
+      ${half}
+    </div>`;
 }
 
 // ---- SalesBillSR.rpt : ruled WEIGHMENT, operator + receiver ----------------
@@ -374,7 +402,7 @@ const DC_COLS = `
     <col style="width:14%"><col style="width:20%">
   </colgroup>`;
 
-function salesBill9Block(f) {
+function salesBill9Block(f, includeDestination = false) {
   const pad = 'padding:4px 5px;';
   const nw = `${pad}white-space:nowrap;`;
 
@@ -436,7 +464,13 @@ function salesBill9Block(f) {
       <tr>
         <td style="${nw}">GSTIN No</td>
         <td></td>
-        <td colspan="5" style="${pad}">${esc(f.gstin)}</td>
+        ${includeDestination ? `
+          <td style="${pad}">${esc(f.gstin)}</td>
+          <td colspan="2" style="${nw}">Destination</td>
+          <td colspan="2" style="${pad}">${esc(f.destination)}</td>
+        ` : `
+          <td colspan="5" style="${pad}">${esc(f.gstin)}</td>
+        `}
       </tr>
       ${dcBand('WEIGHT')}
       ${weightRow('Material', f.material, { span: 3 })}
@@ -460,17 +494,33 @@ function salesBill9Block(f) {
 }
 
 function salesBill9(f) {
-  return wrap(salesBill9Block(f), { data: f });
+  return wrap(salesBill9Block(f, false), { data: f });
+}
+
+function salesBill9Dest(f) {
+  return wrap(salesBill9Block(f, true), { data: f });
 }
 
 function salesBill9TwoUp(f) {
   return wrap(`
     <div style="padding-bottom:8px;">
-      ${salesBill9Block(f)}
+      ${salesBill9Block(f, false)}
     </div>
     <div style="border-top:1.5px dashed #475569;margin:14px 0 18px 0;position:relative;"></div>
     <div style="padding-top:4px;">
-      ${salesBill9Block(f)}
+      ${salesBill9Block(f, false)}
+    </div>
+  `, { data: f });
+}
+
+function salesBill9DestTwoUp(f) {
+  return wrap(`
+    <div style="padding-bottom:8px;">
+      ${salesBill9Block(f, true)}
+    </div>
+    <div style="border-top:1.5px dashed #475569;margin:14px 0 18px 0;position:relative;"></div>
+    <div style="padding-top:4px;">
+      ${salesBill9Block(f, true)}
     </div>
   `, { data: f });
 }
@@ -534,6 +584,8 @@ function loadingSlipPanel(f, { heading, signature, first }) {
     partyUpper === 'CASH' || 
     partyUpper === 'CASH SALE' || 
     partyUpper === 'CASH SALES' ||
+    partyUpper === 'CASH PARTY' ||
+    partyUpper.startsWith('CASH PARTY') ||
     partyUpper.startsWith('LOCAL SALE') ||
     partyUpper.startsWith('LOCAL -') ||
     partyUpper.startsWith('LOCAL (');
@@ -755,6 +807,132 @@ function challanA4(f) {
   `, { width: '100%', font: '14px', data: f });
 }
 
+function challanA5(f) {
+  const td = 'border:1px solid #000;padding:3px 5px;font-size:10px;';
+  return wrap(`
+    <div style="display:flex;flex-direction:column;justify-content:space-between;min-height:182mm;box-sizing:border-box;padding:2px 2px;">
+      <div>
+        <div style="text-align:right;font-size:17px;font-weight:bold;letter-spacing:1px;margin-bottom:3px;">DELIVERY CHALLAN</div>
+        <div style="border-bottom:1.5px solid #000;margin-bottom:8px;"></div>
+
+        <table style="width:100%;border-collapse:collapse;margin-bottom:6px;font-size:10.5px;line-height:1.45;">
+          <tr>
+            <td style="padding:2px 0;width:18%;font-weight:bold;">Consignee :</td>
+            <td style="padding:2px 0;width:42%;font-weight:bold;font-size:11px;">${esc(f.consignee)}</td>
+            <td style="padding:2px 0;width:16%;font-weight:bold;">DC Num :</td>
+            <td style="padding:2px 0;width:24%;font-weight:bold;font-size:12px;">${esc(f.dcNum)}</td>
+          </tr>
+          <tr>
+            <td style="padding:2px 0;font-weight:bold;">Destination</td>
+            <td style="padding:2px 0;">${esc(f.destination)}</td>
+            <td style="padding:2px 0;font-weight:bold;">Date</td>
+            <td style="padding:2px 0;">${esc(f.date1)}</td>
+          </tr>
+          <tr>
+            <td style="padding:2px 0;font-weight:bold;">Phone</td>
+            <td style="padding:2px 0;">${esc(f.phone || '-')}</td>
+            <td style="padding:2px 0;font-weight:bold;">Customer P.O :</td>
+            <td style="padding:2px 0;">${esc(f.customerPO || '0')}</td>
+          </tr>
+        </table>
+
+        <table style="width:100%;border-collapse:collapse;margin-bottom:8px;">
+          <thead>
+            <tr style="background:#f8fafc;">
+              <th style="${td}width:8%;text-align:center;font-weight:bold;">S.No</th>
+              <th style="${td}width:32%;font-weight:bold;">Item</th>
+              <th style="${td}width:15%;text-align:center;font-weight:bold;">HSN</th>
+              <th style="${td}width:18%;text-align:center;font-weight:bold;">Units</th>
+              <th style="${td}width:10%;"></th>
+              <th style="${td}width:17%;text-align:right;font-weight:bold;">QTY</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td style="${td}text-align:center;">1</td>
+              <td style="${td}font-weight:bold;font-size:11px;">${esc(f.item)}</td>
+              <td style="${td}text-align:center;">${esc(f.hsn)}</td>
+              <td style="${td}text-align:center;">${esc(f.units)}</td>
+              <td style="${td}"></td>
+              <td style="${td}text-align:right;font-weight:bold;font-size:11.5px;">${esc(f.qty)}</td>
+            </tr>
+            <tr>
+              <td colspan="4" style="border:1px solid #000;border-top:0;padding:6px 8px;vertical-align:top;height:65px;font-size:10px;line-height:1.5;">
+                <div><strong>STATIONARY:</strong> &nbsp;${esc(f.stationary)}</div>
+                <div><strong>VEHICLE No:</strong> &nbsp;${esc(f.vehicle)}</div>
+                <div><strong>Driver:</strong> &nbsp;${esc(f.driver)}</div>
+                <div><strong>Transporter:</strong> &nbsp;${esc(f.transporter)}</div>
+              </td>
+              <td style="${td}border-top:0;"></td>
+              <td style="${td}border-top:0;"></td>
+            </tr>
+            <tr>
+              <td colspan="6" style="${td}height:42px;vertical-align:bottom;padding:5px 8px;">
+                <div style="display:flex;justify-content:space-between;align-items:flex-end;width:100%;font-size:9.5px;font-weight:bold;">
+                  <div>${esc(f.consignee || f.party)}</div>
+                  <div>${esc(f.address1 || f.companyName || (getCompanyDetails() && getCompanyDetails().companyName) || '')}</div>
+                </div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div style="text-align:center;font-weight:bold;font-size:11px;margin:8px 0 10px;">
+          Note : Invoice Against Approval of Quantity
+        </div>
+
+        <div style="border:1.2px solid #000;text-align:center;font-weight:bold;letter-spacing:1.5px;padding:4px 0;margin-bottom:8px;font-size:12px;background:#f8fafc;">
+          ${esc(spaced('WEIGHMENT SLIP'))}
+        </div>
+
+        <table style="width:100%;border-collapse:collapse;font-size:10.5px;line-height:1.55;">
+          <tr>
+            <td style="padding:2.5px 0;width:18%;font-weight:bold;">RST Num</td>
+            <td style="padding:2.5px 0;width:32%;font-weight:bold;font-size:11.5px;">${esc(f.rstNum)}</td>
+            <td style="padding:2.5px 0;width:20%;font-weight:bold;">Vehicle No</td>
+            <td style="padding:2.5px 0;width:30%;font-weight:bold;font-size:11.5px;">${esc(f.vehicle)}</td>
+          </tr>
+          <tr>
+            <td style="padding:2.5px 0;font-weight:bold;">Party</td>
+            <td style="padding:2.5px 0;font-weight:bold;font-size:11px;">${esc(f.party)}</td>
+            <td style="padding:2.5px 0;font-weight:bold;">Material</td>
+            <td style="padding:2.5px 0;font-weight:bold;font-size:11px;">${esc(f.material)}</td>
+          </tr>
+          <tr>
+            <td style="padding:2.5px 0;font-weight:bold;">Destination</td>
+            <td style="padding:2.5px 0;" colspan="3">${esc(f.destination)}</td>
+          </tr>
+          <tr><td colspan="4" style="height:4px;"></td></tr>
+          <tr>
+            <td style="padding:2.5px 0;font-weight:bold;">Gross</td>
+            <td style="padding:2.5px 0;font-weight:bold;font-size:11.5px;">${esc(f.gross)} &nbsp;Kgs.</td>
+            <td style="padding:2.5px 0;font-weight:bold;">OUT</td>
+            <td style="padding:2.5px 0;">${esc(f.outTime)}</td>
+          </tr>
+          <tr>
+            <td style="padding:2.5px 0;font-weight:bold;">Tare</td>
+            <td style="padding:2.5px 0;font-weight:bold;font-size:11.5px;">${esc(f.tare)} &nbsp;Kgs.</td>
+            <td style="padding:2.5px 0;font-weight:bold;">IN</td>
+            <td style="padding:2.5px 0;">${esc(f.inTime)}</td>
+          </tr>
+          <tr>
+            <td style="padding:2.5px 0;font-weight:bold;">Nett</td>
+            <td style="padding:2.5px 0;font-weight:bold;font-size:12.5px;">${esc(f.nett)} &nbsp;Kgs.</td>
+            <td style="padding:2.5px 0;" colspan="2"></td>
+          </tr>
+        </table>
+      </div>
+
+      <div style="margin-top:12px;padding-top:8px;border-top:1px dashed #000;">
+        <div style="display:flex;justify-content:space-between;align-items:flex-end;padding:12px 6px 2px 6px;font-weight:bold;font-size:10px;">
+          <div>${esc(f.consignee || f.party)}</div>
+          <div style="text-align:right;">Stamp &amp; Authorized Signature</div>
+        </div>
+      </div>
+    </div>
+  `, { width: '100%', font: '10.5px', data: f });
+}
+
 // ---- SALES RECEIPT, two per page -------------------------------------------
 
 // The identity rows and the weight rows are two separate tables on purpose. On
@@ -887,6 +1065,208 @@ function weighSlip2Block(f) {
 
 function weighSlip2(f) {
   return wrap(weighSlip2Block(f).repeat(2), { width: '500px', font: '11px', data: f });
+}
+
+function weighSlipA5(f) {
+  const lbl = 'padding:3.5px 3px 3.5px 2px;white-space:nowrap;';
+  const val = 'padding:3.5px 3px;white-space:nowrap;';
+
+  const idCols = `
+    <colgroup>
+      <col style="width:18%"><col style="width:40%">
+      <col style="width:18%"><col style="width:24%">
+    </colgroup>`;
+
+  const wtCols = `
+    <colgroup>
+      <col style="width:18%"><col style="width:17%"><col style="width:9%">
+      <col style="width:18%"><col style="width:22%"><col style="width:16%">
+    </colgroup>`;
+
+  const idRow = (l1, v1, l2, v2) => `
+    <tr>
+      <td style="${lbl}">${esc(l1)}</td><td style="${val}">${esc(v1)}</td>
+      <td style="${lbl}">${esc(l2)}</td><td style="${val}">${esc(v2)}</td>
+    </tr>`;
+
+  const wtRow = (label, figure, l2, v2, tail = '') => `
+    <tr>
+      <td style="${lbl}">${esc(label)}</td>
+      <td style="${val}text-align:right;font-weight:bold;">${esc(figure)}</td>
+      <td style="${val}">Kgs</td>
+      <td style="${lbl}">${esc(l2)}</td>
+      <td style="${val}">${esc(v2)}</td>
+      <td style="${val}">${esc(tail)}</td>
+    </tr>`;
+
+  const rule = margin => `<div style="border-bottom:1px solid #000;margin:${margin};"></div>`;
+
+  return wrap(`
+    <div style="padding:2px 0 6px 0;">
+      ${rule('0 0 3px')}
+
+      <table style="width:100%;border-collapse:collapse;table-layout:fixed;">
+        ${idCols}
+        ${idRow('DC Number', f.dcNum, 'Vehicle', f.vehicle)}
+        ${idRow('Material', f.material, 'Source', f.source)}
+        ${idRow('Party', f.party, 'Destination', f.destination)}
+      </table>
+
+      ${rule('3px 0')}
+
+      <table style="width:100%;border-collapse:collapse;table-layout:fixed;">
+        ${wtCols}
+        ${wtRow('Gross', f.gross, 'Date', f.grossDate, f.grossTime)}
+        ${wtRow('Tare', f.tare, 'Date', f.tareDate, f.tareTime)}
+        ${wtRow('Nett', f.nett, 'Transporter', f.transporter)}
+      </table>
+
+      <table style="width:100%;border-collapse:collapse;table-layout:fixed;margin-top:20px;">
+        <tr>
+          <td style="padding:0 3px;">Operator Signature</td>
+          <td style="padding:0 4px;width:30%;">${esc(f.driver)}</td>
+        </tr>
+      </table>
+
+      ${rule('6px 0 0')}
+    </div>
+  `, { width: '100%', font: '12px', data: f });
+}
+
+function renderSlipCompanyHeader(f) {
+  const headerMode = f.headerOverride || getRptHeaderMode(f.category || f.printCategory || 'PRINT');
+  if (headerMode === 'EMPTY') {
+    return `<div style="height:14px;"></div>`;
+  }
+
+  // Get lines from getCompanyHeaderLines() or fallback to f fields
+  let lines = getCompanyHeaderLines();
+  if (!lines || lines.length === 0) {
+    const details = getCompanyDetails();
+    lines = [details.companyName, details.address1, details.address2]
+      .map(line => (line === null || line === undefined ? '' : String(line).trim()))
+      .filter(Boolean);
+  }
+
+  // If still empty, check f properties
+  if (!lines || lines.length === 0) {
+    const cName = f.companyName || f.company || f.address1;
+    if (cName && String(cName).trim()) {
+      lines = [String(cName).trim()];
+      if (f.address2 && String(f.address2).trim()) lines.push(String(f.address2).trim());
+    }
+  }
+
+  // Fallback default so it never fails to show company masthead
+  if (!lines || lines.length === 0) {
+    lines = ['NORIS SOLUTIONS', 'Vinay Residency, Dammaiguda, Hyderabad'];
+  }
+
+  const [name, ...rest] = lines;
+  return `
+    <div style="text-align:center;line-height:1.25;padding:1px 0 4px 0;width:100%;">
+      <div style="font-weight:900;font-size:15px;letter-spacing:0.5px;color:#000;text-transform:uppercase;">${esc(name)}</div>
+      ${rest.filter(Boolean).map(line => `<div style="font-size:11.5px;font-weight:600;color:#222;letter-spacing:0.2px;">${esc(line)}</div>`).join('')}
+    </div>`;
+}
+
+function weighSlip2A5Block(f, isFirst = true) {
+  const lbl = 'padding:6px 4px;white-space:nowrap;font-size:13.5px;color:#000;font-weight:700;letter-spacing:0.2px;';
+  const val = 'padding:6px 4px;white-space:nowrap;font-size:14px;color:#000;font-weight:800;';
+  const wtLbl = 'padding:6px 4px;white-space:nowrap;font-size:13.5px;color:#000;font-weight:700;letter-spacing:0.2px;';
+  const wtFig = 'padding:6px 4px;white-space:nowrap;font-size:15.5px;color:#000;text-align:right;font-weight:900;';
+  const wtUnit = 'padding:6px 2px;white-space:nowrap;font-size:13px;color:#000;font-weight:700;';
+
+  // Both tables share the exact same 46% / 54% split:
+  // Left side labels + values = 46%
+  // Right side labels + values = 54%
+  // This lines up "Vehicle", "Source", "Destination", "Date", and "Transporter" at the exact same vertical line.
+  const idCols = `
+    <colgroup>
+      <col style="width:18%">
+      <col style="width:28%">
+      <col style="width:20%">
+      <col style="width:34%">
+    </colgroup>`;
+
+  const wtCols = `
+    <colgroup>
+      <col style="width:18%">
+      <col style="width:18%">
+      <col style="width:10%">
+      <col style="width:20%">
+      <col style="width:21%">
+      <col style="width:13%">
+    </colgroup>`;
+
+  const idRow = (l1, v1, l2, v2) => `
+    <tr>
+      <td style="${lbl}">${esc(l1)}</td><td style="${val}">${esc(v1)}</td>
+      <td style="${lbl}">${esc(l2)}</td><td style="${val}">${esc(v2)}</td>
+    </tr>`;
+
+  const wtRow = (label, figure, l2, v2, tail = '') => `
+    <tr>
+      <td style="${wtLbl}">${esc(label)}</td>
+      <td style="${wtFig}">${esc(figure)}</td>
+      <td style="${wtUnit}">Kgs</td>
+      <td style="${wtLbl}">${esc(l2)}</td>
+      ${tail ? `<td style="${val}">${esc(v2)}</td><td style="${val};text-align:right;">${esc(tail)}</td>` : `<td colspan="2" style="${val}">${esc(v2)}</td>`}
+    </tr>`;
+
+  const rule = (margin, thickness = '1.5px') => `<div style="border-bottom:${thickness} solid #000;margin:${margin};width:100%;"></div>`;
+
+  return `
+    <div style="height:101.5mm;max-height:101.5mm;box-sizing:border-box;padding:2mm 2mm 1mm 2mm;width:100%;display:flex;flex-direction:column;justify-content:space-between;overflow:hidden;">
+      <div style="width:100%;">
+        ${renderSlipCompanyHeader(f)}
+
+        ${rule('3px 0 5px', '1.5px')}
+
+        <table style="width:100%;border-collapse:collapse;table-layout:fixed;">
+          ${idCols}
+          ${idRow('DC Number', f.dcNum, 'Vehicle', f.vehicle)}
+          ${idRow('Material', f.material, 'Source', f.source)}
+          ${idRow('Party', f.party, 'Destination', f.destination)}
+        </table>
+
+        ${rule('5px 0', '1.2px')}
+
+        <table style="width:100%;border-collapse:collapse;table-layout:fixed;">
+          ${wtCols}
+          ${wtRow('Gross', f.gross, 'Date', f.grossDate, f.grossTime)}
+          ${wtRow('Tare', f.tare, 'Date', f.tareDate, f.tareTime)}
+          ${wtRow('Nett', f.nett, 'Transporter', f.transporter)}
+        </table>
+      </div>
+
+      <div style="width:100%;margin-top:auto;${isFirst ? '' : 'padding-bottom:4mm;'}">
+        <table style="width:100%;border-collapse:collapse;table-layout:fixed;margin-top:8px;margin-bottom:6px;">
+          <tr>
+            <td style="padding:0 4px;font-size:13.5px;font-weight:700;color:#000;">Operator Signature</td>
+            <td style="padding:0 4px;width:30%;text-align:right;font-size:13.5px;font-weight:900;color:#000;">${esc(f.driver)}</td>
+          </tr>
+        </table>
+
+        ${isFirst ? `
+          <div style="margin:10px 0 2px 0;border-bottom:1.5px dashed #444;width:100%;"></div>
+        ` : ''}
+      </div>
+    </div>`;
+}
+
+function weighSlip2A5(f) {
+  // A5 Portrait (Vertical format):
+  // Fits the entire 210mm A5 page symmetrically (101.5mm top half + 101.5mm bottom half = 203mm):
+  // 1. Slip 1 fills exactly the top 101.5mm half, ending with the cut line at the midpoint
+  // 2. Slip 2 fills exactly the bottom 101.5mm half, extending all the way to the bottom edge
+  // 3. NO wasted paper at the bottom!
+  return `
+    <div style="font-family:${SANS};color:#000;background:#fff;width:100%;height:203mm;max-height:203mm;box-sizing:border-box;padding:0;margin:0 auto;display:flex;flex-direction:column;justify-content:space-between;">
+      ${weighSlip2A5Block(f, true)}
+      ${weighSlip2A5Block(f, false)}
+    </div>
+  `;
 }
 
 // ---- Weighment Slip CCTV 2-Up (AMR INFRA Photo Match with CCTV Snapshots) ---
@@ -1157,18 +1537,25 @@ function deliveryChallanDualA5(f) {
 
 const BUILDERS = {
   'RPT-SALESBILL1': salesBill1,
+  'RPT-SALESBILL1-A4-2UP': salesBill1TwoUp,
   'RPT-SALESBILLSR': salesBillSR,
   'RPT-SALESBILL2': salesBill2,
   'RPT-SALESBILL2-3UP': salesBill2ThreeUp,
   'RPT-SALESBILL2-2UP': salesBill2TwoUp,
   'RPT-SALESBILL2-NOGATEPASS': salesBill2NoGatePass,
   'RPT-SALESBILL9': salesBill9,
+  'RPT-SALESBILL9-DEST': salesBill9Dest,
   'RPT-SALESBILL9-2UP': salesBill9TwoUp,
+  'RPT-SALESBILL9-DEST-2UP': salesBill9DestTwoUp,
   'RPT-SLIPPRINT': slipPrint,
   'RPT-SLIPPRINT2': slipPrint2,
   'RPT-CHALLAN-A4': challanA4,
+  'RPT-CHALLAN-A5': challanA5,
   'RPT-SALESRECEIPT': salesReceipt,
   'RPT-WEIGHSLIP2': weighSlip2,
+  'RPT-WEIGHSLIP-A5': weighSlipA5,
+  'RPT-WEIGHSLIP2-A5': weighSlip2A5,
+  'IMAGE-9': weighSlip2A5,
   'RPT-CCTV-A4': weighSlipCctvA4,
   'RPT-CHALLAN-DUAL-A5': deliveryChallanDualA5
 };

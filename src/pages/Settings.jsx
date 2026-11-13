@@ -4,6 +4,7 @@ import Loader from '../components/Loader.jsx';
 import SearchableSelect from '../components/SearchableSelect.jsx';
 import CameraManagement from './CameraManagement.jsx';
 import {
+  LANDSCAPE_MODES, getLandscapeMode, setLandscapeMode,
   PRINTER_TEMPLATES, getSelectedTemplate, setSelectedTemplate,
   getDcPrintTemplate, setDcPrintTemplate, getGatePassTemplate, setGatePassTemplate,
   generateSlipHtml, printTicket, getPrinterConfig, setPrinterConfig, getPaperForTemplate
@@ -16,7 +17,7 @@ import {
 } from '../utils/rptPageHeader.js';
 import { useScale } from '../context/ScaleContext.jsx';
 import { VEHICLE_OPTION_MODES, getVehicleOptionMode, setVehicleOptionMode } from '../utils/vehicleFilterUtil.js';
-import { SALES_SUMMARY_PRINT_MODES, getSalesSummaryPrintMode, setSalesSummaryPrintMode } from '../utils/salesSummaryPrinter.js';
+import { SALES_SUMMARY_PRINT_MODES, getSalesSummaryPrintMode, setSalesSummaryPrintMode, getSalesDotMatrixPaperConfig, setSalesDotMatrixPaperConfig } from '../utils/salesSummaryPrinter.js';
 import {
   DUPLICATE_BILL_MODES,
   PRINT_ONCE_MODES,
@@ -25,13 +26,18 @@ import {
   getPrintOnceHideMode,
   setPrintOnceHideMode
 } from '../utils/duplicateBillUtil.js';
+import {
+  getReportGstShortcutsSync,
+  getReportGstShortcuts,
+  setReportGstShortcuts
+} from '../utils/reportGstUtil.js';
 
 
 // Display names for the slip templates. The `id` is the value stored in
 // localStorage and handed to generateSlipHtml/printTicket — it must stay
 // exactly as it is. Only the wording shown to the operator lives here, so the
 // picker reads as plain language instead of "IMAGE-4".
-const TEMPLATE_CATALOGUE = [
+const TEMPLATE_CATALOGUE_RAW = [
   // The Crystal Reports designs come first — these are the layouts the site
   // already prints, so they are what an operator is normally looking for.
   ...RPT_TEMPLATE_CATALOGUE,
@@ -49,9 +55,13 @@ const TEMPLATE_CATALOGUE = [
   { id: 'IMAGE-6', name: 'Quarry Dispatch Pass', detail: 'Gate pass layout', paper: 'A5' },
   { id: 'IMAGE-7', name: 'Executive Tax Invoice', detail: 'Invoice with tax summary', paper: 'A4' },
   { id: 'IMAGE-8', name: 'Delivery Challan Dual A5 (Photo Exact Match)', detail: 'Twin side-by-side Delivery Challan slips on A5 paper matching printed sample photo', paper: 'A5' },
+  { id: 'IMAGE-9', name: 'IMAGE-9 (Weighment Slip 2-Up A5 Vertical Photo Match)', detail: 'Twin weighment slips vertically on A5 paper matching printed sample photo', paper: 'A5 P' },
   { id: 'RAW', name: 'Dot-Matrix Slip', detail: 'ESC/P text, 5in continuous form, auto form feed', paper: 'RAW' },
-  { id: 'RAW_LARGE', name: 'Dot-Matrix Slip (Large Text)', detail: 'ESC/P text, enlarged font size for high visibility', paper: 'RAW' }
+  { id: 'RAW_LARGE', name: 'Dot-Matrix Slip (Large Text)', detail: 'ESC/P text, enlarged font size for high visibility', paper: 'RAW' },
+  { id: 'RAW_BOLD', name: 'Dot-Matrix Slip (Bold + Spaced)', detail: 'ESC/P text, slightly bold with extra line spacing for clean reading', paper: 'RAW' }
 ];
+
+const TEMPLATE_CATALOGUE = TEMPLATE_CATALOGUE_RAW;
 
 const BAUD_RATES = ['110', '300', '1200', '2400', '4800', '9600', '19200', '38400', '57600', '115200', '230400', '460800', '921600'];
 
@@ -86,6 +96,7 @@ export default function Settings() {
   const [printCategory, setPrintCategory] = useState('PRINT'); // 'PRINT' | 'DC' | 'GATE_PASS'
   const [selectedTemplate, setSelectedTemplateState] = useState(getSelectedTemplate());
   const [dcPrintTemplate, setDcPrintTemplateState] = useState(getDcPrintTemplate());
+  const [landscapeMode, setLandscapeModeState] = useState(getLandscapeMode());
   const [gatePassTemplate, setGatePassTemplateState] = useState(getGatePassTemplate());
   const [showFullPreviewModal, setShowFullPreviewModal] = useState(false);
 
@@ -263,6 +274,9 @@ export default function Settings() {
   // Print Once Hide State (STAY / HIDE)
   const [printOnceHideMode, setPrintOnceHideModeState] = useState(PRINT_ONCE_MODES.STAY);
 
+  // F1 / F2 / F3 GST shortcuts in reports (off = all records)
+  const [reportGstShortcuts, setReportGstShortcutsState] = useState(() => getReportGstShortcutsSync());
+
   useEffect(() => {
     getDuplicateBillsMode().then(mode => {
       if (mode) setDuplicateBillsModeState(mode);
@@ -270,7 +284,18 @@ export default function Settings() {
     getPrintOnceHideMode().then(mode => {
       if (mode) setPrintOnceHideModeState(mode);
     });
+    getReportGstShortcuts().then(enabled => setReportGstShortcutsState(enabled));
   }, []);
+
+  const handleSaveReportGstShortcuts = async (enabled) => {
+    await setReportGstShortcuts(enabled);
+    setReportGstShortcutsState(enabled);
+    setMsg(enabled
+      ? 'Report GST shortcuts ON: reports open with GST only. F1 = GST, F2 = Non-GST, F3 = both.'
+      : 'Report GST shortcuts OFF: normal reports, all GST & Non-GST records shown.');
+    setTimeout(() => setMsg(''), 4000);
+  };
+
 
   const handleSaveDuplicateBillsMode = async (mode) => {
     await setDuplicateBillsMode(mode);
@@ -340,6 +365,119 @@ export default function Settings() {
     setTimeout(() => setMsg(''), 4000);
   };
 
+  // Cash Party & Cash Default Options in Sales Weighment
+  const [enableCashParties, setEnableCashParties] = useState(
+    () => localStorage.getItem('noris_enable_cash_parties') === 'true'
+  );
+
+  const handleSaveEnableCashParties = async (enabled) => {
+    localStorage.setItem('noris_enable_cash_parties', enabled ? 'true' : 'false');
+    setEnableCashParties(enabled);
+    if (api && api.saveSetting) {
+      try {
+        await api.saveSetting('enable_cash_parties', enabled ? 'true' : 'false');
+      } catch (e) {
+        console.warn('Error saving enable_cash_parties to db:', e);
+      }
+    }
+    window.dispatchEvent(new Event('storage'));
+    window.dispatchEvent(new CustomEvent('workflow-setting-changed', { detail: { enableCashParties: enabled } }));
+    setMsg(`Cash Party & Cash default options in Sales Weighment are now ${enabled ? 'ENABLED (Visible in party list)' : 'DISABLED (Hidden)'}.`);
+    setTimeout(() => setMsg(''), 4000);
+  };
+
+  // Show / hide the Rate field in Payment Calculation for LOCAL SALE (shown by default)
+  const [localSaleRate, setLocalSaleRate] = useState(
+    () => localStorage.getItem('noris_rate_checkbox') === 'true'
+  );
+
+  const handleSaveLocalSaleRate = (enabled) => {
+    localStorage.setItem('noris_rate_checkbox', enabled ? 'true' : 'false');
+    setLocalSaleRate(enabled);
+    window.dispatchEvent(new CustomEvent('workflow-setting-changed', { detail: { localSaleRate: enabled } }));
+    setMsg(`Rate checkbox in Sales Weighment is now ${enabled ? 'ENABLED (tick to enter rate)' : 'DISABLED (rate always editable)'}.`);
+    setTimeout(() => setMsg(''), 4000);
+  };
+
+  // GST highlight on the Sales Weighment Party field: 'off' | 'cash' | 'all'
+  const [gstHighlightMode, setGstHighlightMode] = useState(
+    () => localStorage.getItem('noris_gst_party_highlight') || 'all'
+  );
+
+  const handleSaveGstHighlightMode = (mode) => {
+    localStorage.setItem('noris_gst_party_highlight', mode);
+    setGstHighlightMode(mode);
+    window.dispatchEvent(new CustomEvent('workflow-setting-changed', { detail: { gstHighlightMode: mode } }));
+    const label = mode === 'off' ? 'OFF' : mode === 'all' ? 'ON for all GST parties' : 'ON for CASH / CASH PARTY only';
+    setMsg(`GST party highlight is now ${label}.`);
+    setTimeout(() => setMsg(''), 4000);
+  };
+
+  // Boulders Report Lock: records hidden until filters are set and F1 is pressed
+  const [bouldersReportLock, setBouldersReportLock] = useState(
+    () => localStorage.getItem('noris_boulders_report_lock') === 'true'
+  );
+
+  const handleSaveBouldersReportLock = (enabled) => {
+    localStorage.setItem('noris_boulders_report_lock', enabled ? 'true' : 'false');
+    setBouldersReportLock(enabled);
+    window.dispatchEvent(new CustomEvent('workflow-setting-changed', { detail: { bouldersReportLock: enabled } }));
+    setMsg(`Boulders Report lock is now ${enabled ? 'ON (set filters, then press F1)' : 'OFF (normal report)'}.`);
+    setTimeout(() => setMsg(''), 4000);
+  };
+
+  // Show / hide "Sales Cash" in the Reports menu (shown by default)
+  const [showSalesCashReport, setShowSalesCashReport] = useState(
+    () => localStorage.getItem('noris_show_sales_cash_report') !== 'false'
+  );
+
+  const handleSaveShowSalesCashReport = (show) => {
+    localStorage.setItem('noris_show_sales_cash_report', show ? 'true' : 'false');
+    setShowSalesCashReport(show);
+    window.dispatchEvent(new CustomEvent('workflow-setting-changed', { detail: { showSalesCashReport: show } }));
+    setMsg(`Sales Cash report is now ${show ? 'SHOWN' : 'HIDDEN'} in the Reports menu.`);
+    setTimeout(() => setMsg(''), 4000);
+  };
+
+  // Auto-select Royalty Type = Government when a Stationary Number is entered (off by default)
+  const [autoRoyaltyStationary, setAutoRoyaltyStationary] = useState(
+    () => localStorage.getItem('noris_auto_royalty_by_stationary') === 'true'
+  );
+
+  const handleSaveAutoRoyaltyStationary = (enabled) => {
+    localStorage.setItem('noris_auto_royalty_by_stationary', enabled ? 'true' : 'false');
+    setAutoRoyaltyStationary(enabled);
+    window.dispatchEvent(new CustomEvent('workflow-setting-changed', { detail: { autoRoyaltyStationary: enabled } }));
+    setMsg(`Auto-select Royalty Type based on Stationary Number is now ${enabled ? 'ENABLED' : 'DISABLED'}.`);
+    setTimeout(() => setMsg(''), 4000);
+  };
+
+  // DC Num/RST on Sales Weighment (Units): 'always' or 'after_save'
+  const [dcDisplayMode, setDcDisplayMode] = useState(
+    () => localStorage.getItem('noris_sales_dc_display_mode') || 'always'
+  );
+
+  const handleSaveDcDisplayMode = (mode) => {
+    localStorage.setItem('noris_sales_dc_display_mode', mode);
+    setDcDisplayMode(mode);
+    window.dispatchEvent(new CustomEvent('workflow-setting-changed', { detail: { dcDisplayMode: mode } }));
+    setMsg(`DC Number on Sales Weighment: ${mode === 'after_save' ? 'hidden until Save' : 'always shown'}.`);
+    setTimeout(() => setMsg(''), 4000);
+  };
+
+  // Show Gross / Tare date & time under the weights on Sales Weighment and Boulders
+  const [showWeighTimes, setShowWeighTimes] = useState(
+    () => localStorage.getItem('noris_sales_show_weigh_times') === 'true'
+  );
+
+  const handleSaveShowWeighTimes = (enabled) => {
+    localStorage.setItem('noris_sales_show_weigh_times', enabled ? 'true' : 'false');
+    setShowWeighTimes(enabled);
+    window.dispatchEvent(new CustomEvent('workflow-setting-changed', { detail: { showWeighTimes: enabled } }));
+    setMsg(`Gross / Tare times on Sales Weighment are now ${enabled ? 'SHOWN' : 'HIDDEN'}.`);
+    setTimeout(() => setMsg(''), 4000);
+  };
+
   // Boulders Weighment Screen Layout State ('compact' = New Type screen-fit without scroll, 'classic' = Old Design)
   const [bouldersLayoutDesign, setBouldersLayoutDesign] = useState(
     () => localStorage.getItem('noris_boulders_layout_design') || 'compact'
@@ -369,8 +507,16 @@ export default function Settings() {
   const handleSaveSalesSummaryPrintMode = (mode) => {
     setSalesSummaryPrintMode(mode);
     setSalesSummaryPrintModeState(mode);
-    setMsg(`Sales Summary Report Print Mode updated to "${mode === SALES_SUMMARY_PRINT_MODES.DOT_MATRIX ? 'Dot Matrix Printer (Quarry Report)' : 'Normal Report (Standard A4)'}".`);
+    setMsg(`Reports Print Mode (all reports) updated to "${mode === SALES_SUMMARY_PRINT_MODES.DOT_MATRIX ? 'Dot Matrix Printer' : 'Normal Report (Standard A4)'}".`);
     setTimeout(() => setMsg(''), 4000);
+  };
+
+  // Continuous-form paper size for the Sales Summary dot-matrix print
+  const [salesDmPaper, setSalesDmPaper] = useState(() => getSalesDotMatrixPaperConfig());
+
+  const handleSalesDmPaperChange = (field, value) => {
+    setSalesDotMatrixPaperConfig({ [field]: value });
+    setSalesDmPaper(getSalesDotMatrixPaperConfig());
   };
 
   // DC Cyclic Sequence Settings State (e.g. 1 to 50, then restart at 1)
@@ -399,10 +545,70 @@ export default function Settings() {
             setBouldersLayoutDesign(s.boulders_layout_design);
             localStorage.setItem('noris_boulders_layout_design', s.boulders_layout_design);
           }
+          if (s.card_scan_cooldown_enabled !== undefined) {
+            const en = String(s.card_scan_cooldown_enabled).toLowerCase() === 'true' || s.card_scan_cooldown_enabled === true;
+            setCardCooldownEnabled(en);
+            localStorage.setItem('noris_card_cooldown_enabled', en ? 'true' : 'false');
+          }
+          if (s.card_scan_cooldown_minutes !== undefined) {
+            const mins = String(s.card_scan_cooldown_minutes || '15');
+            setCardCooldownMinutes(mins);
+            localStorage.setItem('noris_card_cooldown_minutes', mins);
+          }
+          if (s.enable_cash_parties !== undefined) {
+            const en = String(s.enable_cash_parties).toLowerCase() === 'true' || s.enable_cash_parties === '1' || s.enable_cash_parties === true;
+            setEnableCashParties(en);
+            localStorage.setItem('noris_enable_cash_parties', en ? 'true' : 'false');
+          }
         }
       }).catch(() => {});
     }
   }, []);
+
+  // Card Scan Cooldown Settings State (e.g. 15 minutes cooldown for Unmanned & RFID)
+  const [cardCooldownEnabled, setCardCooldownEnabled] = useState(() => {
+    return localStorage.getItem('noris_card_cooldown_enabled') !== 'false';
+  });
+  const [cardCooldownMinutes, setCardCooldownMinutes] = useState(() => {
+    return localStorage.getItem('noris_card_cooldown_minutes') || '15';
+  });
+
+  const handleSaveCardCooldown = async (enabledVal, minutesVal) => {
+    const isEn = enabledVal !== undefined ? enabledVal : cardCooldownEnabled;
+    const mins = minutesVal !== undefined ? Math.max(1, parseInt(minutesVal, 10) || 15) : Math.max(1, parseInt(cardCooldownMinutes, 10) || 15);
+
+    setCardCooldownEnabled(isEn);
+    setCardCooldownMinutes(String(mins));
+    localStorage.setItem('noris_card_cooldown_enabled', isEn ? 'true' : 'false');
+    localStorage.setItem('noris_card_cooldown_minutes', String(mins));
+
+    try {
+      if (api && api.saveSetting) {
+        await api.saveSetting('card_scan_cooldown_enabled', isEn ? 'true' : 'false');
+        await api.saveSetting('card_scan_cooldown_minutes', String(mins));
+      }
+      setMsg(isEn
+        ? `✔ Card Scan Cooldown active: Once scanned, the same card cannot be scanned again for ${mins} minute(s).`
+        : `✔ Card Scan Cooldown disabled: Cards can be scanned repeatedly without timer restriction.`
+      );
+    } catch (err) {
+      console.error('Error saving card cooldown setting:', err);
+      setMsg(`Error saving card cooldown setting: ${err.message}`);
+    }
+    setTimeout(() => setMsg(''), 4000);
+  };
+
+  const handleClearCardCooldownCache = async () => {
+    try {
+      if (api && api.clearCardCooldownCache) {
+        await api.clearCardCooldownCache();
+      }
+      setMsg('✔ Card Scan Cooldown Cache cleared successfully! All cards can be scanned immediately.');
+    } catch (err) {
+      setMsg(`Error clearing cooldown cache: ${err.message}`);
+    }
+    setTimeout(() => setMsg(''), 4000);
+  };
 
   const handleSaveDcCycleLimit = async (enabledVal, maxVal) => {
     const isEn = enabledVal !== undefined ? enabledVal : dcCycleLimitEnabled;
@@ -695,6 +901,68 @@ export default function Settings() {
     }
   };
 
+  // Pull Synced Data & Module Mode card — owner password gated, same check as the
+  // Cloud Sync unlock. Module mode decides which of Boulders / Sales the navbar shows.
+  const [pullUnlocked, setPullUnlocked] = useState(false);
+  const [pullPassword, setPullPassword] = useState('');
+  const [pullBusy, setPullBusy] = useState(false);
+  const [pullResult, setPullResult] = useState('');
+  const [moduleMode, setModuleMode] = useState(() => localStorage.getItem('noris_module_mode') || 'both');
+
+  const handleUnlockPullCard = async () => {
+    if (!pullPassword) {
+      setMsg('⚠️ Please enter the Software Owner Password.');
+      return;
+    }
+    let authorised = false;
+    try {
+      if (window.electronAPI && window.electronAPI.verifyOwnerPassword) {
+        authorised = await window.electronAPI.verifyOwnerPassword(pullPassword);
+      } else {
+        setMsg('⚠️ Owner verification is unavailable outside the desktop app.');
+        return;
+      }
+    } catch (e) {
+      setMsg('⚠️ Could not verify the owner password: ' + e.message);
+      return;
+    }
+    setPullPassword('');
+    if (!authorised) {
+      setMsg('⚠️ Incorrect Software Owner Password. Unauthorized action!');
+      return;
+    }
+    setPullUnlocked(true);
+  };
+
+  const handleModuleModeChange = (mode) => {
+    setModuleMode(mode);
+    localStorage.setItem('noris_module_mode', mode);
+    window.dispatchEvent(new CustomEvent('workflow-setting-changed', { detail: { moduleMode: mode } }));
+    const label = mode === 'boulders' ? 'Boulders only' : mode === 'sales' ? 'Sales only' : 'Boulders & Sales';
+    setMsg(`Navbar module mode set to ${label}.`);
+  };
+
+  const handlePullSyncedData = async () => {
+    setPullBusy(true);
+    setPullResult('');
+    try {
+      const res = await api.pullSyncedMasterData();
+      if (res && res.success) {
+        const c = res.counts || {};
+        setPullResult(res.message ||
+          `✅ Pulled: ${c.debitors || 0} parties, ${c.materials || 0} materials, ${c.destinations || 0} destinations, ` +
+          `${c.transporters || 0} transporters, ${c.contractors || 0} contractors, ${c.contractor_materials || 0} contractor materials, ` +
+          `${c.sources || 0} sources, ${c.drivers || 0} drivers`);
+      } else {
+        setPullResult(`⚠️ Pull failed: ${res ? res.error : 'No response'}`);
+      }
+    } catch (e) {
+      setPullResult(`⚠️ Pull failed: ${e.message}`);
+    } finally {
+      setPullBusy(false);
+    }
+  };
+
   // Re-opens the Cloud Sync form after it has been locked. Gated by the SOFTWARE
   // OWNER password — deliberately not the site admin password used elsewhere in
   // Settings, so a customer's admin cannot re-point this machine to another
@@ -799,6 +1067,22 @@ export default function Settings() {
   const [isPurgingManual, setIsPurgingManual] = useState(false);
   const [cleanupStatusText, setCleanupStatusText] = useState('Idle (Protected)');
 
+  // Critical Database Safety & Backup State
+  const [backupStatus, setBackupStatus] = useState(null);
+  const [isBackingUp, setIsBackingUp] = useState(false);
+  const [isVerifyingDb, setIsVerifyingDb] = useState(false);
+
+  const refreshBackupStatus = async () => {
+    try {
+      if (api && api.getBackupStatus) {
+        const status = await api.getBackupStatus();
+        if (status) setBackupStatus(status);
+      }
+    } catch (e) {
+      console.error('[Settings] Error fetching backup status:', e);
+    }
+  };
+
   useEffect(() => {
     if (activeTab === 'clearing' && window.electronAPI && window.electronAPI.getCleanupConfig) {
       window.electronAPI.getCleanupConfig().then(cfg => {
@@ -812,8 +1096,68 @@ export default function Settings() {
           });
         }
       }).catch(() => {});
+      refreshBackupStatus();
     }
   }, [activeTab]);
+
+  const handleCreateManualBackup = async () => {
+    if (isBackingUp) return;
+    setIsBackingUp(true);
+    setMsg('Creating verified database backup, please wait...');
+    try {
+      await waitForPaint();
+      if (api && api.createBackup) {
+        const res = await api.createBackup('manual_settings_trigger');
+        if (res && res.success) {
+          setMsg(`✔ Verified backup created successfully! Saved: ${res.dailyBackup || res.backupName || 'Daily & Slot Backups'}`);
+          await refreshBackupStatus();
+        } else {
+          setMsg(`Failed to create backup: ${res?.error || 'Unknown error'}`);
+        }
+      }
+    } catch (err) {
+      setMsg(`Error creating backup: ${err.message}`);
+    } finally {
+      setIsBackingUp(false);
+    }
+  };
+
+  const handleVerifyDatabaseIntegrity = async () => {
+    if (isVerifyingDb) return;
+    setIsVerifyingDb(true);
+    setMsg('Running deep SQLite PRAGMA integrity check, please wait...');
+    try {
+      await waitForPaint();
+      if (api && api.verifyDatabaseIntegrity) {
+        const res = await api.verifyDatabaseIntegrity();
+        if (res && res.ok) {
+          setMsg(`✔ Database Integrity Verified: 100% HEALTHY (${res.details})`);
+          await refreshBackupStatus();
+        } else {
+          setMsg(`⚠️ Database Check Notice: ${res?.error || res?.details || 'Integrity check failed'}`);
+        }
+      }
+    } catch (err) {
+      setMsg(`Error verifying database: ${err.message}`);
+    } finally {
+      setIsVerifyingDb(false);
+    }
+  };
+
+  const handleOpenBackupFolder = async () => {
+    try {
+      if (api && api.openBackupFolder) {
+        const res = await api.openBackupFolder();
+        if (res && res.success) {
+          setMsg(`Opened backup folder: ${res.path}`);
+        } else {
+          setMsg(`Notice: ${res?.error || 'Could not open folder automatically'}`);
+        }
+      }
+    } catch (e) {
+      setMsg(`Error opening folder: ${e.message}`);
+    }
+  };
 
   const handleSaveAutoCleanupPolicy = async (e) => {
     if (e) e.preventDefault();
@@ -866,7 +1210,7 @@ export default function Settings() {
   };
 
   // Auto-dismiss the Notice banner.
-  const busy = isClearing || isPurgingPreTare || isPurgingManual;
+  const busy = isClearing || isPurgingPreTare || isPurgingManual || isBackingUp || isVerifyingDb;
   useEffect(() => {
     if (!msg || busy) return undefined;
     const timer = setTimeout(() => setMsg(''), NOTICE_TIMEOUT_MS);
@@ -1185,8 +1529,8 @@ export default function Settings() {
 
   const loadDcSequenceInfo = async (mod = dcModule, typ = dcType, pfx = dcPrefix) => {
     try {
-      if (api.getSettings) {
-        const s = await api.getSettings();
+      if (api.settings) {
+        const s = await api.settings();
         if (s && s.dc_reset_time) {
           setDcResetTime(s.dc_reset_time);
         }
@@ -1586,13 +1930,103 @@ export default function Settings() {
               )}
             </div>
 
+            {/* Boulders Report Lock */}
+            <div className="mt-4 pt-3 border-top">
+              <div className="d-flex justify-content-between align-items-center mb-2">
+                <div>
+                  <h6 className="fw-bold mb-1" style={{ color: 'var(--ink)' }}>🔒 Boulders Report Lock (F1)</h6>
+                  <p className="text-muted mb-0 small">
+                    <strong>On</strong>: the normal report layout stays visible, but records and totals stay hidden until you set filters and press <strong>F1</strong>. Reset locks them again. <strong>Off</strong>: records show straight away (F1 still applies the filters).
+                  </p>
+                </div>
+                <div className="btn-group btn-group-sm" role="group">
+                  <button
+                    type="button"
+                    className={`btn ${bouldersReportLock ? 'btn-success active fw-bold' : 'btn-outline-secondary'}`}
+                    onClick={() => handleSaveBouldersReportLock(true)}
+                    style={{ fontSize: '0.82rem', padding: '0.35rem 0.9rem' }}
+                  >
+                    🔒 On
+                  </button>
+                  <button
+                    type="button"
+                    className={`btn ${!bouldersReportLock ? 'btn-secondary active fw-bold' : 'btn-outline-secondary'}`}
+                    onClick={() => handleSaveBouldersReportLock(false)}
+                    style={{ fontSize: '0.82rem', padding: '0.35rem 0.9rem' }}
+                  >
+                    Off (Normal)
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Sales Cash Report: show / hide in the Reports menu */}
+            <div className="mt-4 pt-3 border-top">
+              <div className="d-flex justify-content-between align-items-center mb-2">
+                <div>
+                  <h6 className="fw-bold mb-1" style={{ color: 'var(--ink)' }}>💵 Sales Cash Report (Reports Menu)</h6>
+                  <p className="text-muted mb-0 small">
+                    Show or hide the <strong>Sales Cash</strong> report in the Reports menu. Hiding it only removes the menu entry; no data is deleted.
+                  </p>
+                </div>
+                <div className="btn-group btn-group-sm" role="group">
+                  <button
+                    type="button"
+                    className={`btn ${showSalesCashReport ? 'btn-success active fw-bold' : 'btn-outline-secondary'}`}
+                    onClick={() => handleSaveShowSalesCashReport(true)}
+                    style={{ fontSize: '0.82rem', padding: '0.35rem 0.9rem' }}
+                  >
+                    ✔ Show
+                  </button>
+                  <button
+                    type="button"
+                    className={`btn ${!showSalesCashReport ? 'btn-secondary active fw-bold' : 'btn-outline-secondary'}`}
+                    onClick={() => handleSaveShowSalesCashReport(false)}
+                    style={{ fontSize: '0.82rem', padding: '0.35rem 0.9rem' }}
+                  >
+                    ✖ Hide
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Auto-select Royalty Type based on Stationary Number */}
+            <div className="mt-4 pt-3 border-top">
+              <div className="d-flex justify-content-between align-items-center mb-2">
+                <div>
+                  <h6 className="fw-bold mb-1" style={{ color: 'var(--ink)' }}>📄 Auto-select Royalty Type based on Stationary Number</h6>
+                  <p className="text-muted mb-0 small">
+                    When enabled, entering a Stationary Number automatically sets the Royalty Type to <strong>Government</strong>. When disabled, Royalty Type is selected manually.
+                  </p>
+                </div>
+                <div className="btn-group btn-group-sm" role="group">
+                  <button
+                    type="button"
+                    className={`btn ${autoRoyaltyStationary ? 'btn-success active fw-bold' : 'btn-outline-secondary'}`}
+                    onClick={() => handleSaveAutoRoyaltyStationary(true)}
+                    style={{ fontSize: '0.82rem', padding: '0.35rem 0.9rem' }}
+                  >
+                    ✔ Enable
+                  </button>
+                  <button
+                    type="button"
+                    className={`btn ${!autoRoyaltyStationary ? 'btn-secondary active fw-bold' : 'btn-outline-secondary'}`}
+                    onClick={() => handleSaveAutoRoyaltyStationary(false)}
+                    style={{ fontSize: '0.82rem', padding: '0.35rem 0.9rem' }}
+                  >
+                    ✖ Disable
+                  </button>
+                </div>
+              </div>
+            </div>
+
             {/* Sales Summary Report Print Mode Setting */}
             <div className="mt-4 pt-3 border-top">
               <div className="d-flex justify-content-between align-items-center mb-2">
                 <div>
-                  <h6 className="fw-bold mb-1" style={{ color: 'var(--ink)' }}>🖨️ Sales Summary Report Print Output Mode</h6>
+                  <h6 className="fw-bold mb-1" style={{ color: 'var(--ink)' }}>🖨️ Reports Print Output Mode (All Reports)</h6>
                   <p className="text-muted mb-0 small">
-                    Configure the print layout for Sales Summary Report: choose between the standard A4 print preview window or high-speed ESC/P continuous dot-matrix printer format.
+                    One setting for every report — Sales Summary, Sales Cash, Normal, Yard and Boulders: print in the standard A4 print window, or on the ESC/P continuous dot-matrix printer.
                   </p>
                 </div>
                 <div className="btn-group btn-group-sm" role="group">
@@ -1662,6 +2096,101 @@ export default function Settings() {
                       Directly sends high-speed ESC/P text format with horizontal tab stops to the dot matrix printer on continuous form paper (Quarry Report format with Contractor, Vehicle, Gross, Tare, Nett).
                     </p>
                   </div>
+                </div>
+              </div>
+
+              {salesSummaryPrintMode === SALES_SUMMARY_PRINT_MODES.DOT_MATRIX && (
+                <div className="mt-3 p-3 rounded-3 border bg-light">
+                  <h6 className="fw-bold mb-2" style={{ fontSize: '0.88rem', color: 'var(--ink)' }}>📏 Continuous Paper Size</h6>
+                  <div className="row g-2">
+                    <div className="col-6 col-md-3">
+                      <label className="form-label small fw-semibold mb-1">Paper Length (inches)</label>
+                      <select
+                        className="form-select form-select-sm"
+                        value={salesDmPaper.paperLengthIn}
+                        onChange={e => handleSalesDmPaperChange('paperLengthIn', Number(e.target.value))}
+                      >
+                        {[6, 8, 11, 12, 15].map(v => <option key={v} value={v}>{v}"</option>)}
+                      </select>
+                    </div>
+                    <div className="col-6 col-md-3">
+                      <label className="form-label small fw-semibold mb-1">Character Size</label>
+                      <select
+                        className="form-select form-select-sm"
+                        value={salesDmPaper.cpi}
+                        onChange={e => handleSalesDmPaperChange('cpi', Number(e.target.value))}
+                      >
+                        <option value={10}>10 CPI (Normal)</option>
+                        <option value={12}>12 CPI (Elite)</option>
+                        <option value={17}>17 CPI (Condensed)</option>
+                      </select>
+                    </div>
+                    <div className="col-6 col-md-3">
+                      <label className="form-label small fw-semibold mb-1">Top Margin (lines)</label>
+                      <input
+                        type="number" min={0} max={10}
+                        className="form-control form-control-sm"
+                        value={salesDmPaper.topLines}
+                        onChange={e => handleSalesDmPaperChange('topLines', Number(e.target.value))}
+                      />
+                    </div>
+                    <div className="col-6 col-md-3">
+                      <label className="form-label small fw-semibold mb-1">Bottom Margin (lines)</label>
+                      <input
+                        type="number" min={0} max={10}
+                        className="form-control form-control-sm"
+                        value={salesDmPaper.bottomLines}
+                        onChange={e => handleSalesDmPaperChange('bottomLines', Number(e.target.value))}
+                      />
+                    </div>
+                    <div className="col-12 col-md-6">
+                      <label className="form-label small fw-semibold mb-1">After the Last Page</label>
+                      <select
+                        className="form-select form-select-sm"
+                        value={salesDmPaper.endMode}
+                        onChange={e => handleSalesDmPaperChange('endMode', e.target.value)}
+                      >
+                        <option value="feed">Feed to next sheet (next print starts at the perforation)</option>
+                        <option value="stop">Stop when records end (tear off below the totals)</option>
+                      </select>
+                    </div>
+                  </div>
+                  <p className="mb-0 mt-2 text-muted" style={{ fontSize: '0.75rem' }}>
+                    Each page is exactly {salesDmPaper.paperLengthIn}" ({Math.round(salesDmPaper.paperLengthIn * 6)} lines at 6 lines/inch); {salesDmPaper.endMode === 'stop'
+                      ? <> the paper stops automatically when the records end, {salesDmPaper.bottomLines} lines (bottom margin) below the totals — tear there, then roll the paper to the next perforation before the next print. </>
+                      : ' the form feed stops on the next perforation. '}
+                    Turn OFF the printer's <b>Auto Tear-Off</b> and load the paper with the print head on the first line of the sheet before printing.
+                  </p>
+                </div>
+              )}
+            </div>
+
+            {/* GST / Non-GST Reports: F1 / F2 / F3 shortcuts */}
+            <div className="mt-4 pt-3 border-top">
+              <div className="d-flex justify-content-between align-items-center">
+                <div>
+                  <h6 className="fw-bold mb-0" style={{ color: 'var(--ink)' }}>⌨️ GST / Non-GST Keyboard Shortcuts (F1 / F2 / F3)</h6>
+                  <p className="text-muted mb-0 small mt-1">
+                    OFF (normal): reports show all GST &amp; Non-GST records together. ON: the report opens with GST only — F1 = GST, F2 = Non-GST, F3 = both. Printing (Normal or Dot Matrix) prints what is shown.
+                  </p>
+                </div>
+                <div className="btn-group btn-group-sm" role="group">
+                  <button
+                    type="button"
+                    className={`btn ${!reportGstShortcuts ? 'btn-primary active fw-bold' : 'btn-outline-secondary'}`}
+                    onClick={() => handleSaveReportGstShortcuts(false)}
+                    style={{ fontSize: '0.82rem', padding: '0.35rem 0.9rem' }}
+                  >
+                    Off (Normal)
+                  </button>
+                  <button
+                    type="button"
+                    className={`btn ${reportGstShortcuts ? 'btn-primary active fw-bold' : 'btn-outline-secondary'}`}
+                    onClick={() => handleSaveReportGstShortcuts(true)}
+                    style={{ fontSize: '0.82rem', padding: '0.35rem 0.9rem' }}
+                  >
+                    On (F1 / F2 / F3)
+                  </button>
                 </div>
               </div>
             </div>
@@ -1742,6 +2271,195 @@ export default function Settings() {
                       Original full-width stacked fields with standard spacing and vertical scroll.
                     </p>
                   </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Cash Party & Cash Default Options Setting */}
+            <div className="mt-4 pt-3 border-top">
+              <div className="d-flex justify-content-between align-items-center mb-2">
+                <div>
+                  <h6 className="fw-bold mb-1" style={{ color: 'var(--ink)' }}>💵 Cash Party &amp; Cash Default Options (Sales Weighment)</h6>
+                  <p className="text-muted mb-0 small">
+                    Enable or disable <strong>CASH PARTY</strong> and <strong>CASH</strong> as visible default options in the Party dropdown for Sales Weighment (Units).
+                  </p>
+                </div>
+                <div className="btn-group btn-group-sm" role="group">
+                  <button
+                    type="button"
+                    className={`btn ${enableCashParties ? 'btn-success active fw-bold' : 'btn-outline-secondary'}`}
+                    onClick={() => handleSaveEnableCashParties(true)}
+                    style={{ fontSize: '0.82rem', padding: '0.35rem 0.9rem' }}
+                  >
+                    ✔ Visible (Enabled)
+                  </button>
+                  <button
+                    type="button"
+                    className={`btn ${!enableCashParties ? 'btn-secondary active fw-bold' : 'btn-outline-secondary'}`}
+                    onClick={() => handleSaveEnableCashParties(false)}
+                    style={{ fontSize: '0.82rem', padding: '0.35rem 0.9rem' }}
+                  >
+                    ✖ Hidden (Local Sale Only)
+                  </button>
+                </div>
+              </div>
+
+              <div className="row g-2 mt-2">
+                <div className="col-12 col-md-6">
+                  <div 
+                    className={`p-3 rounded-3 border transition-all h-100 ${enableCashParties ? 'border-success bg-success-subtle text-dark shadow-sm' : 'border-secondary-subtle bg-white text-secondary'}`}
+                    style={{ cursor: 'pointer' }}
+                    onClick={() => handleSaveEnableCashParties(true)}
+                  >
+                    <div className="d-flex align-items-center gap-2 mb-1">
+                      <input 
+                        type="radio" 
+                        name="enableCashPartiesRadio" 
+                        id="cash_party_visible"
+                        checked={enableCashParties} 
+                        onChange={() => handleSaveEnableCashParties(true)} 
+                      />
+                      <label htmlFor="cash_party_visible" className="fw-bold mb-0 cursor-pointer" style={{ fontSize: '0.9rem' }}>
+                        💵 Show CASH PARTY &amp; CASH
+                      </label>
+                    </div>
+                    <p className="mb-0 text-muted" style={{ fontSize: '0.78rem' }}>
+                      Adds "CASH PARTY" and "CASH" to the Party selection dropdown in Sales Weighment (Units) alongside "LOCAL SALE", automatically opening Payment Calculation when chosen.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="col-12 col-md-6">
+                  <div 
+                    className={`p-3 rounded-3 border transition-all h-100 ${!enableCashParties ? 'border-secondary bg-light text-secondary shadow-sm' : 'border-secondary-subtle bg-white text-secondary'}`}
+                    style={{ cursor: 'pointer' }}
+                    onClick={() => handleSaveEnableCashParties(false)}
+                  >
+                    <div className="d-flex align-items-center gap-2 mb-1">
+                      <input 
+                        type="radio" 
+                        name="enableCashPartiesRadio" 
+                        id="cash_party_hidden"
+                        checked={!enableCashParties} 
+                        onChange={() => handleSaveEnableCashParties(false)} 
+                      />
+                      <label htmlFor="cash_party_hidden" className="fw-bold mb-0 cursor-pointer" style={{ fontSize: '0.9rem' }}>
+                        🔒 Standard (LOCAL SALE Only)
+                      </label>
+                    </div>
+                    <p className="mb-0 text-muted" style={{ fontSize: '0.78rem' }}>
+                      Shows only "LOCAL SALE" and synced credit debitors in the Party dropdown.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Local Sale Rate Option */}
+            <div className="mt-4 pt-3 border-top">
+              <h6 className="fw-bold mb-1" style={{ color: 'var(--ink)' }}>💰 Rate Checkbox (Sales Weighment)</h6>
+              <p className="text-muted mb-2 small">
+                Tick to show a checkbox beside <strong>Rate</strong> in Payment Calculation; the rate can then be entered only when that box is selected. Untick to remove the checkbox (rate is always editable).
+              </p>
+              <div className="form-check">
+                <input
+                  type="checkbox"
+                  className="form-check-input"
+                  id="local_sale_rate"
+                  checked={localSaleRate}
+                  onChange={(e) => handleSaveLocalSaleRate(e.target.checked)}
+                />
+                <label className="form-check-label fw-bold" htmlFor="local_sale_rate" style={{ fontSize: '0.9rem' }}>
+                  Show Rate checkbox
+                </label>
+              </div>
+            </div>
+
+            {/* GST Party Highlight Setting */}
+            <div className="mt-4 pt-3 border-top">
+              <div className="d-flex justify-content-between align-items-center mb-2">
+                <div>
+                  <h6 className="fw-bold mb-1" style={{ color: 'var(--ink)' }}>🟢 GST Party Highlight (Sales Weighment)</h6>
+                  <p className="text-muted mb-0 small">
+                    Shows the Party field in green when the selected party is billed as GST.
+                  </p>
+                </div>
+                <div className="btn-group btn-group-sm" role="group">
+                  {[
+                    { id: 'all', label: '✔ All GST Parties' },
+                    { id: 'cash', label: '💵 Cash / Cash Party Only' },
+                    { id: 'off', label: '✖ Off' }
+                  ].map(opt => (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      className={`btn ${gstHighlightMode === opt.id ? (opt.id === 'off' ? 'btn-secondary' : 'btn-success') + ' active fw-bold' : 'btn-outline-secondary'}`}
+                      onClick={() => handleSaveGstHighlightMode(opt.id)}
+                      style={{ fontSize: '0.82rem', padding: '0.35rem 0.9rem' }}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {/* Gross / Tare Times Setting */}
+            <div className="mt-4 pt-3 border-top">
+              <div className="d-flex justify-content-between align-items-center mb-2">
+                <div>
+                  <h6 className="fw-bold mb-1" style={{ color: 'var(--ink)' }}>🕒 Gross &amp; Tare Times (Sales Weighment &amp; Boulders)</h6>
+                  <p className="text-muted mb-0 small">
+                  Shows the time each weight was taken under the Gross and Tare boxes in Sales Weighment and Boulders.
+                  </p>
+                </div>
+                <div className="btn-group btn-group-sm" role="group">
+                  <button
+                    type="button"
+                    className={`btn ${showWeighTimes ? 'btn-success active fw-bold' : 'btn-outline-secondary'}`}
+                    onClick={() => handleSaveShowWeighTimes(true)}
+                    style={{ fontSize: '0.82rem', padding: '0.35rem 0.9rem' }}
+                  >
+                    ✔ Show
+                  </button>
+                  <button
+                    type="button"
+                    className={`btn ${!showWeighTimes ? 'btn-secondary active fw-bold' : 'btn-outline-secondary'}`}
+                    onClick={() => handleSaveShowWeighTimes(false)}
+                    style={{ fontSize: '0.82rem', padding: '0.35rem 0.9rem' }}
+                  >
+                    ✖ Hide
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* DC Number Display Setting */}
+            <div className="mt-4 pt-3 border-top">
+              <div className="d-flex justify-content-between align-items-center mb-2">
+                <div>
+                  <h6 className="fw-bold mb-1" style={{ color: 'var(--ink)' }}>🔢 DC Number Display (Sales Weighment)</h6>
+                  <p className="text-muted mb-0 small">
+                    <strong>Always Show</strong>: the DC Num/RST box shows the next DC number while filling the form. <strong>Show After Save</strong>: the DC Num/RST field is hidden while filling the form and appears with the saved DC number after Save.
+                  </p>
+                </div>
+                <div className="btn-group btn-group-sm" role="group">
+                  <button
+                    type="button"
+                    className={`btn ${dcDisplayMode === 'always' ? 'btn-success active fw-bold' : 'btn-outline-secondary'}`}
+                    onClick={() => handleSaveDcDisplayMode('always')}
+                    style={{ fontSize: '0.82rem', padding: '0.35rem 0.9rem' }}
+                  >
+                    👁 Always Show
+                  </button>
+                  <button
+                    type="button"
+                    className={`btn ${dcDisplayMode === 'after_save' ? 'btn-primary active fw-bold' : 'btn-outline-secondary'}`}
+                    onClick={() => handleSaveDcDisplayMode('after_save')}
+                    style={{ fontSize: '0.82rem', padding: '0.35rem 0.9rem' }}
+                  >
+                    💾 Show After Save
+                  </button>
                 </div>
               </div>
             </div>
@@ -1837,8 +2555,7 @@ export default function Settings() {
                     </span>
                   </div>
                   <p className="text-muted mb-0 small mt-1">
-                    When enabled, operators can type Gross and Tare weights manually in the Boulders Weighment form instead of requiring live scale readings. 
-                    <span className="text-danger fw-semibold ms-1">🔒 Protected by Password (Noris@123)</span>
+                    When enabled, operators can type Gross and Tare weights manually in the Boulders Weighment form instead of requiring live scale readings.
                   </p>
                 </div>
                 <button
@@ -1905,7 +2622,7 @@ export default function Settings() {
                       </label>
                     </div>
                     <p className="mb-0 text-muted" style={{ fontSize: '0.78rem' }}>
-                      Allows operator to type Gross and Tare directly. Protected by security password (Noris@123).
+                      Allows operator to type Gross and Tare directly.
                     </p>
                   </div>
                 </div>
@@ -1919,11 +2636,11 @@ export default function Settings() {
                   <div className="d-flex align-items-center gap-2">
                     <h6 className="fw-bold mb-0" style={{ color: 'var(--ink)' }}>🔢 DC Number Cycle Limit (Loop Sequence)</h6>
                     <span className={`badge ${dcCycleLimitEnabled ? 'bg-success-subtle text-success border border-success-subtle' : 'bg-secondary-subtle text-secondary border'} px-2 py-0.5`} style={{ fontSize: '0.72rem' }}>
-                      {dcCycleLimitEnabled ? `Cycle Active (Max: ${dcCycleLimitMax} → 1)` : 'Continuous Sequence Active'}
+                      {dcCycleLimitEnabled ? `Sales NON-GST Cycle Active (Max: ${dcCycleLimitMax} → 1)` : 'Continuous Sequence Active'}
                     </span>
                   </div>
                   <p className="text-muted mb-0 small mt-1">
-                    For client operations using fixed slip booklets (e.g., 50 slips per book). When enabled, DC numbers count up to the limit (e.g. 50) and then restart automatically from 1 instead of continuing sequentially.
+                    For Sales Weighment NON-GST client operations using fixed slip booklets (e.g., 50 slips per book). When enabled, Sales NON-GST DC numbers count up to the limit (e.g. 50) and then restart automatically from 1. Boulders, Yard, and GST sequences are not affected.
                   </p>
                 </div>
                 <div className="form-check form-switch fs-5">
@@ -2189,6 +2906,150 @@ export default function Settings() {
               </div>
             </div>
 
+            {/* Card Scan Cooldown Timer Setting (Unmanned & RFID) */}
+            <div className="mt-4 pt-3 border-top">
+              <div className="d-flex justify-content-between align-items-center mb-2">
+                <div>
+                  <div className="d-flex align-items-center gap-2">
+                    <h6 className="fw-bold mb-0" style={{ color: 'var(--ink)' }}>💳 Card Scan Cooldown Timer (Unmanned &amp; RFID)</h6>
+                    <span className={`badge ${cardCooldownEnabled ? 'bg-success-subtle text-success border border-success-subtle' : 'bg-secondary-subtle text-secondary border'} px-2 py-0.5`} style={{ fontSize: '0.72rem' }}>
+                      {cardCooldownEnabled ? `⏱️ Active (${cardCooldownMinutes} min Cooldown)` : '🚫 Cooldown Disabled'}
+                    </span>
+                  </div>
+                  <p className="text-muted mb-0 small mt-1">
+                    When enabled, once a card is scanned on the <b>Unmanned Serial Port</b> or <b>RFID Scanner</b>, it cannot be scanned again until the timer expires (prevents accidental duplicate scans).
+                  </p>
+                </div>
+                <div className="d-flex align-items-center gap-2">
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-outline-danger py-1 px-2.5 fw-semibold d-flex align-items-center gap-1"
+                    style={{ fontSize: '0.78rem' }}
+                    onClick={handleClearCardCooldownCache}
+                    title="Clear current scan memory to immediately allow re-scanning any card"
+                  >
+                    🧹 Reset / Clear Cache
+                  </button>
+                  <div className="form-check form-switch fs-5 mb-0">
+                    <input
+                      className="form-check-input"
+                      type="checkbox"
+                      role="switch"
+                      id="cardCooldownSwitch"
+                      checked={cardCooldownEnabled}
+                      onChange={(e) => handleSaveCardCooldown(e.target.checked, cardCooldownMinutes)}
+                      style={{ cursor: 'pointer' }}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div className="row g-2 mt-2">
+                <div className="col-12 col-md-6">
+                  <div
+                    className={`p-3 rounded-3 border transition-all h-100 ${cardCooldownEnabled ? 'border-primary bg-primary-subtle text-dark shadow-sm' : 'border-secondary-subtle bg-white text-secondary'}`}
+                    style={{ cursor: 'pointer' }}
+                    onClick={() => {
+                      if (!cardCooldownEnabled) handleSaveCardCooldown(true, cardCooldownMinutes);
+                    }}
+                  >
+                    <div className="d-flex align-items-center gap-2 mb-1">
+                      <input
+                        type="radio"
+                        name="cardCooldownRadio"
+                        id="card_cooldown_active"
+                        checked={cardCooldownEnabled}
+                        onChange={() => handleSaveCardCooldown(true, cardCooldownMinutes)}
+                      />
+                      <label htmlFor="card_cooldown_active" className="fw-bold mb-0 cursor-pointer" style={{ fontSize: '0.9rem' }}>
+                        ⏱️ Enable Cooldown Timer ({cardCooldownMinutes || 15} minutes)
+                      </label>
+                    </div>
+                    <p className="mb-0 text-muted" style={{ fontSize: '0.78rem' }}>
+                      Cards can only be scanned once every {cardCooldownMinutes || 15} minutes. Immediate re-scans are safely blocked.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="col-12 col-md-6">
+                  <div
+                    className={`p-3 rounded-3 border transition-all h-100 ${!cardCooldownEnabled ? 'border-warning bg-warning-subtle text-dark shadow-sm' : 'border-secondary-subtle bg-white text-secondary'}`}
+                    style={{ cursor: 'pointer' }}
+                    onClick={() => {
+                      if (cardCooldownEnabled) handleSaveCardCooldown(false, cardCooldownMinutes);
+                    }}
+                  >
+                    <div className="d-flex align-items-center gap-2 mb-1">
+                      <input
+                        type="radio"
+                        name="cardCooldownRadio"
+                        id="card_cooldown_disabled"
+                        checked={!cardCooldownEnabled}
+                        onChange={() => handleSaveCardCooldown(false, cardCooldownMinutes)}
+                      />
+                      <label htmlFor="card_cooldown_disabled" className="fw-bold mb-0 cursor-pointer" style={{ fontSize: '0.9rem' }}>
+                        ♾️ Disable Cooldown (Scan Anytime)
+                      </label>
+                    </div>
+                    <p className="mb-0 text-muted" style={{ fontSize: '0.78rem' }}>
+                      No waiting period. Cards can be scanned continuously without any delay.
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {cardCooldownEnabled && (
+                <div className="p-3 mt-2 rounded-3 bg-light border animate-fade-in d-flex flex-wrap align-items-center justify-content-between gap-3">
+                  <div className="d-flex align-items-center gap-2 flex-wrap">
+                    <span className="fw-semibold small text-dark mb-0">
+                      Quick Preset:
+                    </span>
+                    {['5', '10', '15', '30', '60'].map((mins) => (
+                      <button
+                        key={mins}
+                        type="button"
+                        className={`btn btn-sm ${cardCooldownMinutes === mins ? 'btn-primary active fw-bold' : 'btn-outline-secondary bg-white'}`}
+                        style={{ fontSize: '0.78rem', padding: '0.25rem 0.65rem' }}
+                        onClick={() => handleSaveCardCooldown(true, mins)}
+                      >
+                        {mins} min{mins === '15' ? ' (Default)' : ''}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="d-flex align-items-center gap-2">
+                    <label htmlFor="cardCooldownInput" className="fw-semibold small text-dark mb-0">
+                      Custom Timer (Minutes):
+                    </label>
+                    <input
+                      type="number"
+                      id="cardCooldownInput"
+                      min="1"
+                      max="1440"
+                      className="form-control form-control-sm font-monospace fw-bold text-center border-secondary-subtle"
+                      style={{ width: '80px' }}
+                      value={cardCooldownMinutes}
+                      onChange={(e) => setCardCooldownMinutes(e.target.value)}
+                      onBlur={() => handleSaveCardCooldown(true, cardCooldownMinutes)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          handleSaveCardCooldown(true, cardCooldownMinutes);
+                        }
+                      }}
+                    />
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-primary py-1 px-2.5 fw-semibold"
+                      style={{ fontSize: '0.78rem' }}
+                      onClick={() => handleSaveCardCooldown(true, cardCooldownMinutes)}
+                    >
+                      Save Timer
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+
           </div>
         </div>
       )}
@@ -2428,7 +3289,7 @@ export default function Settings() {
                   </div>
                 </div>
 
-                {dcCycleLimitEnabled && (
+                {dcCycleLimitEnabled && dcModule === 'sales' && dcType !== 'GST' && (
                   <div className="alert alert-info py-2 px-3 mb-0 d-flex align-items-center justify-content-between rounded-3 border" style={{ fontSize: '0.8rem' }}>
                     <div>
                       <strong>🔄 Cycle Limit Active:</strong> Numbers will count up to <strong>{dcCycleLimitMax}</strong> and then reset to 1.
@@ -2548,12 +3409,13 @@ export default function Settings() {
                 <div>
                   <label className="form-label fw-semibold text-secondary mb-1" style={{ fontSize: '0.78rem' }}>Indicator Brand / Protocol</label>
                   <select className="form-select form-select-sm border-secondary-subtle" value={commSettings.company || 'Weitex'} onChange={(e) => setCommSettings({ ...commSettings, company: e.target.value })}>
+                    <option value="STX-ETX">Standard / None (STX-ETX ...♥ / 2400 baud)</option>
                     <option value="K-Stream">K-Stream (Continuous 'k' delimited / e.g. k 0k 0)</option>
                     <option value="Weitex">Weitex (z-delimited continuous stream / 2400 baud)</option>
                     <option value="Icom">Icom (: delimited, /10 scale)</option>
                     <option value="Eassey">Eassey / Essae (: delimited, deduplicated)</option>
                     <option value="Avery">Avery (Standard ASCII CR/LF)</option>
-                    <option value="Generic">Generic ASCII (CR/LF)</option>
+                    <option value="Generic">Generic ASCII (CR/LF / ETX)</option>
                   </select>
                 </div>
 
@@ -2627,12 +3489,13 @@ export default function Settings() {
                 <div>
                   <label className="form-label fw-semibold text-secondary mb-1" style={{ fontSize: '0.78rem' }}>Indicator Brand / Protocol</label>
                   <select className="form-select form-select-sm border-secondary-subtle" value={unmannedSettings.company || 'Icom'} onChange={(e) => setUnmannedSettings({ ...unmannedSettings, company: e.target.value })}>
+                    <option value="STX-ETX">Standard / None (STX-ETX ...♥ / 2400 baud)</option>
                     <option value="K-Stream">K-Stream (Continuous 'k' delimited / e.g. k 0k 0)</option>
                     <option value="Weitex">Weitex (z-delimited continuous stream / 2400 baud)</option>
                     <option value="Icom">Icom (: delimited, /10 scale)</option>
                     <option value="Eassey">Eassey / Essae (: delimited, deduplicated)</option>
                     <option value="Avery">Avery (Standard ASCII CR/LF)</option>
-                    <option value="Generic">Generic ASCII (CR/LF)</option>
+                    <option value="Generic">Generic ASCII (CR/LF / ETX)</option>
                   </select>
                 </div>
                 <div className="mt-auto pt-2">
@@ -2792,6 +3655,87 @@ export default function Settings() {
                     </button>
                   )}
                 </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Card 4b: Pull Synced Data & Module Mode (Owner password protected) */}
+          <div className="col-12 col-md-4">
+            <div className="card h-100 shadow-sm border-0" style={{ borderRadius: '8px', overflow: 'hidden', background: '#ffffff', border: '1px solid var(--line)' }}>
+              <div className="card-header border-0 py-2.5 px-3 d-flex justify-content-between align-items-center" style={{ backgroundColor: 'var(--surface-2)', borderBottom: '1.5px solid var(--line-soft)' }}>
+                <span className="fw-bold" style={{ color: 'var(--ink)', fontSize: '0.88rem' }}>⬇️ Pull Synced Data</span>
+                <span className={`badge ${pullUnlocked ? 'bg-success-subtle text-success border border-success-subtle' : 'bg-secondary-subtle text-secondary border border-secondary-subtle'}`} style={{ fontSize: '0.68rem' }}>
+                  {pullUnlocked ? 'Unlocked' : '🔒 Locked'}
+                </span>
+              </div>
+              <div className="card-body p-3 d-flex flex-column gap-2" style={{ fontSize: '0.8rem' }}>
+                {!pullUnlocked ? (
+                  <div>
+                    <p className="text-secondary mb-2" style={{ fontSize: '0.75rem' }}>
+                      Pull already-synced master data (parties, materials, destinations…) from the server into this system, and choose which modules show in the navbar.
+                    </p>
+                    <label className="form-label fw-semibold text-secondary mb-1" style={{ fontSize: '0.75rem' }}>
+                      Software Owner Password
+                    </label>
+                    <input
+                      type="password"
+                      className="form-control form-control-sm border-secondary-subtle"
+                      value={pullPassword}
+                      onChange={(e) => setPullPassword(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Enter') handleUnlockPullCard(); }}
+                      placeholder="Owner password required"
+                      autoComplete="off"
+                    />
+                    <button type="button" className="btn btn-sm btn-warning fw-semibold w-100 mt-2" onClick={handleUnlockPullCard}>
+                      🔓 Unlock
+                    </button>
+                  </div>
+                ) : (
+                  <>
+                    <div>
+                      <label className="form-label fw-semibold text-secondary mb-1" style={{ fontSize: '0.75rem' }}>
+                        Navbar Modules
+                      </label>
+                      <div className="d-flex gap-1">
+                        {[
+                          { id: 'boulders', label: 'Boulders' },
+                          { id: 'sales', label: 'Sales' },
+                          { id: 'both', label: 'Both' }
+                        ].map(opt => (
+                          <button
+                            key={opt.id}
+                            type="button"
+                            className={`btn btn-sm fw-semibold flex-grow-1 ${moduleMode === opt.id ? 'btn-primary' : 'btn-outline-secondary'}`}
+                            onClick={() => handleModuleModeChange(opt.id)}
+                          >
+                            {opt.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-success w-100 fw-semibold py-1.5"
+                      onClick={handlePullSyncedData}
+                      disabled={pullBusy}
+                    >
+                      {pullBusy ? '⏳ Pulling…' : '⬇️ Pull Synced Data to Local'}
+                    </button>
+
+                    {pullResult && (
+                      <div className="p-2 rounded bg-light border" style={{ fontSize: '0.75rem', lineHeight: 1.4 }}>
+                        {pullResult}
+                      </div>
+                    )}
+
+                    <div className="mt-auto pt-2">
+                      <button type="button" className="btn btn-sm btn-outline-secondary w-100 fw-semibold" onClick={() => { setPullUnlocked(false); setPullResult(''); }}>
+                        🔒 Lock
+                      </button>
+                    </div>
+                  </>
+                )}
               </div>
             </div>
           </div>
@@ -3065,6 +4009,135 @@ export default function Settings() {
               </div>
             </div>
           </div>
+
+          {/* Card 4: Critical Database Protection & Automated Backups */}
+          <div className="col-12">
+            <div className="card shadow-sm border-0" style={{ borderRadius: '8px', overflow: 'hidden', background: '#ffffff', border: '1px solid var(--line)' }}>
+              <div className="card-header border-0 py-2.5 px-3 d-flex justify-content-between align-items-center" style={{ backgroundColor: 'var(--surface-2)', borderBottom: '1.5px solid var(--line-soft)' }}>
+                <div className="d-flex align-items-center gap-2">
+                  <span className="fw-bold text-success" style={{ fontSize: '0.88rem' }}>🛡️ Database Protection &amp; Automated Daily Backups</span>
+                  <span className="badge bg-success-subtle text-success border border-success-subtle fw-semibold" style={{ fontSize: '0.68rem' }}>Active Protection</span>
+                </div>
+                <div className="d-flex align-items-center gap-2">
+                  <span className="badge bg-light text-secondary border px-2 py-1" style={{ fontSize: '0.70rem' }}>
+                    Rolling 30-Day Retention
+                  </span>
+                </div>
+              </div>
+              <div className="card-body p-3">
+                <div className="row g-3">
+                  {/* Left Column: Database Status & Integrity */}
+                  <div className="col-12 col-lg-7 d-flex flex-column gap-2.5">
+                    <div className="p-2.5 rounded bg-light border" style={{ fontSize: '0.80rem' }}>
+                      <div className="d-flex justify-content-between align-items-center mb-1">
+                        <span className="text-secondary fw-semibold">Database Integrity Health:</span>
+                        <span className={`fw-bold ${backupStatus?.integrity === 'HEALTHY' ? 'text-success' : 'text-danger'}`}>
+                          {backupStatus?.integrity === 'HEALTHY' ? '🟢 Verified Healthy (PRAGMA OK)' : backupStatus?.integrity ? `🔴 ${backupStatus.integrity}` : '⏳ Checking...'}
+                        </span>
+                      </div>
+                      <div className="d-flex justify-content-between align-items-center mb-1">
+                        <span className="text-secondary">Main Database Size:</span>
+                        <span className="fw-bold text-dark">
+                          {backupStatus?.databaseSize ? `${(backupStatus.databaseSize / 1024).toFixed(1)} KB` : 'N/A'}
+                        </span>
+                      </div>
+                      <div className="d-flex justify-content-between align-items-center mb-1">
+                        <span className="text-secondary">Hardware Crash Protection:</span>
+                        <span className="fw-bold text-primary">
+                          Atomic Temp-Write + Hardware fsync Flush
+                        </span>
+                      </div>
+                      <div className="d-flex justify-content-between align-items-center">
+                        <span className="text-secondary">Startup Auto-Recovery:</span>
+                        <span className="fw-bold text-success">
+                          Multi-Tier Fallback (Primary ➜ .bak ➜ Daily ➜ Slot)
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="d-flex gap-2 flex-wrap">
+                      <button
+                        type="button"
+                        className="btn btn-sm btn-success fw-bold px-3 py-1.5"
+                        onClick={handleCreateManualBackup}
+                        disabled={isBackingUp}
+                      >
+                        {isBackingUp ? 'Creating Verified Backup...' : '💾 Create Verified Backup Now'}
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-sm btn-outline-dark fw-bold px-3 py-1.5"
+                        onClick={handleOpenBackupFolder}
+                      >
+                        📁 Open Daily Backups Folder
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-sm btn-outline-primary fw-semibold px-3 py-1.5"
+                        onClick={handleVerifyDatabaseIntegrity}
+                        disabled={isVerifyingDb}
+                      >
+                        {isVerifyingDb ? 'Checking Integrity...' : '🔍 Deep Integrity Check'}
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-sm btn-outline-secondary fw-semibold px-2.5 py-1.5"
+                        onClick={refreshBackupStatus}
+                        title="Refresh backup status"
+                      >
+                        🔄 Refresh
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Right Column: Backup Telemetry */}
+                  <div className="col-12 col-lg-5 ps-lg-3">
+                    <div className="border rounded-2 p-3 bg-light h-100 d-flex flex-column justify-content-between">
+                      <div>
+                        <div className="fw-bold text-secondary mb-2" style={{ fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                          Verified Backup History
+                        </div>
+                        <div className="d-flex justify-content-between align-items-center py-1 border-bottom" style={{ fontSize: '0.78rem' }}>
+                          <span className="text-secondary">Backup Folder:</span>
+                          <span className="fw-semibold text-dark text-truncate ms-2" style={{ fontSize: '0.72rem', maxWidth: '200px' }} title={backupStatus?.mirrorDirectory || backupStatus?.backupDirectory}>
+                            {backupStatus?.mirrorDirectory || backupStatus?.backupDirectory || 'D:\\Weighbridge_Daily_Backups'}
+                          </span>
+                        </div>
+                        <div className="d-flex justify-content-between align-items-center py-1 border-bottom" style={{ fontSize: '0.78rem' }}>
+                          <span className="text-secondary">Retained Daily Backups:</span>
+                          <span className="fw-bold text-dark">
+                            {backupStatus?.totalDailyBackups ?? 0} files (Up to 30 days)
+                          </span>
+                        </div>
+                        <div className="d-flex justify-content-between align-items-center py-1 border-bottom" style={{ fontSize: '0.78rem' }}>
+                          <span className="text-secondary">Latest Daily Backup:</span>
+                          <span className="fw-semibold text-primary" style={{ fontSize: '0.74rem' }}>
+                            {backupStatus?.latestDailyBackup?.name || 'None yet today'}
+                          </span>
+                        </div>
+                        <div className="d-flex justify-content-between align-items-center py-1 border-bottom" style={{ fontSize: '0.78rem' }}>
+                          <span className="text-secondary">Shielded Immediate (.bak):</span>
+                          <span className="fw-semibold text-success">
+                            {backupStatus?.immediateBak ? `${(backupStatus.immediateBak.size / 1024).toFixed(1)} KB` : 'Active'}
+                          </span>
+                        </div>
+                        <div className="d-flex justify-content-between align-items-center py-1" style={{ fontSize: '0.78rem' }}>
+                          <span className="text-secondary">Background Guardian:</span>
+                          <span className="fw-bold text-success" style={{ fontSize: '0.74rem' }}>
+                            Every 30 Mins (Auto-Integrity &amp; Sync)
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="mt-3 p-2 bg-white border rounded text-secondary" style={{ fontSize: '0.70rem', lineHeight: '1.4' }}>
+                        🔒 <b>Corrupt-Proof Shield:</b> An existing healthy backup is NEVER overwritten by an empty or corrupted database file under any crash or shutdown event.
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
       )}
 
@@ -3244,6 +4317,24 @@ export default function Settings() {
                           <b>Exact Line Feeds</b> ensures the paper stops exactly at the perforation line so zero extra paper is wasted.
                         </div>
                       </div>
+
+                      <div className="col-12 col-md-12">
+                        <label className="form-label fw-semibold text-secondary mb-1" style={{ fontSize: '0.78rem' }}>
+                          Dot-Matrix Print Quality / Font Style (Draft vs Roman)
+                        </label>
+                        <select
+                          className="form-select form-select-sm border-secondary-subtle fw-bold"
+                          value={hardwarePrinterConfig.fontStyle || 'DRAFT'}
+                          onChange={(e) => setHardwarePrinterConfig({ ...hardwarePrinterConfig, fontStyle: e.target.value })}
+                        >
+                          <option value="DRAFT">⚡ High-Speed Draft (ESC/P Draft Mode — Fast &amp; Crisp — Recommended)</option>
+                          <option value="HSDRAFT">🚀 High-Speed Draft (Maximum Speed Mode)</option>
+                          <option value="ROMAN">🔤 Roman (Near Letter Quality / NLQ — Slower)</option>
+                        </select>
+                        <div className="text-secondary mt-1" style={{ fontSize: '0.72rem' }}>
+                          <b>High-Speed Draft</b> sends <code>ESC x 0</code> to keep TVS MSP 245 Star in Draft mode and prevents it from switching to Roman.
+                        </div>
+                      </div>
                     </>
                   )}
 
@@ -3365,13 +4456,13 @@ export default function Settings() {
                     onChange={(e) => handleTemplateChange(e.target.value)}
                   >
                     <optgroup label="Crystal Reports designs">
-                      {rptTemplates.map((tpl) => (
-                        <option key={tpl.id} value={tpl.id}>{tpl.name} — {getPaperForTemplate(tpl.id).label}</option>
+                      {rptTemplates.map((tpl, idx) => (
+                        <option key={`${tpl.id}-${idx}`} value={tpl.id}>{tpl.name} — {getPaperForTemplate(tpl.id).label}</option>
                       ))}
                     </optgroup>
                     <optgroup label="App designs">
-                      {appTemplates.map((tpl) => (
-                        <option key={tpl.id} value={tpl.id}>{tpl.name} — {getPaperForTemplate(tpl.id).label}</option>
+                      {appTemplates.map((tpl, idx) => (
+                        <option key={`${tpl.id}-${idx}`} value={tpl.id}>{tpl.name} — {getPaperForTemplate(tpl.id).label}</option>
                       ))}
                     </optgroup>
                   </select>
@@ -3472,6 +4563,20 @@ export default function Settings() {
                     <option value="HTML_DRIVER">📄 Silent HTML Driver Mode (Visual Graphics - Recommended for Samsung/HP/Laser/Inkjet)</option>
                     <option value="RAW_TEXT">⚡ Raw Text (ESC/P - DOT Matrix High Speed)</option>
                     <option value="DIALOG">🖨️ Ask Every Time (choose printer, paper &amp; copies)</option>
+                  </select>
+
+                  {/* How landscape slips reach this PC's printer */}
+                  <label className="form-label fw-semibold text-secondary mb-1 mt-3" style={{ fontSize: '0.78rem' }}>
+                    Landscape print method (this PC's printer)
+                  </label>
+                  <select
+                    className="form-select form-select-sm fw-semibold"
+                    value={landscapeMode}
+                    onChange={(e) => { setLandscapeMode(e.target.value); setLandscapeModeState(e.target.value); }}
+                  >
+                    {LANDSCAPE_MODES.map((m) => (
+                      <option key={m.value} value={m.value}>{m.label}</option>
+                    ))}
                   </select>
 
                   {/* Page header printed above the slip */}

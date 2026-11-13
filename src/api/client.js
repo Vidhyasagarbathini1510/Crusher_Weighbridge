@@ -1,5 +1,13 @@
 // SQLite-backed API client routing queries through secure Electron IPC bridge
 
+// Fixed DD-MM-YYYY HH:mm:ss (24h). toLocaleString() follows each PC's Windows region
+// and was misread with day/month swapped.
+function nowDdMmYyyy() {
+  const d = new Date();
+  const p = n => String(n).padStart(2, '0');
+  return `${p(d.getDate())}-${p(d.getMonth() + 1)}-${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
 export const api = {
   login: async (username, password) => {
     if (typeof window !== 'undefined' && window.electronAPI) {
@@ -100,6 +108,13 @@ export const api = {
     return true;
   },
 
+  clearCardCooldownCache: async () => {
+    if (window.electronAPI && window.electronAPI.clearCardCooldownCache) {
+      return window.electronAPI.clearCardCooldownCache();
+    }
+    return { success: true };
+  },
+
   // Pass { withImages: true } only when the caller actually renders the
   // snapshots. Hydrating them reads every photo off the disk and base64-encodes
   // it on the main process, which blocks the whole window while it runs.
@@ -125,12 +140,13 @@ export const api = {
           companyId: txData.company_id || txData.companyId || 'CRUSHER-3080',
           uuid: recordUuid,
           dc_num: txData.dc_num || txData.token || 'N/A',
-          date_time: txData.date_time || new Date().toLocaleString(),
+          date_time: txData.date_time || nowDdMmYyyy(),
           vehicle_no: txData.vehicle_no || txData.vehicle || '',
           vehicleNo: txData.vehicle_no || txData.vehicle || '',
           party: txData.party || txData.contractor || 'N/A',
           contractor: txData.contractor || txData.party || 'N/A',
-          quarry: txData.quarry || 'Noris',
+          quarry: (txData.quarry && txData.quarry.toUpperCase() !== 'CRUSHER') ? txData.quarry : (txData.source && txData.source.toUpperCase() !== 'CRUSHER' ? txData.source : 'QUARRY'),
+          source: (txData.source && txData.source.toUpperCase() !== 'CRUSHER') ? txData.source : (txData.quarry && txData.quarry.toUpperCase() !== 'CRUSHER' ? txData.quarry : 'QUARRY'),
           product: txData.product || txData.material || 'BOULDERS',
           material: txData.material || txData.product || 'BOULDERS',
           gross: Number(txData.gross || 0),
@@ -177,7 +193,7 @@ export const api = {
           companyId: txData.company_id || txData.companyId || 'CRUSHER-3080',
           uuid: recordUuid,
           dc_num: txData.dc_num || txData.token || 'N/A',
-          date_time: txData.date_time || new Date().toLocaleString(),
+          date_time: txData.date_time || nowDdMmYyyy(),
           saved_at: txData.saved_at || txData.savedAt || new Date().toISOString().replace('T', ' ').slice(0, 19),
           savedAt: txData.saved_at || txData.savedAt || new Date().toISOString().replace('T', ' ').slice(0, 19),
           saved_date: txData.saved_date || txData.savedDate || '',
@@ -188,7 +204,8 @@ export const api = {
           vehicleNo: txData.vehicle_no || txData.vehicle || '',
           contractor: txData.contractor || txData.party || 'N/A',
           party: txData.party || txData.contractor || 'N/A',
-          quarry: txData.quarry || 'Noris',
+          quarry: (txData.quarry && txData.quarry.toUpperCase() !== 'CRUSHER') ? txData.quarry : (txData.source && txData.source.toUpperCase() !== 'CRUSHER' ? txData.source : 'QUARRY'),
+          source: (txData.source && txData.source.toUpperCase() !== 'CRUSHER') ? txData.source : (txData.quarry && txData.quarry.toUpperCase() !== 'CRUSHER' ? txData.quarry : 'QUARRY'),
           material: txData.material || 'BOULDERS',
           gross: Number(txData.gross || 0),
           tare: Number(txData.tare || 0),
@@ -215,17 +232,33 @@ export const api = {
   addSalesUnits: async (txData, base64Image) => {
     // Separate party and customer_name strictly according to business requirements:
     // Case 1: LOCAL SALE - SAGAR -> party: "LOCAL SALE", customer_name: "SAGAR"
-    // Case 2: LOCAL SALE -> party: "LOCAL SALE", customer_name: ""
-    // Case 3: RAMESH -> party: "RAMESH", customer_name: ""
+    // Case 2: CASH PARTY - SAGAR -> party: "CASH PARTY", customer_name: "SAGAR"
+    // Case 3: CASH - SAGAR -> party: "CASH", customer_name: "SAGAR"
+    // Case 4: RAMESH -> party: "RAMESH", customer_name: ""
     const rawParty = String(txData.party || '').trim();
     let cleanParty = rawParty;
     let customerName = '';
     const localMatch = rawParty.match(/^LOCAL\s+SALE\s*-\s*(.*)$/i);
+    const cashPartyMatch = rawParty.match(/^CASH\s+PARTY\s*-\s*(.*)$/i);
+    const cashMatch = rawParty.match(/^CASH\s*-\s*(.*)$/i);
+
     if (localMatch) {
       cleanParty = 'LOCAL SALE';
       customerName = localMatch[1].trim();
+    } else if (cashPartyMatch) {
+      cleanParty = 'CASH PARTY';
+      customerName = cashPartyMatch[1].trim();
+    } else if (cashMatch && !/^CASH\s+PARTY/i.test(rawParty)) {
+      cleanParty = 'CASH';
+      customerName = cashMatch[1].trim();
     } else if (/^LOCAL\s+SALE$/i.test(rawParty)) {
       cleanParty = 'LOCAL SALE';
+      customerName = (txData.customer_name ? String(txData.customer_name).trim() : '');
+    } else if (/^CASH\s+PARTY$/i.test(rawParty)) {
+      cleanParty = 'CASH PARTY';
+      customerName = (txData.customer_name ? String(txData.customer_name).trim() : '');
+    } else if (/^CASH$/i.test(rawParty)) {
+      cleanParty = 'CASH';
       customerName = (txData.customer_name ? String(txData.customer_name).trim() : '');
     } else {
       cleanParty = rawParty;
@@ -255,7 +288,7 @@ export const api = {
           token: txData.dc_num || txData.dcNum || 'N/A',
           your_dc: (txData.your_dc && String(txData.your_dc).trim()) ? String(txData.your_dc).trim() : ((txData.yourDc && String(txData.yourDc).trim()) ? String(txData.yourDc).trim() : (txData.dc_num || txData.dcNum || '')),
           yourDc: (txData.your_dc && String(txData.your_dc).trim()) ? String(txData.your_dc).trim() : ((txData.yourDc && String(txData.yourDc).trim()) ? String(txData.yourDc).trim() : (txData.dc_num || txData.dcNum || '')),
-          date_time: txData.date_time || new Date().toLocaleString(),
+          date_time: txData.date_time || nowDdMmYyyy(),
           vehicle_no: txData.vehicle_no || txData.vehicle || '',
           vehicleNo: txData.vehicle_no || txData.vehicle || '',
           party: cleanParty,
@@ -327,7 +360,7 @@ export const api = {
           companyId: txData.company_id || txData.companyId || 'CRUSHER-3080',
           uuid: recordUuid,
           dc_num: txData.dc_num || txData.dcNum || 'N/A',
-          date_time: txData.date_time || new Date().toLocaleString(),
+          date_time: txData.date_time || nowDdMmYyyy(),
           vehicle_no: txData.vehicle_no || txData.vehicle || '',
           vehicleNo: txData.vehicle_no || txData.vehicle || '',
           party: txData.party || 'YARD',
@@ -510,6 +543,13 @@ export const api = {
     return { success: false, error: 'Desktop bridge not available' };
   },
 
+  pullSyncedMasterData: async () => {
+    if (window.electronAPI && window.electronAPI.pullSyncedMasterData) {
+      return window.electronAPI.pullSyncedMasterData();
+    }
+    return { success: false, error: 'Desktop bridge not available' };
+  },
+
   resetSyncStatus: async () => {
     if (window.electronAPI && window.electronAPI.resetSyncStatus) {
       return window.electronAPI.resetSyncStatus();
@@ -628,5 +668,33 @@ export const api = {
       return window.electronAPI.deleteTransporterVehicle(id);
     }
     return false;
+  },
+
+  getBackupStatus: async () => {
+    if (window.electronAPI && window.electronAPI.getBackupStatus) {
+      return window.electronAPI.getBackupStatus();
+    }
+    return { success: false, error: 'Desktop bridge not available' };
+  },
+
+  createBackup: async (reason = 'manual') => {
+    if (window.electronAPI && window.electronAPI.createBackup) {
+      return window.electronAPI.createBackup(reason);
+    }
+    return { success: false, error: 'Desktop bridge not available' };
+  },
+
+  verifyDatabaseIntegrity: async () => {
+    if (window.electronAPI && window.electronAPI.verifyDatabaseIntegrity) {
+      return window.electronAPI.verifyDatabaseIntegrity();
+    }
+    return { ok: true, details: 'Web mock' };
+  },
+
+  openBackupFolder: async () => {
+    if (window.electronAPI && window.electronAPI.openBackupFolder) {
+      return window.electronAPI.openBackupFolder();
+    }
+    return { success: false, error: 'Desktop bridge not available' };
   }
 };

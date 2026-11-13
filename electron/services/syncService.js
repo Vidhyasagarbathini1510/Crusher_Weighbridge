@@ -561,7 +561,12 @@ function uploadRecord(syncUrl, record) {
         customer_name: customerName,
         customerName: customerName,
         contractor: record.contractor || record.party || '',
-        quarry: record.quarry || '',
+        quarry: (() => {
+          const isBoulder = record._source === 'boulders' || (record.material || '').toUpperCase() === 'BOULDERS' || (record.product || '').toUpperCase() === 'BOULDERS';
+          const q = (record.quarry || record.source || '').trim();
+          if (q && q.toUpperCase() !== 'CRUSHER') return q;
+          return isBoulder ? 'QUARRY' : '';
+        })(),
         product: validMat,
         material: validMat,
         contractor_material: validMat,
@@ -572,8 +577,13 @@ function uploadRecord(syncUrl, record) {
         net: Number(nettValStr),
         driver: record.driver || '',
         transporter: record.transporter || '',
-        destination: record.destination || '',
-        source: record.source || '',
+        destination: record.destination || ((record._source === 'boulders' || (record.material || '').toUpperCase() === 'BOULDERS') ? 'HOPPER' : ''),
+        source: (() => {
+          const isBoulder = record._source === 'boulders' || (record.material || '').toUpperCase() === 'BOULDERS' || (record.product || '').toUpperCase() === 'BOULDERS';
+          const s = (record.source || record.quarry || '').trim();
+          if (s && s.toUpperCase() !== 'CRUSHER') return s;
+          return isBoulder ? 'QUARRY' : (record.source || '');
+        })(),
         unit_type: record.unit_type || record.unitType || 'units',
         units_val: Number(record.units_val || record.unitsVal || 0),
         rate: (() => {
@@ -1151,11 +1161,71 @@ async function syncServerEdits() {
   }
 }
 
+// Manual "Pull Synced Data" for a second machine on the same company ID. The
+// /pending feed only carries master data that no machine has acked yet, so once
+// one machine acks it the others never see it. /synced returns everything
+// already acked; it is pulled page by page and stored with the same upsert used
+// for /pending. No ACK is sent — this data is already marked synced server side.
+const SYNCED_MASTER_URL = 'https://crusher.norissolutions.com/backend/api/weighbridge/synced';
+const SYNCED_SECTIONS = ['debitors', 'materials', 'destinations', 'transporters', 'contractors', 'contractor_materials', 'sources', 'drivers'];
+let isSyncedPulling = false;
+
+async function pullSyncedMasterData() {
+  if (isSyncedPulling) return { success: false, error: 'Pull already in progress' };
+  isSyncedPulling = true;
+  try {
+    const settings = db.getSettings();
+    const companyId = settings.company_id || 'CRUSHER-3080';
+    const merged = {};
+    SYNCED_SECTIONS.forEach(k => { merged[k] = []; });
+
+    for (let page = 1; page <= 50; page++) {
+      const url = injectCompanyId(`${SYNCED_MASTER_URL}?page=${page}`, companyId);
+      const data = await fetchJson(url);
+      if (!data || typeof data !== 'object') {
+        return { success: false, error: 'Empty or invalid response from server' };
+      }
+      SYNCED_SECTIONS.forEach(k => {
+        const rows = k === 'contractor_materials' ? (data.contractor_materials || data.contractorMaterials) : data[k];
+        if (Array.isArray(rows)) merged[k].push(...rows);
+      });
+      if (!data.pagination || !data.pagination.hasMore) break;
+    }
+
+    const counts = {};
+    SYNCED_SECTIONS.forEach(k => { counts[k] = merged[k].length; });
+    const total = Object.values(counts).reduce((a, b) => a + b, 0);
+    if (total === 0) return { success: true, counts, message: 'Server has no synced data for this company' };
+
+    if (!db.savePendingData(merged)) {
+      return { success: false, error: 'Failed to store synced data in the local database' };
+    }
+    console.log('[Sync Service] Pulled synced master data into local database:', JSON.stringify(counts));
+
+    try {
+      const { BrowserWindow } = require('electron');
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (!win.isDestroyed()) win.webContents.send('master-data:synced');
+      }
+    } catch (e) {
+      console.error('[Sync Service] Error broadcasting sync event:', e.message);
+    }
+
+    return { success: true, counts };
+  } catch (err) {
+    console.error('[Sync Service] Error pulling synced master data:', err.message);
+    return { success: false, error: err.message };
+  } finally {
+    isSyncedPulling = false;
+  }
+}
+
 module.exports = {
   startSyncService,
   stopSyncService,
   runSyncCycle,
   syncMasterData,
+  pullSyncedMasterData,
   syncServerEdits,
   uploadRecord
 };

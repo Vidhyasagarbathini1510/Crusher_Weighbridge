@@ -136,15 +136,19 @@ class RfidSerialReader extends EventEmitter {
           this.isConnecting = false;
           if (!this.isReading || !this.port) return;
           if (err) {
-            console.error(`[RfidReader] Failed to open port ${this.comPort}:`, err.message);
+            if (this._lastReportedError !== err.message) {
+              this._lastReportedError = err.message;
+              console.warn(`[RfidReader] Port ${this.comPort} unavailable: ${err.message}. (Auto-retrying in background)`);
+            }
             if (this.port) {
               try { this.port.destroy(); } catch (_) {}
               this.port = null;
             }
             this.emit('status', { connected: false, error: err.message });
-            this._scheduleReconnect();
+            this._scheduleReconnect(10000);
             return;
           }
+          this._lastReportedError = null;
 
           console.log(`[RfidReader] Port ${this.comPort} opened successfully.`);
           this.emit('status', { connected: true, port: this.comPort });
@@ -173,7 +177,10 @@ class RfidSerialReader extends EventEmitter {
         this.asciiLineBuf = lines.pop() || '';
 
         for (let rawLine of lines) {
-          const cleaned = rawLine.replace(/[\x00-\x1F\x7F]/g, '').trim();
+          let cleaned = rawLine.replace(/[\x00-\x1F\x7F]/g, '').trim();
+          if (/^\d{1,10}$/.test(cleaned)) {
+            cleaned = cleaned.padStart(10, '0');
+          }
           if (cleaned.length >= 3 && cleaned.length <= 64 && /^[A-Za-z0-9\-\_]+$/.test(cleaned)) {
             console.log(`[RfidReader] Scanned ASCII RFID Tag: ${cleaned}`);
             this.emit('card', {

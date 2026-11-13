@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useLocation } from 'react-router-dom';
 import { api } from '../api/client.js';
 import CameraPlayer from '../components/CameraPlayer.jsx';
@@ -10,7 +10,7 @@ import { printTicket, getSelectedTemplate, getDcPrintTemplate, getGatePassTempla
 import { captureCameraSnapshot } from '../utils/cameraSnapshot.js';
 import { useScale } from '../context/ScaleContext.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
-import { getVehicleOptionMode, filterVehiclesBySetting, fetchAllTransactions, cleanupVehicleOnWeighmentCompletion } from '../utils/vehicleFilterUtil.js';
+import { getVehicleOptionMode, filterVehiclesBySetting, uniqueVehicleNumbers, fetchAllTransactions, cleanupVehicleOnWeighmentCompletion } from '../utils/vehicleFilterUtil.js';
 import { PRINT_ONCE_MODES, getPrintOnceHideMode } from '../utils/duplicateBillUtil.js';
 
 
@@ -49,6 +49,20 @@ export function calculateTransportAmount(quantity, rate, measurement, netWeightK
   }
 }
 
+export const isCashOrLocalParty = (p) => {
+  if (!p) return false;
+  const upper = String(p).trim().toUpperCase();
+  return upper === 'LOCAL SALE' || upper.startsWith('LOCAL SALE') ||
+         upper === 'CASH PARTY' || upper.startsWith('CASH PARTY') ||
+         upper === 'CASH' || upper.startsWith('CASH');
+};
+
+// Only CASH and CASH PARTY get the GST highlight on the Party field.
+const isCashParty = (p) => {
+  const upper = String(p || '').trim().toUpperCase();
+  return upper === 'CASH' || upper === 'CASH PARTY';
+};
+
 export default function SalesWeighmentUnits() {
   const { user } = useAuth();
   const [cameras, setCameras] = useState(null);
@@ -63,10 +77,17 @@ export default function SalesWeighmentUnits() {
   const isLocked = Boolean(activeLoadingSlip);
   const {
     vehicle, setVehicle,
-    gross: grossVal, setGross: setGrossVal,
-    tare: tareVal, setTare: setTareVal,
-    nett: nettVal, setNett: setNettVal
+    gross: scaleGross, setGross: setGrossVal,
+    tare: scaleTare, setTare: setTareVal,
+    nett: scaleNett, setNett: setNettVal
   } = useScale();
+  // The scale context keeps updating gross on every live reading, even after
+  // Save. Once saved, the form (and every amount derived from it) uses these
+  // frozen weights until the form is reset for the next vehicle.
+  const [frozenWeights, setFrozenWeights] = useState(null);
+  const grossVal = frozenWeights ? frozenWeights.gross : scaleGross;
+  const tareVal = frozenWeights ? frozenWeights.tare : scaleTare;
+  const nettVal = frozenWeights ? frozenWeights.nett : scaleNett;
 
   // Read incoming vehicle from location state if passed from Vehicles / Loading Slip
   useEffect(() => {
@@ -126,6 +147,26 @@ export default function SalesWeighmentUnits() {
   const [poDate, setPoDate] = useState(todayForDateInput);
   const [payment, setPayment] = useState('Credit');
   const [localScaleMode, setLocalScaleMode] = useState(false);
+  const [showLocalRate, setShowLocalRate] = useState(false);
+  const [rateCheckboxEnabled, setRateCheckboxEnabled] = useState(() => localStorage.getItem('noris_rate_checkbox') === 'true');
+  // While the Rate checkbox is ticked the user owns the rate: master-data auto-fills must not overwrite it
+  const rateLockedByUserRef = useRef(false);
+  rateLockedByUserRef.current = rateCheckboxEnabled && showLocalRate;
+  const masterRateRef = useRef('');
+  // A rate typed by the user is kept (even after unticking) until the party / material changes or the form resets
+  const userRateKeyRef = useRef(null);
+  const currentRateKey = `${party}|${material}`;
+  const currentRateKeyRef = useRef(currentRateKey);
+  currentRateKeyRef.current = currentRateKey;
+  const applyMasterRate = (v) => {
+    masterRateRef.current = v;
+    if (rateLockedByUserRef.current) return;
+    if (userRateKeyRef.current !== null && userRateKeyRef.current === currentRateKeyRef.current) return;
+    setRate(v);
+  };
+  const toggleLocalRate = (on) => {
+    setShowLocalRate(on);
+  };
   const [layoutDesign, setLayoutDesign] = useState(
     () => localStorage.getItem('noris_sales_layout_design') || 'compact'
   );
@@ -176,7 +217,10 @@ export default function SalesWeighmentUnits() {
   const [vehicleTares, setVehicleTares] = useState([]);
   const [msg, setMsg] = useState('');
   const [allDebitors, setAllDebitors] = useState([]);
-  const [partiesList, setPartiesList] = useState(['LOCAL SALE']);
+  const [partiesList, setPartiesList] = useState(() => {
+    const en = localStorage.getItem('noris_enable_cash_parties') === 'true';
+    return en ? ['LOCAL SALE', 'CASH PARTY', 'CASH'] : ['LOCAL SALE'];
+  });
   const [allMaterials, setAllMaterials] = useState([]);
   const [availableMaterials, setAvailableMaterials] = useState([]);
   const [allDestinations, setAllDestinations] = useState([]);
@@ -187,6 +231,10 @@ export default function SalesWeighmentUnits() {
 
   const [savedTicket, setSavedTicket] = useState(null);
   const [isSaved, setIsSaved] = useState(false);
+  // After Save the form shows the saved weights; the live scale and master-data
+  // reloads must not overwrite them until the form is reset for the next vehicle.
+  const isSavedRef = useRef(false);
+  useEffect(() => { isSavedRef.current = isSaved; }, [isSaved]);
   const [errors, setErrors] = useState({});
 
   // Print Once Hide Mode (STAY vs HIDE)
@@ -243,8 +291,8 @@ export default function SalesWeighmentUnits() {
 
       getVehicleOptionMode().then(mode => {
         const filteredObjs = filterVehiclesBySetting(allOtherVehObjs, txs, mode);
-        const vehNos = filteredObjs.map(t => (t.vehicle || t.vehicleNo || '').trim().toUpperCase());
-        const combined = [...new Set([...pendingVehicles, ...vehNos])].filter(Boolean);
+        const vehNos = uniqueVehicleNumbers(filteredObjs.map(t => (t.vehicle || t.vehicleNo || '').trim().toUpperCase()));
+        const combined = uniqueVehicleNumbers([...pendingVehicles, ...vehNos]);
 
         const menuMode = localStorage.getItem('noris_loading_slip_menu_mode') || (localStorage.getItem('noris_enable_loading_slip') === 'true' ? 'both' : 'vehicles');
 
@@ -261,9 +309,13 @@ export default function SalesWeighmentUnits() {
       });
 
 
-      // Parties strictly from debitors master data (synced from server endpoint) + LOCAL SALE
-      const debitorsParties = (debitorsData || []).map(d => d.party).filter(Boolean);
-      const uniqueParties = [...new Set(['LOCAL SALE', ...debitorsParties])];
+      // Parties strictly from debitors master data (synced from server endpoint) + LOCAL SALE (and CASH PARTY, CASH if enabled)
+      const enableCashParties = localStorage.getItem('noris_enable_cash_parties') === 'true';
+      const defaultPartyOptions = enableCashParties
+        ? ['LOCAL SALE', 'CASH PARTY', 'CASH']
+        : ['LOCAL SALE'];
+      const debitorsParties = (debitorsData || []).map(d => d.party || d.vendorName).filter(Boolean);
+      const uniqueParties = [...new Set([...defaultPartyOptions, ...debitorsParties])];
       setPartiesList(uniqueParties);
 
       // Materials from local SQLite
@@ -333,6 +385,10 @@ export default function SalesWeighmentUnits() {
       loadMasterData();
       const m = localStorage.getItem('noris_print_once_hide_mode') || PRINT_ONCE_MODES.STAY;
       setPrintOnceHideMode(m);
+      setGstHighlightMode(localStorage.getItem('noris_gst_party_highlight') || 'all');
+      setRateCheckboxEnabled(localStorage.getItem('noris_rate_checkbox') === 'true');
+      setShowWeighTimes(localStorage.getItem('noris_sales_show_weigh_times') === 'true');
+      setDcDisplayMode(localStorage.getItem('noris_sales_dc_display_mode') || 'always');
     };
     window.addEventListener('loading-slip-saved', onWorkflowChanged);
     window.addEventListener('workflow-setting-changed', onWorkflowChanged);
@@ -376,6 +432,7 @@ export default function SalesWeighmentUnits() {
 
   // Dynamically update materials list strictly based on selected Party
   useEffect(() => {
+    if (isSavedRef.current) return; // saved form stays as saved (see isSavedRef)
     if (!party) {
       const allMatNames = [...new Set(allMaterials.map(m => m.material))].filter(Boolean);
       setAvailableMaterials(allMatNames);
@@ -383,7 +440,7 @@ export default function SalesWeighmentUnits() {
     }
 
     const partyUpper = party.trim().toUpperCase();
-    const isLocalSale = partyUpper === 'LOCAL SALE' || partyUpper.startsWith('LOCAL SALE');
+    const isLocalSale = isCashOrLocalParty(partyUpper);
     const matchedMaterials = allMaterials.filter(
       m => m.party && m.party.trim().toUpperCase() === partyUpper
     );
@@ -407,14 +464,14 @@ export default function SalesWeighmentUnits() {
         setMaterial(existingMatch);
         const matchEntry = matchedMaterials.find(m => (m.material || '').toUpperCase() === existingMatch.toUpperCase());
         if (matchEntry && matchEntry.rate !== undefined && matchEntry.rate !== null) {
-          setRate(matchEntry.rate.toString());
+          applyMasterRate(matchEntry.rate.toString());
         }
       } else if (!material) {
         const firstMat = matNames[0];
         setMaterial(firstMat);
         const matchEntry = matchedMaterials.find(m => m.material === firstMat);
         if (matchEntry && matchEntry.rate !== undefined && matchEntry.rate !== null) {
-          setRate(matchEntry.rate.toString());
+          applyMasterRate(matchEntry.rate.toString());
         }
       }
     }
@@ -423,7 +480,7 @@ export default function SalesWeighmentUnits() {
   // Dynamically update destinations list based on selected Party while keeping 'OUT' option
   useEffect(() => {
     const partyUpper = (party || '').trim().toUpperCase();
-    const isLocalSale = partyUpper === 'LOCAL SALE' || partyUpper.startsWith('LOCAL SALE');
+    const isLocalSale = isCashOrLocalParty(partyUpper);
     const matchedDestinations = allDestinations.filter(
       d => d.party && d.party.trim().toUpperCase() === partyUpper
     );
@@ -586,6 +643,7 @@ export default function SalesWeighmentUnits() {
 
   // Auto-fill tare and transporter when vehicle is selected & perform order validation
   useEffect(() => {
+    if (isSavedRef.current) return; // saved form stays as saved (see isSavedRef)
     if (!vehicle) {
       setSavedWeight('');
       setTareVal('');
@@ -594,13 +652,16 @@ export default function SalesWeighmentUnits() {
       return;
     }
     const cleanVehicle = vehicle.replace(/\s+/g, '').toUpperCase();
-    if (cleanVehicle !== lastVehicleRef.current) {
+    const vehicleChanged = cleanVehicle !== lastVehicleRef.current;
+    if (vehicleChanged) {
       lastVehicleRef.current = cleanVehicle;
       userManuallyChangedMaterialRef.current = false;
     }
 
-    // Auto-fill Transporter mapped to this vehicle
-    const storedTransporterVehicles = localStorage.getItem('noris_transporter_vehicles');
+    // Auto-fill Transporter mapped to this vehicle — only when the vehicle changes.
+    // This effect also re-runs on party / master-data reloads; refilling then would
+    // overwrite a transporter the operator picked by hand.
+    const storedTransporterVehicles = vehicleChanged ? localStorage.getItem('noris_transporter_vehicles') : null;
     if (storedTransporterVehicles) {
       try {
         const transList = JSON.parse(storedTransporterVehicles);
@@ -654,7 +715,7 @@ export default function SalesWeighmentUnits() {
             (m.material || '').trim().toUpperCase() === vehMat.toUpperCase()
           );
           if (matchEntry && matchEntry.rate !== undefined && matchEntry.rate !== null) {
-            setRate(matchEntry.rate.toString());
+            applyMasterRate(matchEntry.rate.toString());
           }
         }
       }
@@ -683,6 +744,7 @@ export default function SalesWeighmentUnits() {
 
   // Auto-detect and prefill pending Loading Slip for this vehicle
   useEffect(() => {
+    if (isSavedRef.current) return; // saved form stays as saved (see isSavedRef)
     if (!vehicle || !vehicle.trim()) {
       setActiveLoadingSlip(null);
       return;
@@ -699,7 +761,15 @@ export default function SalesWeighmentUnits() {
 
         if (hit) {
           setActiveLoadingSlip(hit);
-                if (hit.party) {
+          const rawBType = hit.billing_type || hit.billingType || hit.bill_type || hit.billType || '';
+          if (rawBType) {
+            const isGst = String(rawBType).toUpperCase().includes('GST') && !String(rawBType).toUpperCase().includes('NON');
+            setBillType(isGst ? 'GST' : 'NON-GST');
+          }
+          if (hit.gstin || hit.party_gstin || hit.partyGstin) {
+            setPartyGstin(hit.gstin || hit.party_gstin || hit.partyGstin);
+          }
+          if (hit.party) {
             setParty(hit.party);
             setPartiesList(prev => {
               const hasIt = prev.some(p => p.trim().toUpperCase() === hit.party.trim().toUpperCase());
@@ -719,7 +789,7 @@ export default function SalesWeighmentUnits() {
                 (m.material || '').trim().toUpperCase() === hitMat.toUpperCase()
               );
               if (matchEntry && matchEntry.rate !== undefined && matchEntry.rate !== null) {
-                setRate(matchEntry.rate.toString());
+                applyMasterRate(matchEntry.rate.toString());
               }
             }
           }
@@ -729,7 +799,7 @@ export default function SalesWeighmentUnits() {
           if (hit.source) {
             setSource(hit.source.trim());
           }
-          const isHitLocal = hit.party && (hit.party.trim().toUpperCase() === 'LOCAL SALE' || hit.party.trim().toUpperCase().startsWith('LOCAL SALE'));
+          const isHitLocal = hit.party && isCashOrLocalParty(hit.party);
           if (hit.payment && hit.payment.trim()) {
             const slipPay = hit.payment.trim();
             if (isHitLocal) {
@@ -783,7 +853,7 @@ export default function SalesWeighmentUnits() {
         const numeric = data.value.replace(/[^0-9.-]/g, '');
         if (numeric) {
           setNetronWeight(numeric);
-          if (!manualMode) {
+          if (!manualMode && !isSavedRef.current) {
             const liveNum = parseFloat(numeric) || 0;
             const savedNum = parseFloat(savedWeight) || 0;
             if (savedNum > 0 && liveNum > 0) {
@@ -814,6 +884,7 @@ export default function SalesWeighmentUnits() {
 
   // Calculate Payment Details & Auto-balance Cash, UPI, and Credit
   useEffect(() => {
+    if (frozenWeights) return; // saved amounts stay exactly as saved
     const r = parseFloat(rate) || 0;
     const n = parseFloat(nettVal) || 0;
     const u = parseFloat(unitsVal) || 0;
@@ -855,7 +926,7 @@ export default function SalesWeighmentUnits() {
       const remaining = Math.max(0, gt - cashNum - upiNum);
       setCreditAmount(remaining > 0 ? remaining.toFixed(2) : '0');
     }
-  }, [rate, nettVal, unitsVal, unitType, transport, discount, royaltyAmount, payment]);
+  }, [rate, nettVal, unitsVal, unitType, transport, discount, royaltyAmount, payment, frozenWeights]);
 
   const handlePaymentModeChange = (mode) => {
     userManuallyEditedSplitRef.current = false;
@@ -928,52 +999,159 @@ export default function SalesWeighmentUnits() {
 
   const [partyGstin, setPartyGstin] = useState('');
 
-  // Auto-detect GST vs Non-GST & open payment calculation when LOCAL SALE or LOCAL SALE - <Name> is selected
+  // GST highlight on the Party field (Settings > Vehicle & Workflow):
+  // 'off' = never, 'cash' = only CASH / CASH PARTY, 'all' = any GST party.
+  const [gstHighlightMode, setGstHighlightMode] = useState(() => localStorage.getItem('noris_gst_party_highlight') || 'all');
+
+  // Settings → "DC Number Display": 'always' shows the next DC while filling the form;
+  // 'after_save' keeps the box empty until Save, then shows the DC it was saved as.
+  const [dcDisplayMode, setDcDisplayMode] = useState(() => localStorage.getItem('noris_sales_dc_display_mode') || 'always');
+  const hideDcUntilSave = dcDisplayMode === 'after_save';
+  const shownDcNum = hideDcUntilSave ? (savedTicket ? savedTicket.dcNum : '') : dcNum;
+  const showDcField = !hideDcUntilSave || Boolean(savedTicket);
+
+  // Settings → "Gross & Tare Times": date & time shown under the Gross / Tare boxes
+  const [showWeighTimes, setShowWeighTimes] = useState(() => localStorage.getItem('noris_sales_show_weigh_times') === 'true');
+  const [clockNow, setClockNow] = useState(() => new Date());
   useEffect(() => {
+    if (!showWeighTimes || isSaved) return;
+    const id = setInterval(() => setClockNow(new Date()), 1000);
+    return () => clearInterval(id);
+  }, [showWeighTimes, isSaved]);
+
+  // When the first weight (vehicle tare record / loading slip) was taken — same lookup as Save
+  const firstWeighTime = useMemo(() => {
+    const key = (vehicle || '').trim().toUpperCase().replace(/\s+/g, '');
+    if (!key) return '';
+    let localTares = [];
+    try { localTares = JSON.parse(localStorage.getItem('noris_vehicle_tares') || '[]'); } catch (e) { }
+    const matched = [...vehicleTares, ...localTares].find(
+      vt => vt.vehicle && vt.vehicle.replace(/\s+/g, '').toUpperCase() === key
+    );
+    if (matched) {
+      const d = matched.date || matched.tare_date || matched.date_time || '';
+      const t = matched.time || matched.tare_time || '';
+      return [d, t].filter(Boolean).join(' ');
+    }
+    return activeLoadingSlip?.date_time || '';
+  }, [vehicle, vehicleTares, activeLoadingSlip]);
+
+  // Only the time part is shown (e.g. "10:13:21" from "03-11-2026 10:13:21")
+  // Seconds are dropped here ("10:13") — this display only
+  const timeOnly = (dt) => {
+    const m = String(dt || '').match(/\d{1,2}:\d{2}(?::\d{2})?(?:\s*[AaPp][Mm])?/);
+    return m ? m[0].replace(/^(\d{1,2}:\d{2}):\d{2}/, '$1') : '';
+  };
+  const dateOnly = (dt) => {
+    const m = String(dt || '').match(/\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4}/);
+    return m ? m[0] : '';
+  };
+  const weighDateTimes = (() => {
+    if (!showWeighTimes) return { gross: '', tare: '' };
+    if (savedTicket) {
+      return {
+        gross: savedTicket.date_time || '',
+        tare: [savedTicket.tare_date, savedTicket.tare_time].filter(Boolean).join(' ')
+      };
+    }
+    const pad = n => String(n).padStart(2, '0');
+    const now = `${pad(clockNow.getDate())}-${pad(clockNow.getMonth() + 1)}-${clockNow.getFullYear()} ${pad(clockNow.getHours())}:${pad(clockNow.getMinutes())}:${pad(clockNow.getSeconds())}`;
+    const first = parseFloat(savedWeight) || 0;
+    if (first > 0) {
+      // The first weight sits on whichever side is lower/higher; the live side is "now"
+      const firstIsTare = first === (parseFloat(tareVal) || 0);
+      return firstIsTare
+        ? { gross: grossVal ? now : '', tare: firstWeighTime }
+        : { gross: firstWeighTime, tare: tareVal ? now : '' };
+    }
+    return { gross: (parseFloat(grossVal) || 0) > 0 ? now : '', tare: '' };
+  })();
+
+  const weighTimes = { gross: timeOnly(weighDateTimes.gross), tare: timeOnly(weighDateTimes.tare) };
+  const weighDates = { gross: dateOnly(weighDateTimes.gross), tare: dateOnly(weighDateTimes.tare) };
+  const weighDateStyle = { fontSize: '0.7rem', fontWeight: 600, color: 'var(--ink)', marginTop: '3px', whiteSpace: 'nowrap' };
+  const renderWeighTime = (key) => (
+    <>
+      <div className="text-center" style={weighDateStyle}>{weighDates[key]}</div>
+      <div className="text-center" style={{ ...weighTimeStyle, marginTop: 0 }}>{weighTimes[key]}</div>
+    </>
+  );
+
+  const weighTimeStyle = { fontSize: '0.95rem', fontWeight: 700, color: 'var(--ink)', marginTop: '3px', minHeight: '1.2rem', whiteSpace: 'nowrap' };
+  const showGstHighlight = !!party && billType === 'GST' &&
+    (gstHighlightMode === 'all' || (gstHighlightMode === 'cash' && isCashParty(party)));
+
+  // Rate checkbox starts unticked for each party; user selects it
+  useEffect(() => { setShowLocalRate(false); }, [party]);
+
+  // Auto-detect GST vs Non-GST & open payment calculation for selected party
+  useEffect(() => {
+    if (isSavedRef.current) return; // saved form stays as saved (see isSavedRef)
     userManuallyEditedSplitRef.current = false;
-    const isLocal = party && (party.trim().toUpperCase() === 'LOCAL SALE' || party.trim().toUpperCase().startsWith('LOCAL SALE'));
+    const isLocal = isCashOrLocalParty(party);
+
     if (isLocal) {
       setLocalScaleMode(true);
-      setBillType('NON-GST');
-      setPartyGstin('');
       setPayment('Cash');
     } else {
       setLocalScaleMode(false);
       if (party) {
         setPayment('Credit');
       }
-      if (party) {
-        const matchedDebitor = (allDebitors || []).find(
-          d => d.party && d.party.trim().toUpperCase() === party.trim().toUpperCase()
-        );
-        if (matchedDebitor) {
-          const gstinVal = matchedDebitor.gstin || matchedDebitor.gst || '';
-          setPartyGstin(gstinVal);
-          const debPhone = matchedDebitor.phone || matchedDebitor.phoneNumber || matchedDebitor.mobile || matchedDebitor.contact_number || '';
-          if (debPhone) {
-            setPhone(String(debPhone).trim());
-          }
+    }
 
-          const bType = matchedDebitor.billingType || matchedDebitor.billing_type;
-          if (bType) {
-            const normBType = String(bType).trim().toUpperCase();
-            setBillType(normBType.includes('GST') && !normBType.includes('NON') ? 'GST' : 'NON-GST');
-          } else if (matchedDebitor.gstSale !== undefined && matchedDebitor.gstSale !== null) {
-            const isGst = matchedDebitor.gstSale === true || String(matchedDebitor.gstSale).toLowerCase() === 'true' || matchedDebitor.gstSale === 1;
-            setBillType(isGst ? 'GST' : 'NON-GST');
-          } else {
-            setBillType(gstinVal ? 'GST' : 'NON-GST');
-          }
+    if (party) {
+      const partyUpper = party.trim().toUpperCase();
+      // Match against master debitors by party or vendorName. Exact names win
+      // over prefix matches, otherwise "CASH PARTY" resolves to the "CASH" debitor.
+      // When the same name exists twice, the most recently created (highest id) wins.
+      const debitorNames = d => [(d.party || '').trim().toUpperCase(), (d.vendorName || '').trim().toUpperCase()];
+      const newest = list => list.reduce((best, d) => (!best || Number(d.id) > Number(best.id) ? d : best), null);
+      const matchedDebitor =
+        newest((allDebitors || []).filter(d => debitorNames(d).some(n => n && n === partyUpper))) ||
+        newest((allDebitors || []).filter(d => debitorNames(d).some(n => n && partyUpper.startsWith(n))));
+
+      const slipBType = activeLoadingSlip?.billing_type || activeLoadingSlip?.billingType || activeLoadingSlip?.bill_type || activeLoadingSlip?.billType;
+
+      if (matchedDebitor) {
+        const rawGstin = (matchedDebitor.gstin || matchedDebitor.gst || '').trim();
+        const validGstin = (rawGstin && rawGstin !== '-' && rawGstin !== 'N/A' && rawGstin !== 'null' && rawGstin !== 'undefined') ? rawGstin : '';
+        setPartyGstin(validGstin);
+
+        const debPhone = matchedDebitor.phone || matchedDebitor.phoneNumber || matchedDebitor.mobile || matchedDebitor.contact_number || '';
+        if (debPhone) {
+          setPhone(String(debPhone).trim());
+        }
+
+        const bType = matchedDebitor.billingType || matchedDebitor.billing_type;
+        if (bType) {
+          const normBType = String(bType).trim().toUpperCase();
+          setBillType(normBType.includes('GST') && !normBType.includes('NON') ? 'GST' : 'NON-GST');
+        } else if (matchedDebitor.gstSale !== undefined && matchedDebitor.gstSale !== null) {
+          const isGst = matchedDebitor.gstSale === true || String(matchedDebitor.gstSale).toLowerCase() === 'true' || matchedDebitor.gstSale === 1;
+          setBillType(isGst ? 'GST' : 'NON-GST');
+        } else if (validGstin) {
+          setBillType('GST');
+        } else if (slipBType) {
+          const isGst = String(slipBType).toUpperCase().includes('GST') && !String(slipBType).toUpperCase().includes('NON');
+          setBillType(isGst ? 'GST' : 'NON-GST');
+        } else {
+          setBillType('NON-GST');
+        }
+      } else {
+        if (slipBType) {
+          const isGst = String(slipBType).toUpperCase().includes('GST') && !String(slipBType).toUpperCase().includes('NON');
+          setBillType(isGst ? 'GST' : 'NON-GST');
         } else {
           setPartyGstin('');
           setBillType('NON-GST');
         }
-      } else {
-        setPartyGstin('');
-        setBillType('NON-GST');
       }
+    } else {
+      setPartyGstin('');
+      setBillType('NON-GST');
     }
-  }, [party, allDebitors]);
+  }, [party, allDebitors, activeLoadingSlip]);
 
   const getTicketData = () => {
     const currentDc = dcNum || 'DC-001';
@@ -989,6 +1167,7 @@ export default function SalesWeighmentUnits() {
     destination: destination || 'N/A',
     source: source || 'N/A',
     transporter: transporter || 'N/A',
+    stationary: stationary || '',
     transporterRate: transporterRate || '0',
     transporterMeasurement: transporterMeasurement || 'Units',
     transporterAmount: transporterAmount || '0',
@@ -1039,8 +1218,12 @@ export default function SalesWeighmentUnits() {
 
   const handleResetForm = () => {
     userManuallyEditedSplitRef.current = false;
+    setShowLocalRate(false);
+    masterRateRef.current = '';
+    userRateKeyRef.current = null;
     setSavedTicket(null);
     setIsSaved(false);
+    setFrozenWeights(null);
     setPrintedItems({ ticket: false, dc: false, gatePass: false });
     setActiveLoadingSlip(null);
     setErrors({});
@@ -1080,6 +1263,7 @@ export default function SalesWeighmentUnits() {
     setCashAmount('');
     setUpiAmount('');
     setCreditAmount('');
+    setPartyGstin('');
     Promise.resolve(getNextDcNumber(billType, 'DC-', 'sales')).then(val => val && setDcNum(val));
   };
 
@@ -1150,43 +1334,32 @@ export default function SalesWeighmentUnits() {
     let tareTime = '';
     let grossDateTime = nowFormatted;
 
-    if (previousWeight > 0 && liveWeight > 0) {
-      if (liveWeight >= previousWeight) {
-        // Case 1: Live scale is higher (Gross was weighed NOW, Tare was from Master/Loading Slip)
-        finalGross = liveWeight.toString();
-        finalTare = previousWeight.toString();
-        grossDateTime = nowFormatted;
-        tareDate = previousDate || nowDateFormatted;
-        tareTime = previousTime || nowTimeFormatted;
-      } else {
-        // Case 2: Live scale is lower (Tare is weighed NOW, Gross was from Master/Loading Slip)
-        finalGross = previousWeight.toString();
-        finalTare = liveWeight.toString();
-        grossDateTime = (previousDate && previousTime) ? `${previousDate} ${previousTime}:00` : (previousDate || nowFormatted);
-        tareDate = nowDateFormatted;
-        tareTime = nowTimeFormatted;
-      }
+    // Gross / Tare are saved exactly as shown on screen — the same values Nett
+    // and Amount were calculated from. Re-reading the live scale here let the
+    // weights move by a tick while Nett and Amount kept the on-screen figures.
+    // The live/first-weight comparison only decides which side was weighed now.
+    const shownGross = g || liveWeight || 0;
+    finalGross = Math.max(shownGross, t).toString();
+    finalTare = Math.min(shownGross, t).toString();
+    const tareWeighedNow = (previousWeight > 0 && liveWeight > 0)
+      ? liveWeight < previousWeight
+      : shownGross < t;
+    if (!tareWeighedNow) {
+      grossDateTime = nowFormatted;
+      tareDate = previousDate || nowDateFormatted;
+      tareTime = previousTime || nowTimeFormatted;
     } else {
-      const g = parseFloat(grossVal) || liveWeight || 0;
-      const t = parseFloat(tareVal) || 0;
-      if (g >= t) {
-        finalGross = g.toString();
-        finalTare = t.toString();
-        grossDateTime = nowFormatted;
-        tareDate = previousDate || nowDateFormatted;
-        tareTime = previousTime || nowTimeFormatted;
-      } else {
-        finalGross = t.toString();
-        finalTare = g.toString();
-        grossDateTime = (previousDate && previousTime) ? `${previousDate} ${previousTime}:00` : (previousDate || nowFormatted);
-        tareDate = nowDateFormatted;
-        tareTime = nowTimeFormatted;
-      }
+      grossDateTime = (previousDate && previousTime) ? `${previousDate} ${/^\d{1,2}:\d{2}$/.test(String(previousTime).trim()) ? `${String(previousTime).trim()}:00` : previousTime}` : (previousDate || nowFormatted);
+      tareDate = nowDateFormatted;
+      tareTime = nowTimeFormatted;
     }
+    const finalNett = (Number(finalGross) - Number(finalTare)).toString();
 
     // Auto-swap on save to ensure high is gross and less is tare
     setGrossVal(finalGross);
     setTareVal(finalTare);
+    // Freeze now (before the async save) so scale ticks can't move the figures
+    setFrozenWeights({ gross: finalGross, tare: finalTare, nett: finalNett });
 
     const effectiveYourDc = (yourDc && yourDc.trim()) ? yourDc.trim() : (dcNum || '');
 
@@ -1222,8 +1395,8 @@ export default function SalesWeighmentUnits() {
       grossVal: finalGross,
       tare: finalTare,
       tareVal: finalTare,
-      net: nettVal,
-      nettVal,
+      net: finalNett,
+      nettVal: finalNett,
       rate: rate || '0',
       amount: amount || '0',
       bill_type: billType,
@@ -1266,7 +1439,7 @@ export default function SalesWeighmentUnits() {
       if (activeLoadingSlip) {
         const slipId = activeLoadingSlip.uuid || activeLoadingSlip.dc_num || cleanVehicle;
         if (api.fulfillLoadingSlip) {
-          api.fulfillLoadingSlip(slipId, nettVal || finalGross).catch(err => {
+          api.fulfillLoadingSlip(slipId, finalNett || finalGross).catch(err => {
             console.error('[SalesWeighmentUnits] Error fulfilling loading slip:', err);
           });
         }
@@ -1282,7 +1455,7 @@ export default function SalesWeighmentUnits() {
           detail: { 
             vehicle: cleanVehicle, 
             slipId, 
-            finalWeight: nettVal || finalGross,
+            finalWeight: finalNett || finalGross,
             mode: completionMode 
           } 
         }));
@@ -1300,11 +1473,12 @@ export default function SalesWeighmentUnits() {
         destination: destination ? destination.trim() : 'OUT',
         source: source || '',
         transporter: transporter || '',
+        stationary: stationary || '',
         driver: driver || '',
         phone: phone || '',
         gross: finalGross,
         tare: finalTare,
-        net: nettVal || '0',
+        net: finalNett || '0',
         billType,
         bill_type: billType,
         gstin: partyGstin,
@@ -1333,6 +1507,7 @@ export default function SalesWeighmentUnits() {
       setTimeout(() => setMsg(''), 4000);
     } catch (err) {
       console.error('[SalesWeighmentUnits] Error saving transaction:', err);
+      setFrozenWeights(null);
       setMsg('Error saving transaction: ' + err.message);
     }
   };
@@ -1418,6 +1593,27 @@ export default function SalesWeighmentUnits() {
           margin-bottom: 0.06rem !important;
           letter-spacing: 0.02em;
         }
+        /* fw-bold on inputs (Rate, Amount, Grand Total, Cash / UPI / Credit): the global
+           .saas-input.saas-input rule forces weight 500 !important, so out-rank it here */
+        .saas-input.saas-input.fw-bold {
+          font-weight: 700 !important;
+        }
+        /* Payment numbers (Rate, Amount, Grand Total, Cash / UPI / Credit) match the Gross weight */
+        .saas-input.saas-input.payment-num,
+        .saas-card-compact .saas-input.payment-num {
+          font-size: 0.92rem !important;
+          font-weight: 700 !important;
+          color: var(--ink) !important;
+        }
+        /* GST party: green Party box (beats the !important .saas-input rules) */
+        .saas-input.gst-party-highlight,
+        .saas-card-compact .form-select.saas-input.gst-party-highlight {
+          border: 2px solid #16a34a !important;
+          background-color: #f0fdf4 !important;
+          color: #14532d !important;
+          font-weight: 700 !important;
+          box-shadow: 0 0 0 2px rgba(22, 163, 74, 0.25) !important;
+        }
         .saas-card-compact .saas-input {
           height: 29px !important;
           font-size: 0.76rem !important;
@@ -1493,10 +1689,11 @@ export default function SalesWeighmentUnits() {
               /* ✨ NEW DESIGN: Compact Screen-Fit (No Scroll) */
               <form onSubmit={handleSave} className="row g-1.5">
                 {/* Row 1: DC Num/RST & Your DC */}
+                {showDcField && (
                 <div className="col-6">
                   <div className="d-flex justify-content-between align-items-center mb-0.5">
                     <label className="saas-label mb-0">DC Num/RST</label>
-                    <button
+                    {!hideDcUntilSave && <button
                       type="button"
                       className="btn btn-link p-0 text-decoration-none small fw-semibold text-primary"
                       style={{ fontSize: '0.72rem' }}
@@ -1504,11 +1701,12 @@ export default function SalesWeighmentUnits() {
                       title="Refresh DC Number"
                     >
                       ↻ Refresh
-                    </button>
+                    </button>}
                   </div>
-                  <input type="text" className="form-control saas-input saas-input-readonly fw-semibold" value={dcNum} readOnly />
+                  <input type="text" className="form-control saas-input saas-input-readonly fw-semibold" value={shownDcNum} readOnly />
                 </div>
-                <div className="col-6">
+                )}
+                <div className={showDcField ? 'col-6' : 'col-12'}>
                   <label className="saas-label">Your DC</label>
                   <input type="text" className="form-control saas-input" value={yourDc} onChange={(e) => setYourDc(e.target.value)} />
                 </div>
@@ -1534,9 +1732,11 @@ export default function SalesWeighmentUnits() {
                   )}
                 </div>
                 <div className="col-6">
-                  <label className="saas-label">Party</label>
+                  <div className="d-flex justify-content-between align-items-center mb-0.5">
+                    <label className="saas-label mb-0">Party</label>
+                  </div>
                   <SearchableSelect
-                    className="saas-input"
+                    className={`saas-input ${showGstHighlight ? 'gst-party-highlight' : ''}`}
                     value={party}
                     onChange={setParty}
                     options={partiesList}
@@ -1567,7 +1767,7 @@ export default function SalesWeighmentUnits() {
                         (m.material || '').trim().toUpperCase() === newMat.trim().toUpperCase()
                       );
                       if (matchEntry && matchEntry.rate !== undefined && matchEntry.rate !== null) {
-                        setRate(matchEntry.rate.toString());
+                        applyMasterRate(matchEntry.rate.toString());
                       }
                     }}
                   />
@@ -1704,7 +1904,11 @@ export default function SalesWeighmentUnits() {
                 </div>
                 <div className="col-4">
                   <label className="saas-label">Stationary</label>
-                  <input type="text" className="form-control saas-input" placeholder="Stationary" value={stationary} onChange={(e) => setStationary(e.target.value)} />
+                  <input type="text" className="form-control saas-input" placeholder="Stationary" value={stationary} onChange={(e) => {
+                    const v = e.target.value;
+                    setStationary(v);
+                    if (v.trim() && localStorage.getItem('noris_auto_royalty_by_stationary') === 'true') setRoyaltyType('Government');
+                  }} />
                 </div>
 
                 {/* Row 7: Royalty Type, PO Number & PO Date */}
@@ -1728,10 +1932,11 @@ export default function SalesWeighmentUnits() {
             ) : (
               /* 🏛️ OLD DESIGN: Classic Stacked Layout */
               <form onSubmit={handleSave} className="row g-2">
+                {showDcField && (
                 <div className="col-6">
                   <div className="d-flex justify-content-between align-items-center mb-1">
                     <label className="saas-label mb-0">DC Num/RST</label>
-                    <button
+                    {!hideDcUntilSave && <button
                       type="button"
                       className="btn btn-link p-0 text-decoration-none small fw-semibold text-primary"
                       style={{ fontSize: '0.75rem' }}
@@ -1739,11 +1944,12 @@ export default function SalesWeighmentUnits() {
                       title="Refresh DC Number"
                     >
                       ↻ Refresh
-                    </button>
+                    </button>}
                   </div>
-                  <input type="text" className="form-control saas-input saas-input-readonly fw-semibold" value={dcNum} readOnly />
+                  <input type="text" className="form-control saas-input saas-input-readonly fw-semibold" value={shownDcNum} readOnly />
                 </div>
-                <div className="col-6">
+                )}
+                <div className={showDcField ? 'col-6' : 'col-12'}>
                   <label className="saas-label">Your DC</label>
                   <input type="text" className="form-control saas-input" value={yourDc} onChange={(e) => setYourDc(e.target.value)} />
                 </div>
@@ -1767,9 +1973,11 @@ export default function SalesWeighmentUnits() {
                   )}
                 </div>
                 <div className="col-12">
-                  <label className="saas-label">Party</label>
+                  <div className="d-flex justify-content-between align-items-center mb-1">
+                    <label className="saas-label mb-0">Party</label>
+                  </div>
                   <SearchableSelect
-                    className="saas-input"
+                    className={`saas-input ${showGstHighlight ? 'gst-party-highlight' : ''}`}
                     value={party}
                     onChange={setParty}
                     options={partiesList}
@@ -1799,7 +2007,7 @@ export default function SalesWeighmentUnits() {
                         (m.material || '').trim().toUpperCase() === newMat.trim().toUpperCase()
                       );
                       if (matchEntry && matchEntry.rate !== undefined && matchEntry.rate !== null) {
-                        setRate(matchEntry.rate.toString());
+                        applyMasterRate(matchEntry.rate.toString());
                       }
                     }}
                   />
@@ -1902,7 +2110,11 @@ export default function SalesWeighmentUnits() {
                 </div>
                 <div className="col-6">
                   <label className="saas-label">Stationary</label>
-                  <input type="text" className="form-control saas-input" value={stationary} onChange={(e) => setStationary(e.target.value)} />
+                  <input type="text" className="form-control saas-input" value={stationary} onChange={(e) => {
+                    const v = e.target.value;
+                    setStationary(v);
+                    if (v.trim() && localStorage.getItem('noris_auto_royalty_by_stationary') === 'true') setRoyaltyType('Government');
+                  }} />
                 </div>
                 <div className="col-6">
                   <label className="saas-label">Royalty Type</label>
@@ -1953,10 +2165,12 @@ export default function SalesWeighmentUnits() {
                   <div className="col-4">
                     <span className="saas-label mb-0.5 d-block" style={{ color: 'var(--primary-ink)', fontWeight: 700, fontSize: '0.7rem' }}>Gross</span>
                     <input type="number" className="form-control saas-input saas-input-readonly text-center fw-bold weight-display-input" style={{ color: 'var(--primary-ink)', fontSize: '0.92rem' }} value={grossVal} readOnly />
+                    {showWeighTimes && renderWeighTime('gross')}
                   </div>
                   <div className="col-4">
                     <span className="saas-label mb-0.5 d-block" style={{ color: '#16a34a', fontWeight: 700, fontSize: '0.7rem' }}>Tare</span>
                     <input type="number" className="form-control saas-input saas-input-readonly text-center fw-bold weight-display-input" style={{ color: '#16a34a' }} value={tareVal} readOnly />
+                    {showWeighTimes && renderWeighTime('tare')}
                   </div>
                   <div className="col-4">
                     <span className="saas-label mb-0.5 d-block" style={{ color: '#dc2626', fontWeight: 700, fontSize: '0.7rem' }}>Nett</span>
@@ -1970,12 +2184,14 @@ export default function SalesWeighmentUnits() {
                   <div className="col-4"><span className="saas-label mb-0" style={{ color: 'var(--primary-ink)' }}>Gross</span></div>
                   <div className="col-8">
                     <input type="number" className="form-control saas-input saas-input-readonly text-center fw-bold" style={{ color: 'var(--primary-ink)' }} value={grossVal} readOnly />
+                    {showWeighTimes && renderWeighTime('gross')}
                   </div>
                 </div>
                 <div className="row g-2 align-items-center mb-2">
                   <div className="col-4"><span className="saas-label mb-0" style={{ color: '#16a34a' }}>Tare</span></div>
                   <div className="col-8">
                     <input type="number" className="form-control saas-input saas-input-readonly text-center fw-bold" style={{ color: '#16a34a' }} value={tareVal} readOnly />
+                    {showWeighTimes && renderWeighTime('tare')}
                   </div>
                 </div>
                 <div className="row g-2 align-items-center">
@@ -1993,12 +2209,19 @@ export default function SalesWeighmentUnits() {
                   <div className="saas-section-title mb-1">Payment Calculation</div>
                   <div className="row g-2">
                     <div className="col-4">
-                      <label className="saas-label mb-0.5">Rate</label>
-                      <input type="number" className="form-control saas-input" value={rate} onChange={(e) => setRate(e.target.value)} />
-                    </div>
+                        {rateCheckboxEnabled ? (
+                          <div className="d-flex align-items-center" style={{ gap: '0.75rem', marginBottom: '0.34rem' }}>
+                            <input type="checkbox" className="rate-check" checked={showLocalRate} onChange={(e) => toggleLocalRate(e.target.checked)} />
+                            <label className="saas-label" style={{ margin: 0, cursor: 'pointer' }} onClick={() => toggleLocalRate(!showLocalRate)}>Rate</label>
+                          </div>
+                        ) : (
+                          <label className="saas-label">Rate</label>
+                        )}
+                        <input type="number" className="form-control saas-input fw-bold payment-num" value={rate} disabled={rateCheckboxEnabled && !showLocalRate} onChange={(e) => { userRateKeyRef.current = currentRateKeyRef.current; setRate(e.target.value); }} />
+                      </div>
                     <div className="col-4">
                       <label className="saas-label mb-0.5">Amount</label>
-                      <input type="text" className="form-control saas-input saas-input-readonly" value={amount} readOnly />
+                      <input type="text" className="form-control saas-input saas-input-readonly fw-bold payment-num" value={amount} readOnly />
                     </div>
                     <div className="col-4">
                       <label className="saas-label mb-0.5">Discount</label>
@@ -2017,19 +2240,19 @@ export default function SalesWeighmentUnits() {
                     </div>
                     <div className="col-6">
                       <label className="saas-label mb-0.5" style={{ color: 'var(--primary-ink)', fontWeight: 700 }}>Grand Total</label>
-                      <input type="text" className="form-control saas-input saas-input-readonly fw-bold text-center text-primary" style={{ fontSize: '0.88rem' }} value={grandTotal} readOnly />
+                      <input type="text" className="form-control saas-input saas-input-readonly fw-bold text-center text-primary payment-num" style={{ fontSize: '0.88rem' }} value={grandTotal} readOnly />
                     </div>
                     <div className="col-4">
                       <label className="saas-label mb-0.5">Cash</label>
-                      <input type="number" className="form-control saas-input text-center fw-bold text-success" value={cashAmount} onChange={(e) => handleCashChange(e.target.value)} placeholder="0" />
+                      <input type="number" className="form-control saas-input text-center fw-bold text-success payment-num" value={cashAmount} onChange={(e) => handleCashChange(e.target.value)} placeholder="0" />
                     </div>
                     <div className="col-4">
                       <label className="saas-label mb-0.5">UPI</label>
-                      <input type="number" className="form-control saas-input text-center fw-bold text-info" value={upiAmount} onChange={(e) => handleUpiChange(e.target.value)} placeholder="0" />
+                      <input type="number" className="form-control saas-input text-center fw-bold text-info payment-num" value={upiAmount} onChange={(e) => handleUpiChange(e.target.value)} placeholder="0" />
                     </div>
                     <div className="col-4">
                       <label className="saas-label mb-0.5">Credit</label>
-                      <input type="number" className="form-control saas-input text-center fw-bold text-warning" value={creditAmount} onChange={(e) => handleCreditChange(e.target.value)} placeholder="0" />
+                      <input type="number" className="form-control saas-input text-center fw-bold text-warning payment-num" value={creditAmount} onChange={(e) => handleCreditChange(e.target.value)} placeholder="0" />
                     </div>
                   </div>
                 </div>
@@ -2038,12 +2261,19 @@ export default function SalesWeighmentUnits() {
                   <div className="saas-section-title mb-1.5">Payment Calculation</div>
                   <div className="row g-2">
                     <div className="col-6">
-                      <label className="saas-label">Rate</label>
-                      <input type="number" className="form-control saas-input" value={rate} onChange={(e) => setRate(e.target.value)} />
-                    </div>
+                        {rateCheckboxEnabled ? (
+                          <div className="d-flex align-items-center" style={{ gap: '0.75rem', marginBottom: '0.34rem' }}>
+                            <input type="checkbox" className="rate-check" checked={showLocalRate} onChange={(e) => toggleLocalRate(e.target.checked)} />
+                            <label className="saas-label" style={{ margin: 0, cursor: 'pointer' }} onClick={() => toggleLocalRate(!showLocalRate)}>Rate</label>
+                          </div>
+                        ) : (
+                          <label className="saas-label">Rate</label>
+                        )}
+                        <input type="number" className="form-control saas-input fw-bold payment-num" value={rate} disabled={rateCheckboxEnabled && !showLocalRate} onChange={(e) => { userRateKeyRef.current = currentRateKeyRef.current; setRate(e.target.value); }} />
+                      </div>
                     <div className="col-6">
                       <label className="saas-label">Amount</label>
-                      <input type="text" className="form-control saas-input saas-input-readonly" value={amount} readOnly />
+                      <input type="text" className="form-control saas-input saas-input-readonly fw-bold payment-num" value={amount} readOnly />
                     </div>
                     <div className="col-6">
                       <label className="saas-label d-flex justify-content-between align-items-center">
@@ -2062,19 +2292,19 @@ export default function SalesWeighmentUnits() {
                     </div>
                     <div className="col-12 mt-2">
                       <label className="saas-label" style={{ color: 'var(--primary-ink)' }}>Grand Total</label>
-                      <input type="text" className="form-control saas-input saas-input-readonly fw-bold text-center text-primary" style={{ fontSize: '1rem' }} value={grandTotal} readOnly />
+                      <input type="text" className="form-control saas-input saas-input-readonly fw-bold text-center text-primary payment-num" style={{ fontSize: '1rem' }} value={grandTotal} readOnly />
                     </div>
                     <div className="col-4">
                       <label className="saas-label">Cash</label>
-                      <input type="number" className="form-control saas-input text-center fw-bold text-success" value={cashAmount} onChange={(e) => handleCashChange(e.target.value)} placeholder="0" />
+                      <input type="number" className="form-control saas-input text-center fw-bold text-success payment-num" value={cashAmount} onChange={(e) => handleCashChange(e.target.value)} placeholder="0" />
                     </div>
                     <div className="col-4">
                       <label className="saas-label">UPI</label>
-                      <input type="number" className="form-control saas-input text-center fw-bold text-info" value={upiAmount} onChange={(e) => handleUpiChange(e.target.value)} placeholder="0" />
+                      <input type="number" className="form-control saas-input text-center fw-bold text-info payment-num" value={upiAmount} onChange={(e) => handleUpiChange(e.target.value)} placeholder="0" />
                     </div>
                     <div className="col-4">
                       <label className="saas-label">Credit</label>
-                      <input type="number" className="form-control saas-input text-center fw-bold text-warning" value={creditAmount} onChange={(e) => handleCreditChange(e.target.value)} placeholder="0" />
+                      <input type="number" className="form-control saas-input text-center fw-bold text-warning payment-num" value={creditAmount} onChange={(e) => handleCreditChange(e.target.value)} placeholder="0" />
                     </div>
                   </div>
                 </div>

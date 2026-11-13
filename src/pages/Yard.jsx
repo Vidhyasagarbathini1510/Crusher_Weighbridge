@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client.js';
 import CameraPlayer from '../components/CameraPlayer.jsx';
 import CameraPreviewModal from '../components/CameraPreviewModal.jsx';
@@ -9,10 +10,22 @@ import { printTicket } from '../utils/printHelper.js';
 import { captureCameraSnapshot } from '../utils/cameraSnapshot.js';
 import { useScale } from '../context/ScaleContext.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
-import { getVehicleOptionMode, filterVehiclesBySetting, cleanupVehicleOnWeighmentCompletion } from '../utils/vehicleFilterUtil.js';
+import { getVehicleOptionMode, filterVehiclesBySetting, uniqueVehicleNumbers, cleanupVehicleOnWeighmentCompletion } from '../utils/vehicleFilterUtil.js';
 
 
 export default function Yard() {
+  // F1 opens the Yard Report
+  const navigate = useNavigate();
+  useEffect(() => {
+    const handleF1 = (e) => {
+      if (e.key !== 'F1') return;
+      e.preventDefault();
+      navigate('/reports/yard');
+    };
+    window.addEventListener('keydown', handleF1);
+    return () => window.removeEventListener('keydown', handleF1);
+  }, [navigate]);
+
   const { user } = useAuth();
   const [cameras, setCameras] = useState(null);
   const [previewCamera, setPreviewCamera] = useState(null);
@@ -32,7 +45,9 @@ export default function Yard() {
   // this field — but it is wiped on unmount, so leaving this page never carries
   // the truck over to Boulders or Sales.
   useEffect(() => () => setVehicle(''), []);
-  const [material, setMaterial] = useState('BOULDERS');
+  const [material, setMaterial] = useState('');
+  const materialRef = useRef(material);
+  materialRef.current = material;
 
   // Scale status states (bottom bar)
   const [bottomCard, setBottomCard] = useState('C-102');
@@ -50,7 +65,7 @@ export default function Yard() {
   const [vehiclesList, setVehiclesList] = useState([]);
   const [vehicleDetails, setVehicleDetails] = useState([]);
   const [materialOptions, setMaterialOptions] = useState([]);
-  const [selectedMaterialIndex, setSelectedMaterialIndex] = useState(0);
+  const [selectedMaterialIndex, setSelectedMaterialIndex] = useState('');
 
   // Scale state
   const [netronWeight, setNetronWeight] = useState('0');
@@ -89,7 +104,7 @@ export default function Yard() {
           api.transactions ? api.transactions().catch(() => []) : Promise.resolve([])
         ]).then(([mode, txs]) => {
           const filteredObjs = filterVehiclesBySetting(rawVehicles, txs, mode);
-          const uniqueVehicles = [...new Set(filteredObjs.map(v => v.vehicleNo || v.vehicle))].filter(Boolean);
+          const uniqueVehicles = uniqueVehicleNumbers(filteredObjs.map(v => v.vehicleNo || v.vehicle));
           setVehiclesList(uniqueVehicles);
           setVehicleDetails(filteredObjs);
         });
@@ -100,8 +115,16 @@ export default function Yard() {
         const distinctMats = [...new Set(materialsData.map(m => m.material))].filter(Boolean).sort();
         const opts = distinctMats.map(mat => ({ material: mat, party: '' }));
         setMaterialOptions(opts);
-        setMaterial(distinctMats[0]);
-        setSelectedMaterialIndex(0);
+        // Keep the operator's current pick: this reload also runs right after a
+        // save, and resetting to the first entry made the saved material vanish.
+        const keepIdx = distinctMats.indexOf(materialRef.current);
+        if (keepIdx >= 0) {
+          setMaterial(distinctMats[keepIdx]);
+          setSelectedMaterialIndex(keepIdx);
+        } else {
+          setMaterial('');
+          setSelectedMaterialIndex('');
+        }
       }
     }).catch(console.error);
   };
@@ -114,7 +137,8 @@ export default function Yard() {
         const numeric = data.value.replace(/[^0-9.-]/g, '');
         if (numeric) {
           setNetronWeight(numeric);
-          if (!manualMode) {
+          // Frozen once saved, so the saved/printed weights stay on screen
+          if (!manualMode && !savedTicket) {
             const liveNum = parseFloat(numeric) || 0;
             const savedNum = parseFloat(savedWeight) || 0;
             if (savedNum > 0 && liveNum > 0) {
@@ -134,7 +158,7 @@ export default function Yard() {
     return () => {
       if (unsubscribe) unsubscribe();
     };
-  }, [manualMode, savedWeight]);
+  }, [manualMode, savedWeight, savedTicket]);
 
   // Auto calculate Nett weight (higher value - lower value = net)
   useEffect(() => {
@@ -145,6 +169,7 @@ export default function Yard() {
 
   // Auto-populate gross and tare weights when vehicle is selected
   useEffect(() => {
+    if (savedTicket) return; // weights stay frozen after save
     if (!vehicle) {
       setSavedWeight('');
       setTare('');
@@ -186,7 +211,7 @@ export default function Yard() {
         setGross(currentScaleWeight.toString());
       }
     }
-  }, [vehicle, netronWeight, vehicleDetails]);
+  }, [vehicle, netronWeight, vehicleDetails, savedTicket]);
 
   const handleVehicleChange = (selectedVal) => {
     setVehicle(selectedVal);
@@ -198,6 +223,11 @@ export default function Yard() {
     const cleanVehAlpha = cleanVehicle.replace(/[\s\-\.]/g, '');
     if (!cleanVehicle || cleanVehAlpha === 'N/A' || cleanVehAlpha === 'NA' || cleanVehAlpha === 'NONE' || cleanVehAlpha.length === 0) {
       setMsg('Please enter a valid Vehicle Number.');
+      return;
+    }
+
+    if (!material) {
+      setMsg('Please select a Material.');
       return;
     }
 
@@ -215,9 +245,13 @@ export default function Yard() {
       vt => vt.vehicle && vt.vehicle.replace(/\s+/g, '').toUpperCase() === vehicleKey
     );
 
-    const nowFormatted = new Date().toLocaleString();
-    const nowDateFormatted = new Date().toLocaleDateString('en-IN');
-    const nowTimeFormatted = new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
+    // Fixed DD-MM-YYYY HH:MM:SS (24h). toLocaleString() followed each PC's Windows
+    // region, so a US-format PC saved "11/3/2026" and reports read it as 11 March.
+    const now = new Date();
+    const pad = n => String(n).padStart(2, '0');
+    const nowDateFormatted = `${pad(now.getDate())}-${pad(now.getMonth() + 1)}-${now.getFullYear()}`;
+    const nowTimeFormatted = `${pad(now.getHours())}:${pad(now.getMinutes())}`;
+    const nowFormatted = `${nowDateFormatted} ${nowTimeFormatted}:${pad(now.getSeconds())}`;
 
     const liveWeight = parseFloat(netronWeight) || 0;
     const previousWeight = matched ? (parseFloat(String(matched.weight).replace(/,/g, '')) || 0) : 0;
@@ -325,8 +359,8 @@ export default function Yard() {
         tare: finalTare,
         net: nett || '0',
         transporter: 'N/A',
-        date: new Date().toLocaleDateString('en-IN'),
-        time: new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
+        date: nowDateFormatted,
+        time: nowTimeFormatted,
         tareDate: tareDate || nowDateFormatted,
         tareTime: tareTime || nowTimeFormatted,
         tare_date: tareDate || nowDateFormatted,
@@ -360,6 +394,9 @@ export default function Yard() {
     setTare('');
     setNett('');
     setSavedWeight('');
+    // Operator must pick the material afresh for every new entry.
+    setMaterial('');
+    setSelectedMaterialIndex('');
     Promise.resolve(getNextDcNumber('NON-GST', 'DC-', 'yard')).then(val => val && setDcNum(val));
   };
 
@@ -534,7 +571,7 @@ export default function Yard() {
                       inputMode="decimal"
                       className="form-control saas-input saas-input-readonly text-center fw-bold" 
                       style={{ color: 'var(--primary-ink)' }} 
-                      value={gross} 
+                      value={savedTicket ? savedTicket.gross : gross}
                       placeholder="0"
                       readOnly
                     />
@@ -546,7 +583,7 @@ export default function Yard() {
                       inputMode="decimal"
                       className="form-control saas-input saas-input-readonly text-center fw-bold" 
                       style={{ color: '#16a34a' }} 
-                      value={tare} 
+                      value={savedTicket ? savedTicket.tare : tare}
                       placeholder="0"
                       readOnly
                     />
@@ -558,8 +595,8 @@ export default function Yard() {
                       inputMode="decimal"
                       className="form-control saas-input saas-input-readonly text-center fw-bold" 
                       style={{ color: '#dc2626', backgroundColor: '#ffffff' }} 
-                      value={nett} 
-                      readOnly 
+                      value={savedTicket ? savedTicket.net : nett}
+                      readOnly
                     />
                   </div>
                 </div>

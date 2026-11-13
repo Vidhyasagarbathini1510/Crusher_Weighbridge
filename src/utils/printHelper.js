@@ -18,8 +18,10 @@ export const PRINTER_TEMPLATES = [
   'IMAGE-6',
   'IMAGE-7',
   'IMAGE-8',
+  'IMAGE-9',
   'RAW',
-  'RAW_LARGE'
+  'RAW_LARGE',
+  'RAW_BOLD'
 ];
 
 export const TEMPLATE_STORAGE_KEY = 'noris_selected_printer_template';
@@ -35,11 +37,95 @@ export const GATE_PASS_PRINTER_NAME_KEY = 'noris_gate_pass_printer_name';
 export const PRINTER_MODE_KEY = 'noris_printer_mode';
 export const DC_PRINTER_MODE_KEY = 'noris_dc_printer_mode';
 export const GATE_PASS_PRINTER_MODE_KEY = 'noris_gate_pass_printer_mode';
+// How a landscape slip is sent to this PC's printer:
+//   'a4top'    — printer is told A4 and the slip sits on its top half (A5 sheet
+//                fed sideways). Needed for drivers that ignore landscape and
+//                custom sizes, e.g. the Samsung SCX-3400 class driver.
+//   'standard' — an ordinary landscape job on the real paper size. Use this for
+//                printers whose driver honours landscape (most HP / Epson / Canon).
+//   'rotate'   — portrait page with the slip turned 90 degrees.
+export const LANDSCAPE_MODE_KEY = 'noris_landscape_mode';
+export const LANDSCAPE_MODES = [
+  { value: 'auto', label: 'Automatic (recommended) — the app detects what this printer supports' },
+  { value: 'a4top', label: 'A5 sheet fed sideways, printer prints on A4 top half (Samsung SCX-3400)' },
+  { value: 'standard', label: 'Standard landscape (printers that support landscape normally)' },
+  { value: 'rotate', label: 'Rotate slip 90° on a portrait page' }
+];
+export function getLandscapeMode() {
+  try {
+    const v = localStorage.getItem(LANDSCAPE_MODE_KEY);
+    return LANDSCAPE_MODES.some(m => m.value === v) ? v : 'auto';
+  } catch (_) { return 'auto'; }
+}
+export function setLandscapeMode(value) {
+  try { localStorage.setItem(LANDSCAPE_MODE_KEY, value); persistPrintSettings(); } catch (_) {}
+}
 export const PRINTER_COPIES_KEY = 'noris_printer_copies';
 export const PRINTER_AUTO_FEED_KEY = 'noris_printer_auto_feed';
 export const PRINTER_FORM_LINES_KEY = 'noris_printer_form_lines';
 export const PRINTER_FEED_MODE_KEY = 'noris_printer_feed_mode';
 export const PRINTER_A5_FEED_KEY = 'noris_printer_a5_feed';
+export const PRINTER_FONT_STYLE_KEY = 'noris_printer_font_style';
+
+// ---- Saving print settings in the app database -----------------------------
+// Everything above lives in localStorage, which is lost if the app's site data
+// is cleared or the app is reinstalled. Every change is also written to the
+// settings table as one JSON value, and restorePrintSettings() puts it back into
+// localStorage at start-up. The getters below stay synchronous and unchanged.
+export const PRINT_SETTINGS_DB_KEY = 'print_settings';
+const PRINT_SETTING_KEYS = [
+  TEMPLATE_STORAGE_KEY, DC_PRINT_TEMPLATE_KEY, GATE_PASS_TEMPLATE_KEY,
+  PRINTER_NAME_KEY, DC_PRINTER_NAME_KEY, GATE_PASS_PRINTER_NAME_KEY,
+  PRINTER_MODE_KEY, DC_PRINTER_MODE_KEY, GATE_PASS_PRINTER_MODE_KEY,
+  LANDSCAPE_MODE_KEY, PRINTER_COPIES_KEY, PRINTER_AUTO_FEED_KEY,
+  PRINTER_FORM_LINES_KEY, PRINTER_FEED_MODE_KEY, PRINTER_A5_FEED_KEY,
+  PRINTER_FONT_STYLE_KEY
+];
+
+function collectPrintSettings() {
+  const out = {};
+  PRINT_SETTING_KEYS.forEach(k => {
+    try {
+      const v = localStorage.getItem(k);
+      if (v !== null) out[k] = v;
+    } catch (_) {}
+  });
+  return out;
+}
+
+let persistTimer = null;
+export function persistPrintSettings() {
+  clearTimeout(persistTimer);
+  // Debounced: setPrinterConfig writes a dozen keys in a row.
+  persistTimer = setTimeout(() => {
+    try {
+      if (typeof window !== 'undefined' && window.electronAPI && window.electronAPI.saveSetting) {
+        window.electronAPI.saveSetting({ key: PRINT_SETTINGS_DB_KEY, value: JSON.stringify(collectPrintSettings()) });
+      }
+    } catch (err) {
+      console.warn('[printHelper] Could not save print settings to the database:', err);
+    }
+  }, 150);
+}
+
+export async function restorePrintSettings() {
+  try {
+    if (typeof window === 'undefined' || !window.electronAPI || !window.electronAPI.getSettings) return;
+    const settings = await window.electronAPI.getSettings();
+    const raw = settings && settings[PRINT_SETTINGS_DB_KEY];
+    if (raw) {
+      const saved = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      PRINT_SETTING_KEYS.forEach(k => {
+        if (saved[k] !== undefined && saved[k] !== null) localStorage.setItem(k, String(saved[k]));
+      });
+    } else if (Object.keys(collectPrintSettings()).length) {
+      // First run after this update: keep what the operator already chose.
+      persistPrintSettings();
+    }
+  } catch (err) {
+    console.warn('[printHelper] Could not restore print settings:', err);
+  }
+}
 
 export function getSelectedTemplate() {
   return localStorage.getItem(TEMPLATE_STORAGE_KEY) || 'TEMPLATE 1 - CLASSIC BLUE';
@@ -47,6 +133,7 @@ export function getSelectedTemplate() {
 
 export function setSelectedTemplate(templateName) {
   localStorage.setItem(TEMPLATE_STORAGE_KEY, templateName);
+  persistPrintSettings();
 }
 
 export function getDcPrintTemplate() {
@@ -55,6 +142,7 @@ export function getDcPrintTemplate() {
 
 export function setDcPrintTemplate(templateName) {
   localStorage.setItem(DC_PRINT_TEMPLATE_KEY, templateName);
+  persistPrintSettings();
 }
 
 export function getGatePassTemplate() {
@@ -63,6 +151,7 @@ export function getGatePassTemplate() {
 
 export function setGatePassTemplate(templateName) {
   localStorage.setItem(GATE_PASS_TEMPLATE_KEY, templateName);
+  persistPrintSettings();
 }
 
 export function getPrinterConfig() {
@@ -77,7 +166,8 @@ export function getPrinterConfig() {
     autoFeed: localStorage.getItem(PRINTER_AUTO_FEED_KEY) !== 'false',
     formLines: Number(localStorage.getItem(PRINTER_FORM_LINES_KEY)) || 24, // 24 lines = 4 inches (standard 8-hole continuous form)
     feedMode: localStorage.getItem(PRINTER_FEED_MODE_KEY) || 'EXACT_LINES', // 'EXACT_LINES' (stops at tear-off), 'FORM_FEED', 'NONE'
-    a5FeedMode: localStorage.getItem(PRINTER_A5_FEED_KEY) || 'IMAGE_1_WIDE' // 'IMAGE_1_WIDE' (Horizontal/Wide Feed tray), 'IMAGE_2_NARROW' (Vertical/Narrow Feed)
+    a5FeedMode: localStorage.getItem(PRINTER_A5_FEED_KEY) || 'IMAGE_1_WIDE', // 'IMAGE_1_WIDE' (Horizontal/Wide Feed tray), 'IMAGE_2_NARROW' (Vertical/Narrow Feed)
+    fontStyle: localStorage.getItem(PRINTER_FONT_STYLE_KEY) || 'DRAFT' // 'DRAFT', 'HSDRAFT', 'ROMAN'
   };
 }
 
@@ -93,6 +183,8 @@ export function setPrinterConfig(config = {}) {
   if (config.formLines !== undefined) localStorage.setItem(PRINTER_FORM_LINES_KEY, String(config.formLines));
   if (config.feedMode !== undefined) localStorage.setItem(PRINTER_FEED_MODE_KEY, String(config.feedMode));
   if (config.a5FeedMode !== undefined) localStorage.setItem(PRINTER_A5_FEED_KEY, String(config.a5FeedMode));
+  if (config.fontStyle !== undefined) localStorage.setItem(PRINTER_FONT_STYLE_KEY, String(config.fontStyle));
+  persistPrintSettings();
 }
 
 export const cleanAddress = (str) => {
@@ -109,7 +201,7 @@ export function generateSlipHtml(data = {}, template = getSelectedTemplate(), ca
   if (!effectiveCategory) {
     if (data.category || data.printCategory) {
       effectiveCategory = data.category || data.printCategory;
-    } else if (template === dcTpl || template === 'RPT-CHALLAN-A4' || template === 'RPT-SALESBILL9' || template === 'RPT-SALESBILL9-2UP' || template === 'IMAGE-2') {
+    } else if (template === dcTpl || template === 'RPT-CHALLAN-A4' || template === 'RPT-CHALLAN-A5' || template === 'RPT-SALESBILL9' || template === 'RPT-SALESBILL9-DEST' || template === 'RPT-SALESBILL9-2UP' || template === 'RPT-SALESBILL9-DEST-2UP' || template === 'IMAGE-2') {
       effectiveCategory = 'DC';
     } else if (template === gpTpl || template === 'IMAGE-6' || template === 'RPT-GATEPASS-A5' || template === 'RPT-GATEPASS-3UP') {
       effectiveCategory = 'GATE_PASS';
@@ -131,6 +223,7 @@ export function generateSlipHtml(data = {}, template = getSelectedTemplate(), ca
   const rptHtml = generateRptSlipHtml(dataWithCategory, template);
   if (rptHtml) return rptHtml;
   if (template === 'IMAGE-8') return generateRptSlipHtml(dataWithCategory, 'RPT-CHALLAN-DUAL-A5');
+  if (template === 'IMAGE-9') return generateRptSlipHtml(dataWithCategory, 'IMAGE-9') || generateRptSlipHtml(dataWithCategory, 'RPT-WEIGHSLIP2-A5');
 
 
   const dcNum = data.dcNum || data.dc_num || 'WB2505170001';
@@ -139,7 +232,7 @@ export function generateSlipHtml(data = {}, template = getSelectedTemplate(), ca
   const material = (data.material || data.product || 'Stone Chips 20mm').toUpperCase();
   const materialType = (data.materialType || 'Construction').toUpperCase();
   const party = (data.party || data.customer || 'ABC Traders').toUpperCase();
-  const driverName = (data.driverName || 'Ramesh').toUpperCase();
+  const driverName = (data.driverName || data.driver || '').toUpperCase();
   const mobileNo = data.mobileNo || '9876543210';
   const orderNo = data.orderNo || 'PO/2505/001';
   const remarks = data.remarks || '-';
@@ -172,6 +265,14 @@ export function generateSlipHtml(data = {}, template = getSelectedTemplate(), ca
   let tareTime = data.tareTime || data.tare_time;
   if (!tareDate && tare) tareDate = date;
   if (!tareTime && tare) tareTime = time;
+  if (tareDate) {
+    const parts = String(tareDate).split(/[,\s]+/);
+    if (parts.length > 1) {
+      tareDate = parts[0];
+      const embedded = parts.slice(1).join(' ').match(/\d{1,2}:\d{2}(?::\d{2})?(?:\s*[AaPp][Mm])?/);
+      if (embedded) tareTime = embedded[0];
+    }
+  }
 
   // -------------------------------------------------------------
   // TEMPLATE 1 - CLASSIC BLUE (Exact Photo Match 1)
@@ -809,7 +910,7 @@ export function generateSlipHtml(data = {}, template = getSelectedTemplate(), ca
             <tr style="background: #f8fafc; font-weight: 900; text-align: center;">
               <td style="padding: 6px; text-align: left; font-size: 12px; color: #000;">NET WEIGHT (DISPATCHED)</td>
               <td style="padding: 6px; font-size: 15px; color: #000; letter-spacing: 0.5px;">${nett} kg</td>
-              <td colspan="2" style="padding: 6px; font-size: 10.5px; color: #334155; text-align: right;">DRIVER : <b>${driverName || 'ASHOK'}</b></td>
+              <td colspan="2" style="padding: 6px; font-size: 10.5px; color: #334155; text-align: right;">DRIVER : <b>${driverName}</b></td>
             </tr>
           </tbody>
         </table>
@@ -910,7 +1011,7 @@ export function generateSlipHtml(data = {}, template = getSelectedTemplate(), ca
             <div style="display: flex;"><span style="width: 110px; color: #065f46;">Material</span>: <b>${material}</b></div>
             <div style="display: flex;"><span style="width: 110px; color: #065f46;">Party / Customer</span>: <b>${party}</b></div>
             <div style="display: flex;"><span style="width: 110px; color: #065f46;">Transporter</span>: <span>${transporter}</span></div>
-            <div style="display: flex;"><span style="width: 110px; color: #065f46;">Driver Name</span>: <span>${driverName || 'ASHOK'}</span></div>
+            <div style="display: flex;"><span style="width: 110px; color: #065f46;">Driver Name</span>: <span>${driverName}</span></div>
           </div>
         </div>
 
@@ -1001,7 +1102,7 @@ export function generateSlipHtml(data = {}, template = getSelectedTemplate(), ca
   }
 
   // 9. TEMPLATE 7 - AMR INFRA (Exact Photo Match 5 - A4 Dual Slip with CCTV Images)
-  if (template === 'TEMPLATE 7 - AMR INFRA' || template === 'TEMPLATE-7' || template === 'IMAGE-9' || template === 'AMR INFRA') {
+  if (template === 'TEMPLATE 7 - AMR INFRA' || template === 'TEMPLATE-7' || template === 'AMR INFRA') {
     const esc = text => String(text == null ? '' : text)
       .replace(/&/g, '&amp;')
       .replace(/</g, '&lt;')
@@ -1221,7 +1322,8 @@ export function generateSlipHtml(data = {}, template = getSelectedTemplate(), ca
   };
 
   // 10. RAW (Dot-Matrix High-Speed Slip Format - Photo Match)
-  if (template === 'RAW') {
+  if (template === 'RAW' || template === 'RAW_BOLD') {
+    const isBoldSlip = template === 'RAW_BOLD';
     const esc = text => String(text == null ? '' : text)
       .replace(/&/g, '&amp;')
       .replace(/</g, '&lt;')
@@ -1230,7 +1332,7 @@ export function generateSlipHtml(data = {}, template = getSelectedTemplate(), ca
     const RIGHT_COL = 36;
     const divider = '-'.repeat(68);
 
-    const activeDriver = data.driver || data.driverName || driverName || 'ASHOK';
+    const activeDriver = data.driver || data.driverName || driverName;
     const headerResult = resolveDotMatrixHeader(data);
 
     const line0 = divider;
@@ -1263,7 +1365,24 @@ export function generateSlipHtml(data = {}, template = getSelectedTemplate(), ca
     const line7 = divider;
     const line8 = `${esc(activeDriver).padEnd(RIGHT_COL)}${esc(party)}`;
 
-    const previewLines = [
+    const previewLines = isBoldSlip ? [
+      line0,
+      '',
+      line1,
+      line2,
+      line3,
+      '',
+      line3Mid,
+      '',
+      line4,
+      line5,
+      line6,
+      '',
+      line7,
+      '',
+      '',
+      line8
+    ] : [
       line0,
       line1,
       line2,
@@ -1276,6 +1395,7 @@ export function generateSlipHtml(data = {}, template = getSelectedTemplate(), ca
       '',
       line8
     ];
+    const slipWeight = isBoldSlip ? 700 : 500;
 
     return `
       <div style="font-family: 'Courier New', Courier, monospace; font-size: 13px; line-height: 1.6; max-width: 680px; margin: 0 auto; padding: 20px; background: #fff; border: 1px solid #cbd5e1; border-radius: 6px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); color: #000; box-sizing: border-box;">
@@ -1284,7 +1404,7 @@ export function generateSlipHtml(data = {}, template = getSelectedTemplate(), ca
           <span>80 Columns • Continuous Form</span>
         </div>
         ${headerResult.headerHtml}
-        <pre style="font-family: inherit; font-size: 13px; line-height: 1.6; margin: 0; white-space: pre; color: #111827; font-weight: 500;">${previewLines.join('\n')}</pre>
+        <pre style="font-family: inherit; font-size: 13px; line-height: 1.6; margin: 0; white-space: pre; color: #111827; font-weight: ${slipWeight};">${previewLines.join('\n')}</pre>
       </div>
     `;
   }
@@ -1299,7 +1419,7 @@ export function generateSlipHtml(data = {}, template = getSelectedTemplate(), ca
     const RIGHT_COL = 36;
     const divider = '-'.repeat(68);
 
-    const activeDriver = data.driver || data.driverName || driverName || 'ASHOK';
+    const activeDriver = data.driver || data.driverName || driverName;
 
     let headerHtml = '';
     const headerMode = data.headerOverride || getRptHeaderMode(data.category || data.printCategory || effectiveCategory);
@@ -1415,6 +1535,7 @@ export function generateEscpSlipText(data = {}, template = '') {
   const formLines = Math.max(12, Math.min(100, Number(config.formLines) || 24));
   const feedMode = config.feedMode || 'EXACT_LINES';
   const isLarge = template === 'RAW_LARGE' || template === 'RAW - LARGE TEXT';
+  const isBold = template === 'RAW_BOLD';
 
   const pick = (...keys) => {
     for (const k of keys) {
@@ -1438,14 +1559,46 @@ export function generateEscpSlipText(data = {}, template = '') {
   const gross = wt('gross');
   const tare = wt('tare');
   const nett = wt('net', 'nett');
-  const grossDate = pick('date', 'grossDate', 'gross_date') || `${dd(now.getDate())}-${dd(now.getMonth() + 1)}-${now.getFullYear()}`;
-  const grossTime = pick('time', 'grossTime', 'gross_time') || `${dd(now.getHours())}:${dd(now.getMinutes())}`;
-  const tareDate = pick('tareDate', 'tare_date') || (tare ? grossDate : '');
-  const tareTime = pick('tareTime', 'tare_time') || (tare ? grossTime : '');
-  const driver = up('driver', 'driverName', 'driver_name') || 'ASHOK';
+  // Saved records (duplicate bill reprints) only carry date_time — read the gross
+  // date / time from it, so a reprint shows when the weight was taken, not the print time.
+  let grossDate = pick('date', 'grossDate', 'gross_date');
+  let grossTime = pick('time', 'grossTime', 'gross_time');
+  const savedDateTime = pick('date_time', 'dateTime', 'created_at');
+  if (savedDateTime && (!grossDate || !grossTime)) {
+    const parts = savedDateTime.split(/[,\s]+/);
+    if (!grossDate && parts[0]) grossDate = parts[0];
+    if (!grossTime && parts.length > 1) grossTime = parts.slice(1).join(' ');
+  }
+  // Older records saved "12:26:13:00" — keep just HH:MM[:SS][ am/pm]
+  const cleanTime = grossTime && grossTime.match(/\d{1,2}:\d{2}(?::\d{2})?(?:\s*[AaPp][Mm])?/);
+  if (cleanTime) grossTime = cleanTime[0];
+  if (!grossDate) grossDate = `${dd(now.getDate())}-${dd(now.getMonth() + 1)}-${now.getFullYear()}`;
+  if (!grossTime) grossTime = `${dd(now.getHours())}:${dd(now.getMinutes())}`;
+  let tareDate = pick('tareDate', 'tare_date') || (tare ? grossDate : '');
+  let tareTime = pick('tareTime', 'tare_time') || (tare ? grossTime : '');
+  // tareDate may arrive as "DD-MM-YYYY HH:MM:SS" — split it and keep its own time
+  const tareParts = tareDate.split(/[,\s]+/);
+  if (tareParts.length > 1) {
+    tareDate = tareParts[0];
+    const embedded = tareParts.slice(1).join(' ').match(/\d{1,2}:\d{2}(?::\d{2})?(?:\s*[AaPp][Mm])?/);
+    if (embedded) tareTime = embedded[0];
+  }
+  const cleanTareTime = tareTime && tareTime.match(/\d{1,2}:\d{2}(?::\d{2})?(?:\s*[AaPp][Mm])?/);
+  if (cleanTareTime) tareTime = cleanTareTime[0];
+  const driver = up('driver', 'driverName', 'driver_name');
 
   const ESC = '\x1B';
+  const fontStyle = config.fontStyle || 'DRAFT';
+  // ESC @ resets the printer to its stored defaults, which on this printer
+  // can be Roman. So Draft is re-asserted after the reset with the single,
+  // standard ESC x 0 (no ESC p / ESC k / ESC s, which TVS/Star mis-handle).
+  let fontStyleCmd = `${ESC}x\x00`;
+  if (fontStyle === 'ROMAN') {
+    fontStyleCmd = `${ESC}x\x01`;
+  }
+
   const INIT = `${ESC}@`;                                                   // Reset printer
+  const DRAFT_MODE = fontStyleCmd;                                          // Force Draft quality (prevents TVS from switching to Roman)
   const LINE_SPACING_6_LPI = isLarge ? `${ESC}3\x24` : `${ESC}2`;           // Line spacing
   const PICA_10_CPI = isLarge ? `${ESC}!\x10` : `${ESC}P`;                  // Double height for large text
   const PAGE_LENGTH_LINES = `${ESC}C${String.fromCharCode(formLines)}`;     // Page length in lines
@@ -1455,12 +1608,15 @@ export function generateEscpSlipText(data = {}, template = '') {
   const ESC_DBL_OFF = `${ESC}W\x00`;                                        // Double-width off
   const ESC_BOLD_ON = `${ESC}E`;                                            // Emphasized (bold) on
   const ESC_BOLD_OFF = `${ESC}F`;                                           // Emphasized off
+  // In the bold format the whole line is emphasised, so the weight figures must
+  // not switch emphasis off part-way through a line.
+  const ESC_BOLD_OFF_INNER = isBold ? '' : ESC_BOLD_OFF;
   const FF = '\x0C';                                                        // Form feed
 
   const RIGHT_COL = 36;
   const divider = '-'.repeat(68);
 
-  const headerMode = data.headerOverride || getRptHeaderMode(data.category || data.printCategory || effectiveCategory);
+  const headerMode = data.headerOverride || getRptHeaderMode(data.category || data.printCategory || 'PRINT');
   let showCompany = headerMode === 'COMPANY';
   if (headerMode === 'AUTO_GST') {
     const gstin = String(data.gstin || data.gstIn || data.gst_no || data.gstNo || data.partyGstin || '').trim();
@@ -1525,21 +1681,21 @@ export function generateEscpSlipText(data = {}, template = '') {
   const grossLeftPrintCols = 16 + grossDblWidth;
   const grossGap = Math.max(1, RIGHT_COL - grossLeftPrintCols);
   const grossRight = `DATE:${grossDate}   TIME:${grossTime}`;
-  const line4 = `GROSS       :   ${ESC_DBL_ON}${ESC_BOLD_ON}${gross}${ESC_BOLD_OFF}${ESC_DBL_OFF}${' '.repeat(grossGap)}${grossRight}`;
+  const line4 = `GROSS       :   ${ESC_DBL_ON}${ESC_BOLD_ON}${gross}${ESC_BOLD_OFF_INNER}${ESC_DBL_OFF}${' '.repeat(grossGap)}${grossRight}`;
 
   // Line 5: TARE
   const tareDblWidth = tare.length * 2;
   const tareLeftPrintCols = 16 + tareDblWidth;
   const tareGap = Math.max(1, RIGHT_COL - tareLeftPrintCols);
   const tareRight = tareDate ? `DATE:${tareDate}   TIME:${tareTime}` : '';
-  const line5 = `TARE        :   ${ESC_DBL_ON}${ESC_BOLD_ON}${tare}${ESC_BOLD_OFF}${ESC_DBL_OFF}${' '.repeat(tareGap)}${tareRight}`;
+  const line5 = `TARE        :   ${ESC_DBL_ON}${ESC_BOLD_ON}${tare}${ESC_BOLD_OFF_INNER}${ESC_DBL_OFF}${' '.repeat(tareGap)}${tareRight}`;
 
   // Line 6: NETT
   const nettDblWidth = nett.length * 2;
   const nettLeftPrintCols = 16 + nettDblWidth;
   const nettGap = Math.max(1, RIGHT_COL - nettLeftPrintCols);
   const nettRight = `DRIVER      : ${driver}`;
-  const line6 = `NETT        :   ${ESC_DBL_ON}${ESC_BOLD_ON}${nett}${ESC_BOLD_OFF}${ESC_DBL_OFF}${' '.repeat(nettGap)}${nettRight}`;
+  const line6 = `NETT        :   ${ESC_DBL_ON}${ESC_BOLD_ON}${nett}${ESC_BOLD_OFF_INNER}${ESC_DBL_OFF}${' '.repeat(nettGap)}${nettRight}`;
 
   // Line 7: Bottom Dashed Line
   const line7 = divider;
@@ -1547,7 +1703,35 @@ export function generateEscpSlipText(data = {}, template = '') {
   // Line 8: Signatures
   const line8 = `${driver.padEnd(RIGHT_COL)}${party}`;
 
-  const printedLines = [
+  // Bold format: every body line is emphasised and the sections are spaced out
+  // with blank lines. Anything else keeps the original compact layout.
+  const boldLine = l => (l ? `${ESC_BOLD_ON}${l}${ESC_BOLD_OFF}` : l);
+  // The extra spacing must never push the slip past the form length (4 in = 24
+  // lines), or the signature line would land on the next form. When the header
+  // is tall, spacing blanks are dropped one by one (least important first).
+  const buildBoldBody = () => {
+    const body = [
+      line0, '',
+      line1, line2, line3, '',
+      line3Mid, '',
+      line4, line5, line6, '',
+      line7, '', '',
+      line8
+    ];
+    // Indexes of the spacing blanks, in the order they are given up.
+    const dropOrder = [14, 13, 11, 7, 5, 1];
+    const room = formLines - companyHeaderEscp.length;
+    const removed = new Set();
+    for (const idx of dropOrder) {
+      if (body.length - removed.size <= room) break;
+      removed.add(idx);
+    }
+    return body.filter((_, i) => !removed.has(i));
+  };
+  const printedLines = isBold ? [
+    ...companyHeaderEscp,
+    ...buildBoldBody().map(boldLine)
+  ] : [
     ...companyHeaderEscp,
     line0,
     line1,
@@ -1570,12 +1754,12 @@ export function generateEscpSlipText(data = {}, template = '') {
     for (let i = 0; i < paddingCount; i++) {
       allLines.push('');
     }
-    outputText = `${INIT}${LINE_SPACING_6_LPI}${PICA_10_CPI}${PAGE_LENGTH_LINES}${allLines.join('\r\n')}\r\n`;
+    outputText = `${INIT}${DRAFT_MODE}${LINE_SPACING_6_LPI}${PICA_10_CPI}${PAGE_LENGTH_LINES}${allLines.join('\r\n')}\r\n`;
   } else if (feedMode === 'FORM_FEED') {
-    outputText = `${INIT}${LINE_SPACING_6_LPI}${PICA_10_CPI}${PAGE_LENGTH_LINES}${PAGE_LENGTH_INCHES}${printedLines.join('\r\n')}\r\n${FF}`;
+    outputText = `${INIT}${DRAFT_MODE}${LINE_SPACING_6_LPI}${PICA_10_CPI}${PAGE_LENGTH_LINES}${PAGE_LENGTH_INCHES}${printedLines.join('\r\n')}\r\n${FF}`;
   } else {
     // NONE
-    outputText = `${INIT}${LINE_SPACING_6_LPI}${PICA_10_CPI}${printedLines.join('\r\n')}\r\n`;
+    outputText = `${INIT}${DRAFT_MODE}${LINE_SPACING_6_LPI}${PICA_10_CPI}${printedLines.join('\r\n')}\r\n`;
   }
 
   return outputText;
@@ -1600,7 +1784,7 @@ const PAPER_SETUP = {
   'A4': { pageSize: 'A4', landscape: false, marginMm: 10 },
   'A4 L': { pageSize: 'A4', landscape: true, marginMm: 10 },
   'A5': { pageSize: 'A5', landscape: true, marginMm: 8 },
-  'A5 P': { pageSize: 'A5', landscape: false, marginMm: 8 },
+  'A5 P': { pageSize: 'A5', landscape: false, marginMm: 3 },
   'A5 L': { pageSize: 'A5', landscape: true, marginMm: 8 }
 };
 
@@ -1622,17 +1806,21 @@ const TEMPLATE_PAGE_SETUP = {
   'TEMPLATE 3 - INDUSTRIAL STYLE': PAPER_SETUP['A5 L'],
   'TEMPLATE 4 - PROFESSIONAL CORPORATE': PAPER_SETUP['A5 L'],
   'TEMPLATE 5 - COMPACT RECEIPT STYLE': { pageSize: 'A5', landscape: false, marginMm: 6 },
-  'TEMPLATE 7 - AMR INFRA': PAPER_SETUP['A4']
+  'TEMPLATE 7 - AMR INFRA': PAPER_SETUP['A4'],
+  'IMAGE-8': PAPER_SETUP['A5 L'],
+  'IMAGE-9': { pageSize: 'A5', landscape: false, marginMm: 3 },
+  'RPT-WEIGHSLIP2-A5': { pageSize: 'A5', landscape: false, marginMm: 3 }
 };
 
 export function getPageSetupForTemplate(template) {
   const base = { pageSize: 'A4', landscape: false, marginMm: 12, ...(TEMPLATE_PAGE_SETUP[template] || {}) };
   if (base.pageSize === 'A5') {
+    const isPortrait = base.landscape === false;
     return {
       ...base,
       pageSize: 'A5',
-      landscape: true,
-      marginMm: 4
+      landscape: !isPortrait,
+      marginMm: base.marginMm !== undefined ? base.marginMm : 4
     };
   }
   return base;
@@ -1647,7 +1835,7 @@ export function getPageSetupForTemplate(template) {
 export function describePageSetup(setup = {}) {
   const pageSize = setup.pageSize || 'A4';
   const landscape = !!setup.landscape;
-  const isWideFeed = setup.isWideFeed || (pageSize === 'A5' && setup.a5FeedMode === 'IMAGE_1_WIDE');
+  const isWideFeed = setup.isWideFeed || (pageSize === 'A5' && landscape && setup.a5FeedMode === 'IMAGE_1_WIDE');
   const sheet = PAGE_SIZE_MM[pageSize] || PAGE_SIZE_MM.A4;
   const [widthMm, heightMm] = (landscape || isWideFeed) ? [sheet[1], sheet[0]] : [sheet[0], sheet[1]];
   const round = mm => (Number.isInteger(mm) ? mm : Math.round(mm));
@@ -1686,7 +1874,7 @@ const PAGE_SIZE_MM = {
 export function getPrintableAreaMm({ pageSize = 'A4', landscape = false, marginMm = 12, isWideFeed = false, a5FeedMode = 'IMAGE_1_WIDE' } = {}) {
   const sheet = PAGE_SIZE_MM[pageSize] || PAGE_SIZE_MM.A4;
   const margin = Number(marginMm) || 0;
-  const useWide = landscape || (pageSize === 'A5' && (isWideFeed || a5FeedMode === 'IMAGE_1_WIDE'));
+  const useWide = landscape || (pageSize === 'A5' && landscape && (isWideFeed || a5FeedMode === 'IMAGE_1_WIDE'));
   const [pageWidthMm, pageHeightMm] = useWide ? [sheet[1], sheet[0]] : [sheet[0], sheet[1]];
   return {
     widthMm: Math.max(20, pageWidthMm - margin * 2),
@@ -1715,7 +1903,7 @@ function openPrintDialog(html, pageSetup, data) {
         <title>Weighment Ticket - ${data.dcNum || data.dc_num || 'Slip'}</title>
         <style>
           @page {
-            size: A4 portrait;
+            size: ${pageSetup.pageSize === 'A5' ? (pageSetup.landscape ? 'A5 landscape' : 'A5 portrait') : (pageSetup.landscape ? 'A4 landscape' : 'A4 portrait')};
             margin: ${pageSetup.marginMm || 4}mm;
           }
           body { margin: 0; padding: 0; background: #ffffff; }
@@ -1814,7 +2002,7 @@ export async function printTicket(data = {}, template = getSelectedTemplate(), c
   if (!effectiveCategory) {
     if (data.category || data.printCategory) {
       effectiveCategory = data.category || data.printCategory;
-    } else if (template === dcTpl || template === 'RPT-CHALLAN-A4' || template === 'RPT-SALESBILL9' || template === 'RPT-SALESBILL9-2UP' || template === 'IMAGE-2') {
+    } else if (template === dcTpl || template === 'RPT-CHALLAN-A4' || template === 'RPT-CHALLAN-A5' || template === 'RPT-SALESBILL9' || template === 'RPT-SALESBILL9-DEST' || template === 'RPT-SALESBILL9-2UP' || template === 'RPT-SALESBILL9-DEST-2UP' || template === 'IMAGE-2') {
       effectiveCategory = 'DC';
     } else if (template === gpTpl || template === 'IMAGE-6' || template === 'RPT-GATEPASS-A5' || template === 'RPT-GATEPASS-3UP') {
       effectiveCategory = 'GATE_PASS';
@@ -1834,7 +2022,7 @@ export async function printTicket(data = {}, template = getSelectedTemplate(), c
   let targetPrinter = config.printerName || config.dcPrinterName || config.gatePassPrinterName;
   let targetMode = config.mode || 'HTML_DRIVER';
 
-  if (effectiveCategory === 'DC' || template === dcTpl || template === 'RPT-CHALLAN-A4' || template === 'RPT-SALESBILL9' || template === 'RPT-SALESBILL9-2UP' || template === 'IMAGE-2') {
+  if (effectiveCategory === 'DC' || template === dcTpl || template === 'RPT-CHALLAN-A4' || template === 'RPT-CHALLAN-A5' || template === 'RPT-SALESBILL9' || template === 'RPT-SALESBILL9-DEST' || template === 'RPT-SALESBILL9-2UP' || template === 'RPT-SALESBILL9-DEST-2UP' || template === 'IMAGE-2') {
     targetPrinter = config.dcPrinterName || config.printerName || config.gatePassPrinterName;
     targetMode = config.dcMode || 'HTML_DRIVER';
   } else if (effectiveCategory === 'GATE_PASS' || template === gpTpl || template === 'IMAGE-6' || template === 'RPT-GATEPASS-A5' || template === 'RPT-GATEPASS-3UP') {
@@ -1855,24 +2043,70 @@ export async function printTicket(data = {}, template = getSelectedTemplate(), c
   // operator asks for the dot matrix, so it goes down the raw path whatever the
   // output mode says — printing it through the driver would render the text as
   // graphics and lose the form feed that lands the next slip on its own form.
-  const isDotMatrixTemplate = template === 'RAW' || template === 'RAW_LARGE' || template === 'RAW - LARGE TEXT';
+  const isDotMatrixTemplate = template === 'RAW' || template === 'RAW_BOLD' || template === 'RAW_LARGE' || template === 'RAW - LARGE TEXT';
 
   // DIALOG mode never reaches the silent path: the whole point is that nothing
   // is sent to the printer until the operator has confirmed the settings.
-  if (targetMode !== 'DIALOG' && window.electronAPI && (window.electronAPI.printHtml || window.electronAPI.printRaw)) {
+  const askEveryTime = targetMode === 'DIALOG';
+  if ((!askEveryTime || (window.electronAPI && window.electronAPI.printHtml && !isDotMatrixTemplate)) && window.electronAPI && (window.electronAPI.printHtml || window.electronAPI.printRaw)) {
     try {
       // If template is NOT 'RAW' (dot matrix), or mode is HTML_DRIVER, or is an RPT template,
       // route silently via printHtml directly to the target printer.
       if (!isDotMatrixTemplate || targetMode === 'HTML_DRIVER' || isRptTemplate) {
+        // Host-based drivers (Samsung SCX class driver) print every job on a
+        // portrait sheet whatever orientation the job asks for, which cut the
+        // landscape slip off at the page edge. So a landscape slip is sent as a
+        // portrait sheet with the slip already turned 90 degrees on it: the
+        // driver only ever sees portrait, and turning the paper reads it as
+        // landscape.
+        let htmlToSend = html;
+        let setupToSend = pageSetup;
+        if (pageSetup.landscape && !isDotMatrixTemplate) {
+          const isA5 = pageSetup.pageSize === 'A5';
+          const mode = getLandscapeMode();
+          if (mode === 'auto') {
+            // Main process checks the printer and picks standard / A4-top-half / rotate.
+            setupToSend = { ...pageSetup, landscapeAuto: true };
+          } else if (mode === 'standard') {
+            // Plain landscape job; the driver is trusted to honour it.
+            setupToSend = { ...pageSetup, rotateLandscape: false };
+          } else if (mode === 'rotate') {
+          const m = isA5 ? 3 : Math.min(pageSetup.marginMm || 8, 8);
+          const w = (isA5 ? 148 : 210) - m * 2;   // portrait printable width
+          const h = (isA5 ? 210 : 297) - m * 2;   // portrait printable height
+          htmlToSend = `<div style="position:relative;width:${w}mm;height:${h}mm;overflow:hidden">
+            <div id="noris-landscape-box" style="position:absolute;top:0;left:${w}mm;width:${h}mm;height:${w}mm;transform-origin:top left;transform:rotate(90deg);overflow:hidden">
+              <div id="noris-landscape-slip">${html}</div>
+            </div>
+          </div>
+          <script>(function(){try{var b=document.getElementById('noris-landscape-box'),s=document.getElementById('noris-landscape-slip');if(!b||!s)return;var k=b.clientHeight/s.scrollHeight;if(k<0.98){s.style.transformOrigin='top left';s.style.transform='scale('+Math.max(0.5,k)+')';s.style.width=(100/Math.max(0.5,k))+'%';}}catch(e){}})();<\/script>`;
+          setupToSend = { ...pageSetup, landscape: false, rotateLandscape: false };
+          } else {
+            // 'a4top' (default): the paper is fed sideways (210 mm across), so the driver
+            // is given exactly a 210 x 148 mm page and the slip is not rotated.
+            setupToSend = {
+              ...pageSetup,
+              landscape: false,
+              rotateLandscape: false,
+              sheetMm: isA5 ? { width: 210, height: 148 } : { width: 297, height: 210 },
+              // The driver ignores custom sizes, so an A5 slip goes on the top
+              // half of an A4 page: 210 mm across, exactly the sideways sheet.
+              feedPaper: isA5 ? 'A4' : undefined
+            };
+          }
+        }
         await window.electronAPI.printHtml({
           printerName: targetPrinter,
-          htmlContent: html,
+          htmlContent: htmlToSend,
           // The job name is what the operator sees in the Windows queue, so it
           // carries the DC number — that is how a jammed job gets identified.
           options: {
             copies: config.copies,
             jobName: `Weighment Slip ${data.dcNum || data.dc_num || ''}`.trim(),
-            ...pageSetup
+            // 'Ask Every Time' still opens the Windows dialog, but through the
+            // app so the landscape sheet size is already filled in.
+            dialog: askEveryTime,
+            ...setupToSend
           }
         });
       } else {

@@ -3,14 +3,39 @@ import { api } from '../api/client.js';
 import { printReport, printSingleTicketSlip } from '../utils/reportPrinter.js';
 import { printClassicSalesReport, printClassicSummaryReport, toReportStamp } from '../utils/classicReportPrinter.js';
 import SearchableSelect from '../components/SearchableSelect.jsx';
+import DotMatrixPreviewModal from '../components/DotMatrixPreviewModal.jsx';
+import {
+  getSalesSummaryPrintMode,
+  SALES_SUMMARY_PRINT_MODES,
+  buildDotMatrixDetailPreview,
+  buildDotMatrixSummaryPreview
+} from '../utils/salesSummaryPrinter.js';
+import {
+  REPORT_GST_MODES,
+  getReportGstModeSync,
+  getRecordBillType
+} from '../utils/reportGstUtil.js';
 
 export default function SalesCashReport() {
+  // Settings → "Reports Print Output Mode": Normal (A4) or Dot Matrix for all reports
+  const [printMode, setPrintMode] = useState(() => getSalesSummaryPrintMode());
+  const [dotMatrix, setDotMatrix] = useState(null); // open preview: { title, badge, previewText, rawText }
+  useEffect(() => {
+    const handleModeUpdate = () => setPrintMode(getSalesSummaryPrintMode());
+    window.addEventListener('storage', handleModeUpdate);
+    window.addEventListener('sales-summary-print-mode-changed', handleModeUpdate);
+    return () => {
+      window.removeEventListener('storage', handleModeUpdate);
+      window.removeEventListener('sales-summary-print-mode-changed', handleModeUpdate);
+    };
+  }, []);
   const [transactions, setTransactions] = useState([]);
   const [filtered, setFiltered] = useState([]);
   const [selectedImage, setSelectedImage] = useState(null);
   const [showFilters, setShowFilters] = useState(true);
   
   // Filters
+  const [gstFilter, setGstFilter] = useState(() => getReportGstModeSync());
   const [party, setParty] = useState('');
   const [material, setMaterial] = useState('');
   const [vehicle, setVehicle] = useState('');
@@ -18,6 +43,21 @@ export default function SalesCashReport() {
   const [destination, setDestination] = useState('');
   const [fromDate, setFromDate] = useState('');
   const [toDate, setToDate] = useState('');
+
+  useEffect(() => {
+    const handleGstUpdate = (e) => {
+      const newMode = (e && e.detail && e.detail.reportGstMode) || getReportGstModeSync();
+      setGstFilter(newMode);
+    };
+    window.addEventListener('storage', handleGstUpdate);
+    window.addEventListener('workflow-setting-changed', handleGstUpdate);
+    window.addEventListener('report-gst-mode-changed', handleGstUpdate);
+    return () => {
+      window.removeEventListener('storage', handleGstUpdate);
+      window.removeEventListener('workflow-setting-changed', handleGstUpdate);
+      window.removeEventListener('report-gst-mode-changed', handleGstUpdate);
+    };
+  }, []);
   
   // Tabs
   const [activeTab, setActiveTab] = useState('Report');
@@ -114,7 +154,9 @@ export default function SalesCashReport() {
       const data = Array.from(combinedMap.values());
       const cashData = data.filter(t => (t.payment || '').toLowerCase() === 'cash');
       setTransactions(cashData);
-      filterData(cashData, '', '', '', '', '', minD, maxD);
+      const initGst = getReportGstModeSync();
+      setGstFilter(initGst);
+      filterData(cashData, '', '', '', '', '', minD, maxD, initGst);
     }).catch(console.error);
   }, []);
 
@@ -128,7 +170,7 @@ export default function SalesCashReport() {
     });
   };
 
-  const filterData = (dataList, partyVal, matVal, vehVal, srcVal, destVal, fDate, tDate) => {
+  const filterData = (dataList, partyVal, matVal, vehVal, srcVal, destVal, fDate, tDate, gstVal = gstFilter) => {
     let res = dataList;
 
     if (fDate || tDate) {
@@ -151,13 +193,17 @@ export default function SalesCashReport() {
     if (srcVal) res = res.filter(t => (t.quarry || t.source || '').toLowerCase().includes(srcVal.toLowerCase()));
     if (destVal) res = res.filter(t => (t.destination || '').toLowerCase().includes(destVal.toLowerCase()));
 
+    if (gstVal && gstVal !== REPORT_GST_MODES.ALL) {
+      res = res.filter(t => getRecordBillType(t) === gstVal);
+    }
+
     setFiltered(res);
     calculateMetrics(res);
   };
 
   const handleSearch = (e) => {
     if (e) e.preventDefault();
-    filterData(transactions, party, material, vehicle, source, destination, fromDate, toDate);
+    filterData(transactions, party, material, vehicle, source, destination, fromDate, toDate, gstFilter);
   };
 
   const handleResetFilters = () => {
@@ -166,11 +212,13 @@ export default function SalesCashReport() {
     setVehicle('');
     setSource('');
     setDestination('');
+    const defaultGst = getReportGstModeSync();
+    setGstFilter(defaultGst);
     const minD = getMinDateTime();
     const maxD = getMaxDateTime();
     setFromDate(minD);
     setToDate(maxD);
-    filterData(transactions, '', '', '', '', '', minD, maxD);
+    filterData(transactions, '', '', '', '', '', minD, maxD, defaultGst);
   };
 
   const uniqueParties = [...new Set(transactions.map(t => t.party).filter(Boolean))];
@@ -205,6 +253,31 @@ export default function SalesCashReport() {
   const handlePrint = () => {
     const from = toReportStamp(fromDate, false);
     const to = toReportStamp(toDate, true);
+
+    if (printMode === SALES_SUMMARY_PRINT_MODES.DOT_MATRIX) {
+      if (activeTab === 'Report') {
+        const sum = key => filtered.reduce((acc, t) => acc + Number(t[key] || 0), 0);
+        setDotMatrix(buildDotMatrixDetailPreview({
+          title: 'SALES CASH Report',
+          variant: 'cash',
+          filters: { party, material, vehicle, source, destination },
+          fromDate: from,
+          toDate: to,
+          rows: filtered,
+          totals: { gross: sum('gross'), tare: sum('tare'), nett: metrics.nett, trips: metrics.trips }
+        }));
+      } else {
+        setDotMatrix(buildDotMatrixSummaryPreview({
+          reportTitle: 'Sales Cash Summary',
+          summaryName: 'Party',
+          filters: { party, material, vehicle, source, destination },
+          fromDate: from,
+          toDate: to,
+          groups: getCashSummaryByParty()
+        }));
+      }
+      return;
+    }
 
     if (activeTab === 'Report') {
       printClassicSalesReport({
@@ -353,7 +426,7 @@ export default function SalesCashReport() {
                     options={uniqueSources} emptyLabel="ALL SOURCES" placeholder="Type to search source..." />
                 </div>
 
-                <div className="col-12">
+                <div className="col-6">
                   <label className="saas-label">Destination</label>
                   <SearchableSelect className="saas-input" value={destination} onChange={setDestination}
                     options={uniqueDestinations} emptyLabel="ALL DESTINATIONS" placeholder="Type to search destination..." />
@@ -402,11 +475,12 @@ export default function SalesCashReport() {
                 </button>
                 <button
                   type="button"
-                  className="btn btn-sm btn-dark fw-bold ms-1"
+                  className={`btn btn-sm ${printMode === SALES_SUMMARY_PRINT_MODES.DOT_MATRIX ? 'btn-success text-white' : 'btn-dark'} fw-bold ms-1`}
                   onClick={handlePrint}
                   style={{ fontSize: '0.75rem', padding: '0.25rem 0.65rem' }}
+                  title={printMode === SALES_SUMMARY_PRINT_MODES.DOT_MATRIX ? 'Dot Matrix Printer (ESC/P)' : 'Normal A4 Print Window'}
                 >
-                  🖨️ Print Full Report
+                  🖨️ Print Full Report {printMode === SALES_SUMMARY_PRINT_MODES.DOT_MATRIX ? '⚡ (Dot Matrix)' : ''}
                 </button>
               </div>
 
@@ -427,6 +501,7 @@ export default function SalesCashReport() {
                       <th>DC Num</th>
                       <th>Vehicle</th>
                       <th>Party</th>
+                      <th>Bill Type</th>
                       <th>Material</th>
                       <th className="text-end">Nett (kg)</th>
                       <th className="text-end">Transport (₹)</th>
@@ -444,6 +519,11 @@ export default function SalesCashReport() {
                           <td className="fw-bold">{t.dc_num || t.dcNum || t.token || `TK-${t.id}`}</td>
                           <td className="fw-semibold text-primary">{t.vehicle_no || t.vehicle || 'N/A'}</td>
                           <td>{t.party || 'LOCAL SALE'}</td>
+                          <td>
+                            <span className={`badge ${getRecordBillType(t) === 'GST' ? 'bg-success-subtle text-success border border-success-subtle' : 'bg-secondary-subtle text-secondary border'} px-1.5 py-0.5`} style={{ fontSize: '0.68rem', fontWeight: 700 }}>
+                              {getRecordBillType(t)}
+                            </span>
+                          </td>
                           <td>{t.product || t.material || 'N/A'}</td>
                           <td className="text-end">{wt.toLocaleString()}</td>
                           <td className="text-end text-success fw-semibold">₹ {trans}</td>
@@ -533,6 +613,8 @@ export default function SalesCashReport() {
           </div>
         </div>
       )}
+
+      {dotMatrix && <DotMatrixPreviewModal {...dotMatrix} onClose={() => setDotMatrix(null)} />}
     </div>
   );
 }

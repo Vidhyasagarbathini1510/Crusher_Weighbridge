@@ -5,6 +5,44 @@ import SearchableSelect from '../components/SearchableSelect.jsx';
 import { getVehicleOptionMode, filterVehiclesBySetting, fetchAllTransactions } from '../utils/vehicleFilterUtil.js';
 import LoadingSlip from './LoadingSlip.jsx';
 
+function getTareTimestamp(record) {
+  const date = String(record.date || '').trim();
+  const dmy = date.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$/);
+  const ymd = date.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/);
+  let year;
+  let month;
+  let day;
+
+  if (dmy) {
+    let first = Number(dmy[1]);
+    let second = Number(dmy[2]);
+    year = Number(dmy[3]);
+    if (first <= 12 && second > 12) [first, second] = [second, first];
+    day = first;
+    month = second;
+  } else if (ymd) {
+    year = Number(ymd[1]);
+    month = Number(ymd[2]);
+    day = Number(ymd[3]);
+  } else {
+    const parsedDate = new Date(date);
+    if (Number.isNaN(parsedDate.getTime())) return null;
+    year = parsedDate.getFullYear();
+    month = parsedDate.getMonth() + 1;
+    day = parsedDate.getDate();
+  }
+
+  const time = String(record.time || '').match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?\s*([AP]M)?$/i);
+  let hours = time ? Number(time[1]) : 0;
+  if (time && time[4]?.toUpperCase() === 'PM' && hours < 12) hours += 12;
+  if (time && time[4]?.toUpperCase() === 'AM' && hours === 12) hours = 0;
+  const minutes = time ? Number(time[2]) : 0;
+  const seconds = time ? Number(time[3] || 0) : 0;
+
+  const timestamp = new Date(year, month - 1, day, hours, minutes, seconds).getTime();
+  return Number.isNaN(timestamp) ? null : timestamp;
+}
+
 export default function Vehicles() {
   const STORAGE_KEY = 'noris_vehicle_tares';
   const [tares, setTares] = useState([]);
@@ -85,6 +123,17 @@ export default function Vehicles() {
   const displayTares = useMemo(() => {
     return filterVehiclesBySetting(tares, transactions, vehicleOptionMode);
   }, [tares, transactions, vehicleOptionMode]);
+
+  const sortedTares = useMemo(() => {
+    return displayTares
+      .map((record, index) => ({ record, index, timestamp: getTareTimestamp(record) }))
+      .sort((a, b) => {
+        if (a.timestamp === null) return b.timestamp === null ? a.index - b.index : 1;
+        if (b.timestamp === null) return -1;
+        return b.timestamp - a.timestamp || a.index - b.index;
+      })
+      .map(({ record }) => record);
+  }, [displayTares]);
 
   const materialsList = allMaterials;
   const vehicleOptions = useMemo(() => {
@@ -340,7 +389,7 @@ export default function Vehicles() {
                     </tr>
                   </thead>
                   <tbody>
-                    {displayTares.map((item) => (
+                    {sortedTares.map((item) => (
                       <tr key={item.id}>
                         <td className="fw-bold text-dark font-monospace">{item.vehicle}</td>
                         <td><span className="text-secondary small">{item.vehicleType}</span></td>

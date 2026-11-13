@@ -79,6 +79,15 @@ export const RTSP_BRANDS = [
     sub: '/h264/ch1/sub/av_stream'
   },
   {
+    // TWG Smart Eye (web UI: Preview / Configuration). Generic OEM IPC paths;
+    // if a unit uses a different path, verify in its Configuration page or pick
+    // "Other / Custom path".
+    id: 'twg',
+    label: 'TWG Smart Eye',
+    main: '/live/ch00_0',
+    sub: '/live/ch00_1'
+  },
+  {
     // Escape hatch: unknown vendor, operator supplies the path by hand.
     id: 'other',
     label: 'Other / Custom path',

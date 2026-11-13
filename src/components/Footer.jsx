@@ -11,8 +11,28 @@ export default function Footer() {
     nett,
     signalGo, setSignalGo,
     signalStop, setSignalStop,
-    signalAlert, setSignalAlert
-  } = useScale();
+    signalAlert, setSignalAlert,
+    cooldownAlert
+  } = useScale() || {};
+
+  React.useEffect(() => {
+    if (!window.electronAPI || !window.electronAPI.onUnmannedCardData) return;
+    const unsub = window.electronAPI.onUnmannedCardData((data) => {
+      if (data && data.cardNo) {
+        setCard(String(data.cardNo).trim());
+      }
+      if (data && data.vehicleNo) {
+        setVehicle(String(data.vehicleNo).trim());
+      }
+      if (data && data.gross !== undefined && data.gross !== null && !isNaN(data.gross)) {
+        setGross(String(data.gross));
+      }
+      if (data && data.tare !== undefined && data.tare !== null && !isNaN(data.tare)) {
+        setTare(String(data.tare));
+      }
+    });
+    return () => { if (unsub) unsub(); };
+  }, [setCard, setVehicle, setGross, setTare]);
 
   if (showFooter === false) {
     return null;
@@ -21,11 +41,17 @@ export default function Footer() {
   const handleGo = () => {
     setSignalGo(true);
     setSignalStop(false);
+    if (window.electronAPI && window.electronAPI.sendUnmannedSignal) {
+      window.electronAPI.sendUnmannedSignal('B');
+    }
   };
 
   const handleStop = () => {
     setSignalStop(true);
     setSignalGo(false);
+    if (window.electronAPI && window.electronAPI.sendUnmannedSignal) {
+      window.electronAPI.sendUnmannedSignal('C');
+    }
   };
 
   const handleSignalToggle = () => {
@@ -45,15 +71,37 @@ export default function Footer() {
         flexShrink: 0
       }}
     >
-      <div className="d-flex align-items-center gap-1.5">
+      <div className="d-flex align-items-center gap-1.5 position-relative">
         <span className="fw-bold me-2" style={{ color: 'var(--ink)', fontSize: '0.85rem' }}>Card</span>
         <input 
           type="text" 
-          className="form-control form-control-sm text-center bg-white fw-bold" 
-          style={{ width: '130px', height: '30px', border: '1.5px solid var(--line-strong)' }}
+          className={`form-control form-control-sm text-center bg-white fw-bold ${cooldownAlert ? 'border-danger text-danger' : ''}`}
+          style={{ 
+            width: '130px', 
+            height: '30px', 
+            border: cooldownAlert ? '2px solid #C5221F' : '1.5px solid var(--line-strong)',
+            transition: 'all 0.2s ease'
+          }}
           value={card} 
           onChange={(e) => setCard(e.target.value)} 
+          title={cooldownAlert ? `Card ${cooldownAlert.cardNo} recently scanned. Cooldown active for another ${cooldownAlert.remainingMins} min.` : ''}
         />
+        {cooldownAlert && (
+          <div 
+            className="badge bg-danger text-white border border-danger shadow px-2 py-1 animate-fade-in" 
+            style={{ 
+              position: 'absolute', 
+              bottom: '36px', 
+              left: '0', 
+              zIndex: 1050, 
+              fontSize: '0.74rem', 
+              whiteSpace: 'nowrap',
+              borderRadius: '4px'
+            }}
+          >
+            ⏳ Card {cooldownAlert.cardNo} on {cooldownAlert.remainingMins}m Cooldown!
+          </div>
+        )}
       </div>
 
       <div className="d-flex align-items-center gap-1.5">

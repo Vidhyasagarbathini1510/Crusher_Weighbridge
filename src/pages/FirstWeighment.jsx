@@ -57,52 +57,25 @@ export default function FirstWeighment() {
     };
   }, [manualMode]);
 
+  const handleResetForm = () => {
+    setSavedTicket(null);
+    setVehicle('');
+    setParty('');
+    setMaterial('');
+    setQty('');
+    setWeight('');
+    fetchNextSerialNo();
+  };
+
   const handlePrint = () => {
-    const cleanVehicle = (vehicle || '').trim().toUpperCase();
-    const currentWeight = weight || netronWeight || '0';
-    const now = new Date();
-    const pad = (n) => String(n).padStart(2, '0');
-    const day = pad(now.getDate());
-    const month = pad(now.getMonth() + 1);
-    const year = now.getFullYear();
-    const hours = pad(now.getHours());
-    const minutes = pad(now.getMinutes());
-    const seconds = pad(now.getSeconds());
-
-    const nowDateFormatted = `${day}-${month}-${year}`;
-    const nowTimeFormatted = `${hours}:${minutes}:${seconds}`;
-
-    const target = cleanVehicle ? {
-      dcNum: serialNo || 'SN-01',
-      serial_no: serialNo || 'SN-01',
-      token: serialNo || 'SN-01',
-      vehicle: cleanVehicle,
-      vehicle_no: cleanVehicle,
-      party: party ? party.toUpperCase() : '',
-      material: material ? material.toUpperCase() : '',
-      gross: currentWeight,
-      tare: '0',
-      net: currentWeight,
-      nett: currentWeight,
-      first_weight: currentWeight,
-      qty: qty || currentWeight,
-      units_val: qty || currentWeight,
-      date: nowDateFormatted,
-      time: nowTimeFormatted,
-      date_time: `${nowDateFormatted} ${nowTimeFormatted}`,
-      operator: user?.username || 'Operator',
-      card: '1ST WEIGHMENT',
-      ticket_type: '1ST WEIGHMENT'
-    } : savedTicket;
-
-    if (!target || !target.vehicle) {
+    if (!savedTicket) {
       setMsgType('warning');
-      setMsg('Please enter a vehicle number or save a weighment before printing.');
+      setMsg('Please save the weighment first before printing.');
       setTimeout(() => setMsg(''), 4000);
       return;
     }
 
-    printTicket(target, getSelectedTemplate(), 'PRINT');
+    printTicket(savedTicket, getSelectedTemplate(), 'PRINT');
   };
 
   const handleSave = async (e) => {
@@ -172,12 +145,6 @@ export default function FirstWeighment() {
       setMsgType('success');
       setMsg(`First Weighment Saved successfully! Ticket #${finalSn}`);
       setTimeout(() => setMsg(''), 4000);
-      setVehicle('');
-      setParty('');
-      setMaterial('');
-      setQty('');
-      setWeight('');
-      fetchNextSerialNo();
     } catch (err) {
       console.error('[FirstWeighment] Error saving:', err);
       setMsgType('danger');
@@ -272,8 +239,19 @@ export default function FirstWeighment() {
         {/* Left Column: Form */}
         <div className="col-lg-6">
           <div className="saas-card">
-            <div className="saas-header">
+            <div className="saas-header d-flex justify-content-between align-items-center">
               <span className="saas-title">Other 1st Weighment</span>
+              {savedTicket && (
+                <button
+                  type="button"
+                  onClick={handleResetForm}
+                  className="btn btn-outline-secondary btn-sm d-flex align-items-center gap-1"
+                  style={{ fontSize: '0.72rem', fontWeight: '600', padding: '0.25rem 0.65rem', borderRadius: '4px' }}
+                  title="Clear form and load next ticket"
+                >
+                  ↻ New Entry
+                </button>
+              )}
             </div>
 
             <form onSubmit={handleSave} className="row g-2">
@@ -283,7 +261,16 @@ export default function FirstWeighment() {
               </div>
               <div className="col-md-6">
                 <label className="saas-label">Vehicle</label>
-                <input type="text" className="form-control saas-input" value={vehicle} onChange={(e) => setVehicle(e.target.value)} required />
+                <input
+                  type="text"
+                  className="form-control saas-input"
+                  value={vehicle}
+                  onChange={(e) => {
+                    if (savedTicket) setSavedTicket(null);
+                    setVehicle(e.target.value);
+                  }}
+                  required
+                />
               </div>
               <div className="col-md-6">
                 <label className="saas-label">Party</label>
@@ -310,9 +297,44 @@ export default function FirstWeighment() {
               </div>
 
               {/* Action Buttons */}
-              <div className="col-12 d-flex gap-2 mt-4 justify-content-end">
-                <button type="button" className="saas-btn-print" onClick={handlePrint}>PRINT</button>
-                <button type="submit" className="saas-btn-save">SAVE</button>
+              <div className="col-12 d-flex gap-2 mt-4 justify-content-end align-items-center">
+                {savedTicket ? (
+                  <>
+                    <span className="text-secondary small me-auto">
+                      Saved as <b>{savedTicket.dcNum || savedTicket.serial_no}</b>
+                    </span>
+                    <button
+                      type="button"
+                      className="btn btn-outline-secondary"
+                      style={{ fontSize: '0.8rem', fontWeight: 600, padding: '0.45rem 1.25rem' }}
+                      onClick={handleResetForm}
+                    >
+                      + NEW ENTRY
+                    </button>
+                    <button
+                      type="button"
+                      className="saas-btn-print"
+                      onClick={handlePrint}
+                    >
+                      PRINT
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      className="saas-btn-print"
+                      disabled
+                      style={{ opacity: 0.45, cursor: 'not-allowed' }}
+                      title="Save first to open Print button"
+                    >
+                      PRINT
+                    </button>
+                    <button type="submit" className="saas-btn-save">
+                      SAVE
+                    </button>
+                  </>
+                )}
               </div>
             </form>
           </div>

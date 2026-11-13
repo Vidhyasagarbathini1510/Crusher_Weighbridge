@@ -7,6 +7,14 @@ const initSqlJs = require('sql.js');
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 
+// Fixed DD-MM-YYYY HH:mm:ss (24h). toLocaleString() follows each PC's Windows region
+// and was misread as day/month swapped by sync + reports.
+function nowDdMmYyyy() {
+  const d = new Date();
+  const p = n => String(n).padStart(2, '0');
+  return `${p(d.getDate())}-${p(d.getMonth() + 1)}-${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
 // Determine database path
 const userDataPath = (app && typeof app.getPath === 'function') ? app.getPath('userData') : process.cwd();
 const dbPath = path.join(userDataPath, 'weighbridge.db');
@@ -18,10 +26,212 @@ if (!fs.existsSync(imagesDir)) {
 }
 
 let dbInstance = null;
+let globalSQL = null;
+let isCleanFallbackInstance = false;
+
+const backupsDir = path.join(userDataPath, 'weighbridge_backups');
+if (!fs.existsSync(backupsDir)) {
+  try { fs.mkdirSync(backupsDir, { recursive: true }); } catch (_) {}
+}
 
 let saveTimeout = null;
 let isSaving = false;
 let pendingSave = false;
+
+let lastDailyBackupDate = null;
+let lastSlotBackupTime = 0;
+let currentSlot = 1;
+const MAX_SLOTS = 5;
+const MAX_DAILY_BACKUPS = 30;
+
+function isValidSqliteHeader(buffer) {
+  if (!buffer || buffer.length < 100) return false;
+  const magic = buffer.toString('utf8', 0, 16);
+  if (!magic.startsWith('SQLite format 3')) return false;
+
+  // Guard against all-zeros / sparse-corruption (e.g. 2MB zero-filled after crash)
+  let nonZero = 0;
+  const checkLen = Math.min(buffer.length, 512);
+  for (let i = 0; i < checkLen; i++) {
+    if (buffer[i] !== 0) nonZero++;
+  }
+  return nonZero > 20;
+}
+
+function verifyDatabaseBuffer(SQL, buffer) {
+  if (!SQL) return { valid: false, error: 'SQL engine not initialized' };
+  if (!isValidSqliteHeader(buffer)) {
+    return { valid: false, error: 'Invalid SQLite header or zeroed data' };
+  }
+  try {
+    const testDb = new SQL.Database(buffer);
+    const res = testDb.exec('SELECT count(*) FROM sqlite_master;');
+    testDb.close();
+    return { valid: true, tableCount: res?.[0]?.values?.[0]?.[0] || 0 };
+  } catch (err) {
+    return { valid: false, error: err.message };
+  }
+}
+
+function verifyDatabaseFile(SQL, filePath) {
+  try {
+    if (!fs.existsSync(filePath)) return { valid: false, error: 'File does not exist' };
+    const stat = fs.statSync(filePath);
+    if (stat.size < 100) return { valid: false, error: 'File size too small (< 100 bytes)' };
+    const buf = fs.readFileSync(filePath);
+    return verifyDatabaseBuffer(SQL, buf);
+  } catch (err) {
+    return { valid: false, error: err.message };
+  }
+}
+
+/**
+ * Atomic physical write with fsyncSync.
+ * Prevents 0-byte or zero-filled files during sudden power loss or crashes.
+ */
+function safeWriteFileAtomic(targetFile, buffer) {
+  if (!buffer || buffer.length < 100) {
+    throw new Error('Refusing to write empty or truncated buffer to disk');
+  }
+  const dir = path.dirname(targetFile);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+
+  const tmpFile = path.join(dir, `${path.basename(targetFile)}.tmp.${process.pid}.${Date.now()}`);
+  let fd = null;
+  try {
+    fd = fs.openSync(tmpFile, 'w');
+    fs.writeSync(fd, buffer, 0, buffer.length);
+    // Crucial: flush OS buffers directly to physical SSD/HDD platter
+    fs.fsyncSync(fd);
+  } finally {
+    if (fd !== null) {
+      try { fs.closeSync(fd); } catch (_) {}
+    }
+  }
+
+  const stat = fs.statSync(tmpFile);
+  if (stat.size !== buffer.length) {
+    try { fs.unlinkSync(tmpFile); } catch (_) {}
+    throw new Error(`Size mismatch after write: expected ${buffer.length}, got ${stat.size}`);
+  }
+
+  // Atomically replace target file
+  try {
+    fs.renameSync(tmpFile, targetFile);
+  } catch (err) {
+    // Windows fallback if destination is open or locked
+    try {
+      fs.copyFileSync(tmpFile, targetFile);
+      try { fs.unlinkSync(tmpFile); } catch (_) {}
+    } catch (copyErr) {
+      try { fs.unlinkSync(tmpFile); } catch (_) {}
+      throw copyErr;
+    }
+  }
+}
+
+function cleanOldDailyBackups(targetDir = backupsDir) {
+  try {
+    if (!fs.existsSync(targetDir)) return;
+    const files = fs.readdirSync(targetDir)
+      .filter(f => f.startsWith('weighbridge_daily_') && f.endsWith('.db'))
+      .map(f => {
+        const full = path.join(targetDir, f);
+        return { name: f, path: full, stat: fs.statSync(full) };
+      })
+      .sort((a, b) => b.stat.mtimeMs - a.stat.mtimeMs);
+
+    if (files.length > MAX_DAILY_BACKUPS) {
+      const toDelete = files.slice(MAX_DAILY_BACKUPS);
+      for (const item of toDelete) {
+        try { fs.unlinkSync(item.path); } catch (_) {}
+      }
+    }
+  } catch (e) {
+    console.warn('[SQLite Backup] Error cleaning old daily backups:', e.message);
+  }
+}
+
+/**
+ * Multi-Tier Backup Engine:
+ * 1. Immediate .bak (with size/health protection)
+ * 2. 5 rolling slot backups
+ * 3. Daily backups (retained for 30 days, mirrored to D:\ or C:\ drive)
+ */
+function createVerifiedBackups(SQL, buffer, forceDaily = false) {
+  if (!SQL || !buffer || buffer.length < 100) return;
+  const verification = verifyDatabaseBuffer(SQL, buffer);
+  if (!verification.valid) {
+    console.error('[SQLite Backup] Refusing to backup invalid database:', verification.error);
+    return;
+  }
+
+  const bakPath = dbPath + '.bak';
+
+  // Guard: NEVER overwrite an existing healthy backup with an empty or suspiciously shrunk database!
+  if (fs.existsSync(bakPath)) {
+    try {
+      const existingBakStat = fs.statSync(bakPath);
+      if (existingBakStat.size > 200000 && buffer.length < 160000) {
+        console.warn(`[SQLite Backup] Shielding existing backup (${(existingBakStat.size / 1024).toFixed(0)} KB) from being overwritten by smaller DB (${(buffer.length / 1024).toFixed(0)} KB).`);
+        return;
+      }
+    } catch (_) {}
+  }
+
+  // 1. Immediate verified backup (.bak)
+  try {
+    safeWriteFileAtomic(bakPath, buffer);
+  } catch (err) {
+    console.error('[SQLite Backup] Error saving immediate .bak backup:', err.message);
+  }
+
+  // 2. Rolling hourly slot backups (up to 5 slots, throttled to at most once per 10 minutes)
+  const now = Date.now();
+  if (now - lastSlotBackupTime > 10 * 60 * 1000) {
+    lastSlotBackupTime = now;
+    const slotPath = path.join(backupsDir, `weighbridge_slot_${currentSlot}.db`);
+    try {
+      safeWriteFileAtomic(slotPath, buffer);
+      currentSlot = (currentSlot % MAX_SLOTS) + 1;
+    } catch (err) {
+      console.error('[SQLite Backup] Error saving slot backup:', err.message);
+    }
+  }
+
+  // 3. Daily backup: YYYY-MM-DD (Calculated in local timezone)
+  const nowObj = new Date();
+  const year = nowObj.getFullYear();
+  const month = String(nowObj.getMonth() + 1).padStart(2, '0');
+  const day = String(nowObj.getDate()).padStart(2, '0');
+  const todayStr = `${year}-${month}-${day}`;
+  const dailyFileName = `weighbridge_daily_${todayStr}.db`;
+  const dailyPath = path.join(backupsDir, dailyFileName);
+
+  if (forceDaily || !fs.existsSync(dailyPath) || lastDailyBackupDate !== todayStr) {
+    try {
+      safeWriteFileAtomic(dailyPath, buffer);
+      lastDailyBackupDate = todayStr;
+      console.log(`[SQLite Backup] Successfully created verified daily backup: ${dailyFileName} (${(buffer.length / 1024).toFixed(1)} KB)`);
+      cleanOldDailyBackups(backupsDir);
+
+      // Mirror daily backup to prominent easily accessible drive (D:\Weighbridge_Daily_Backups or C:\Weighbridge_Daily_Backups)
+      const mirrorDirs = ['D:\\Weighbridge_Daily_Backups', 'C:\\Weighbridge_Daily_Backups'];
+      for (const mDir of mirrorDirs) {
+        try {
+          const root = mDir.substring(0, 3);
+          if (fs.existsSync(root)) {
+            if (!fs.existsSync(mDir)) fs.mkdirSync(mDir, { recursive: true });
+            safeWriteFileAtomic(path.join(mDir, dailyFileName), buffer);
+            cleanOldDailyBackups(mDir);
+          }
+        } catch (_) {}
+      }
+    } catch (err) {
+      console.error('[SQLite Backup] Error saving daily backup:', err.message);
+    }
+  }
+}
 
 function saveToDisk() {
   if (!dbInstance) return;
@@ -33,10 +243,11 @@ function saveToDisk() {
   saveTimeout = setTimeout(() => {
     saveTimeout = null;
     performSave();
-  }, 100); // 100ms debounce to prevent multiple consecutive writes blocking the main thread
+  }, 100);
 }
 
 function performSave() {
+  if (!dbInstance) return;
   if (isSaving) {
     pendingSave = true;
     return;
@@ -44,43 +255,35 @@ function performSave() {
 
   isSaving = true;
   try {
-    // export() is synchronous and copies the entire database out of WASM memory:
-    // for as long as it runs the whole app is unresponsive. Log it when it hurts.
     const startedAt = Date.now();
     const data = dbInstance.export();
     const buffer = Buffer.from(data);
-    const blockedMs = Date.now() - startedAt;
-    if (blockedMs > 150) {
-      console.warn(`[SQLite] export() blocked the main process for ${blockedMs}ms (${(buffer.length / 1048576).toFixed(1)} MB)`);
+
+    // Strict validation before persisting
+    if (!isValidSqliteHeader(buffer)) {
+      console.error('[SQLite] Aborting save: in-memory database failed SQLite header validation!');
+      isSaving = false;
+      return;
     }
 
-    const tmpPath = dbPath + '.tmp';
-    const bakPath = dbPath + '.bak';
+    safeWriteFileAtomic(dbPath, buffer);
 
-    // Atomic save pattern: Write to .tmp first, back up existing .db to .bak, then copy .tmp to .db
-    fs.writeFile(tmpPath, buffer, (err) => {
-      isSaving = false;
-      if (err) {
-        console.error('[SQLite] Error persisting database to temp file (async):', err);
-      } else {
-        try {
-          if (fs.existsSync(dbPath)) {
-            fs.copyFileSync(dbPath, bakPath);
-          }
-          fs.copyFileSync(tmpPath, dbPath);
-          try { fs.unlinkSync(tmpPath); } catch (_) {}
-        } catch (copyErr) {
-          console.error('[SQLite] Error during atomic DB file replacement:', copyErr);
-        }
-      }
-      if (pendingSave) {
-        pendingSave = false;
-        performSave();
-      }
-    });
+    if (!isCleanFallbackInstance && globalSQL) {
+      createVerifiedBackups(globalSQL, buffer);
+    }
+
+    const blockedMs = Date.now() - startedAt;
+    if (blockedMs > 150) {
+      console.warn(`[SQLite] performSave completed in ${blockedMs}ms (${(buffer.length / 1048576).toFixed(1)} MB)`);
+    }
   } catch (err) {
+    console.error('[SQLite] Error during performSave:', err);
+  } finally {
     isSaving = false;
-    console.error('[SQLite] Error exporting database:', err);
+    if (pendingSave) {
+      pendingSave = false;
+      performSave();
+    }
   }
 }
 
@@ -94,44 +297,156 @@ function saveToDiskSync() {
     const startedAt = Date.now();
     const data = dbInstance.export();
     const buffer = Buffer.from(data);
-    const tmpPath = dbPath + '.tmp';
-    const bakPath = dbPath + '.bak';
 
-    fs.writeFileSync(tmpPath, buffer);
-    if (fs.existsSync(dbPath)) {
-      fs.copyFileSync(dbPath, bakPath);
+    if (!isValidSqliteHeader(buffer)) {
+      console.error('[SQLite] Aborting saveToDiskSync: in-memory database failed SQLite header validation!');
+      return;
     }
-    fs.copyFileSync(tmpPath, dbPath);
-    try { fs.unlinkSync(tmpPath); } catch (_) {}
+
+    safeWriteFileAtomic(dbPath, buffer);
+
+    if (!isCleanFallbackInstance && globalSQL) {
+      createVerifiedBackups(globalSQL, buffer);
+    }
+
     console.log(`[SQLite] Synchronous database save completed in ${Date.now() - startedAt}ms (${(buffer.length / 1048576).toFixed(1)} MB).`);
   } catch (err) {
     console.error('[SQLite] Error persisting database synchronously:', err);
   }
 }
 
-function isValidSqliteHeader(buffer) {
-  if (!buffer || buffer.length < 100) return false;
-  const magic = buffer.toString('utf8', 0, 16);
-  return magic.startsWith('SQLite format 3');
+let backupGuardianInterval = null;
+
+function startBackupGuardian(SQL) {
+  if (backupGuardianInterval) return;
+  backupGuardianInterval = setInterval(() => {
+    try {
+      if (!dbInstance || isCleanFallbackInstance) return;
+      const integrity = verifyDatabaseIntegrity();
+      if (integrity.ok) {
+        const data = dbInstance.export();
+        createVerifiedBackups(SQL, Buffer.from(data));
+      } else {
+        console.error('[Backup Guardian] Database integrity check failed:', integrity.details);
+      }
+    } catch (err) {
+      console.error('[Backup Guardian] Error running periodic backup check:', err);
+    }
+  }, 30 * 60 * 1000); // Check every 30 minutes
+}
+
+function verifyDatabaseIntegrity() {
+  if (!dbInstance) return { ok: false, error: 'Database not loaded' };
+  try {
+    const res = dbInstance.exec('PRAGMA integrity_check(1);');
+    const status = res?.[0]?.values?.[0]?.[0];
+    return { ok: status === 'ok', details: status || 'unknown' };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
+function getBackupStatus() {
+  try {
+    const dailyFiles = fs.existsSync(backupsDir)
+      ? fs.readdirSync(backupsDir)
+          .filter(f => f.startsWith('weighbridge_daily_') && f.endsWith('.db'))
+          .map(f => {
+            const p = path.join(backupsDir, f);
+            const st = fs.statSync(p);
+            return { name: f, size: st.size, mtime: st.mtime };
+          })
+          .sort((a, b) => b.mtime - a.mtime)
+      : [];
+
+    const slotFiles = fs.existsSync(backupsDir)
+      ? fs.readdirSync(backupsDir)
+          .filter(f => f.startsWith('weighbridge_slot_') && f.endsWith('.db'))
+          .map(f => {
+            const p = path.join(backupsDir, f);
+            const st = fs.statSync(p);
+            return { name: f, size: st.size, mtime: st.mtime };
+          })
+          .sort((a, b) => b.mtime - a.mtime)
+      : [];
+
+    const hasBak = fs.existsSync(dbPath + '.bak');
+    const bakStat = hasBak ? fs.statSync(dbPath + '.bak') : null;
+
+    const integrity = verifyDatabaseIntegrity();
+
+    const mirrorDir = fs.existsSync('D:\\') ? 'D:\\Weighbridge_Daily_Backups' : 'C:\\Weighbridge_Daily_Backups';
+
+    return {
+      success: true,
+      backupDirectory: backupsDir,
+      mirrorDirectory: mirrorDir,
+      totalDailyBackups: dailyFiles.length,
+      latestDailyBackup: dailyFiles[0] || null,
+      dailyBackups: dailyFiles,
+      slotBackups: slotFiles,
+      immediateBak: bakStat ? { size: bakStat.size, mtime: bakStat.mtime } : null,
+      integrity: integrity.ok ? 'HEALTHY' : 'CORRUPTED',
+      integrityDetails: integrity.details || integrity.error,
+      databaseSize: fs.existsSync(dbPath) ? fs.statSync(dbPath).size : 0
+    };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+}
+
+function createManualBackup(reason = 'manual') {
+  if (!dbInstance) return { success: false, error: 'Database not initialized' };
+  if (!globalSQL) return { success: false, error: 'SQL engine not available' };
+  try {
+    const data = dbInstance.export();
+    const buffer = Buffer.from(data);
+    const verification = verifyDatabaseBuffer(globalSQL, buffer);
+    if (!verification.valid) {
+      return { success: false, error: `Database failed integrity check: ${verification.error}` };
+    }
+    createVerifiedBackups(globalSQL, buffer, true);
+    return {
+      success: true,
+      message: `Verified backup created successfully (${(buffer.length / 1024).toFixed(1)} KB)`
+    };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
 }
 
 async function init() {
   console.log('[SQLite] Initializing WASM database at:', dbPath);
   const SQL = await initSqlJs();
+  globalSQL = SQL;
   const bakPath = dbPath + '.bak';
 
+  // Clean up any incomplete .tmp files left behind if a sudden power cut occurred during writing
+  try {
+    const parentDir = path.dirname(dbPath);
+    if (fs.existsSync(parentDir)) {
+      const files = fs.readdirSync(parentDir);
+      for (const file of files) {
+        if (file.includes('.tmp.')) {
+          try { fs.unlinkSync(path.join(parentDir, file)); } catch (_) {}
+        }
+      }
+    }
+  } catch (_) {}
+
   let loadedSuccessfully = false;
+  let loadedFromSource = 'none';
 
   const tryLoadFromPath = (targetPath) => {
     try {
       if (!fs.existsSync(targetPath)) return false;
       const filebuffer = fs.readFileSync(targetPath);
-      if (!isValidSqliteHeader(filebuffer)) {
-        console.warn(`[SQLite] File at ${targetPath} lacks valid SQLite header signature (length: ${filebuffer.length})`);
+      const verify = verifyDatabaseBuffer(SQL, filebuffer);
+      if (!verify.valid) {
+        console.warn(`[SQLite] File at ${targetPath} failed verification: ${verify.error}`);
         return false;
       }
       const testDb = new SQL.Database(filebuffer);
-      // Validate that database is executable and not corrupted
       testDb.exec('SELECT 1;');
       dbInstance = testDb;
       console.log(`[SQLite] Database loaded successfully from ${targetPath}.`);
@@ -145,26 +460,73 @@ async function init() {
   // 1. Try primary database file
   if (tryLoadFromPath(dbPath)) {
     loadedSuccessfully = true;
-  } else if (tryLoadFromPath(bakPath)) {
-    // 2. Try loading backup file (.bak) if primary is corrupt
-    console.log('[SQLite] Successfully recovered database from backup (.bak)!');
-    loadedSuccessfully = true;
-    try {
-      fs.copyFileSync(bakPath, dbPath);
-    } catch (_) {}
+    loadedFromSource = 'primary';
   }
 
+  // 2. Try loading immediate backup file (.bak) if primary is corrupt/missing
+  if (!loadedSuccessfully && tryLoadFromPath(bakPath)) {
+    console.warn('[SQLite Recovery] Successfully recovered database from immediate backup (.bak)!');
+    loadedSuccessfully = true;
+    loadedFromSource = 'bak';
+    try {
+      safeWriteFileAtomic(dbPath, fs.readFileSync(bakPath));
+    } catch (copyErr) {
+      console.error('[SQLite Recovery] Error restoring from .bak to dbPath:', copyErr);
+    }
+  }
+
+  // 3. Search historical verified backups in weighbridge_backups/
+  if (!loadedSuccessfully && fs.existsSync(backupsDir)) {
+    console.warn('[SQLite Recovery] Searching historical backup directory for latest verified snapshot...');
+    try {
+      const candidates = fs.readdirSync(backupsDir)
+        .filter(f => f.endsWith('.db'))
+        .map(f => {
+          const full = path.join(backupsDir, f);
+          return { full, name: f, stat: fs.statSync(full) };
+        })
+        .filter(f => f.stat.size > 100)
+        .sort((a, b) => b.stat.mtimeMs - a.stat.mtimeMs);
+
+      for (const cand of candidates) {
+        if (tryLoadFromPath(cand.full)) {
+          console.warn(`[SQLite Recovery] Successfully recovered database from historical backup: ${cand.name} (${(cand.stat.size / 1024).toFixed(1)} KB)!`);
+          loadedSuccessfully = true;
+          loadedFromSource = cand.name;
+          try {
+            safeWriteFileAtomic(dbPath, fs.readFileSync(cand.full));
+          } catch (restErr) {
+            console.error('[SQLite Recovery] Error restoring historical backup to dbPath:', restErr);
+          }
+          break;
+        }
+      }
+    } catch (scanErr) {
+      console.error('[SQLite Recovery] Error scanning backup candidates:', scanErr);
+    }
+  }
+
+  // 4. Quarantine corrupt file if present & create fallback only if all backups failed
   if (!loadedSuccessfully) {
     if (fs.existsSync(dbPath)) {
-      const corruptBackupPath = dbPath + '.corrupt_' + Date.now();
+      const corruptBackupPath = path.join(backupsDir, `weighbridge.corrupt_${Date.now()}.db`);
       console.warn(`[SQLite] Moving corrupted database file to ${corruptBackupPath}`);
       try {
         fs.renameSync(dbPath, corruptBackupPath);
       } catch (_) {}
     }
     dbInstance = new SQL.Database();
-    console.log('[SQLite] Created new clean database instance.');
+    isCleanFallbackInstance = true;
+    console.warn('[SQLite] Created new clean database instance (no prior verified backups found).');
+  } else {
+    isCleanFallbackInstance = false;
+    try {
+      const currentData = dbInstance.export();
+      createVerifiedBackups(SQL, Buffer.from(currentData));
+    } catch (_) {}
   }
+
+  startBackupGuardian(SQL);
 
   // Enable WAL mode and busy_timeout for high-performance concurrent reads/writes
   try {
@@ -534,6 +896,12 @@ async function init() {
     // Keep loading slips strictly local-only on desktop; dismiss any pending loading slips from sync_queue
     dbInstance.run("UPDATE sync_queue SET status = 'COMPLETED' WHERE table_name = 'loading_slips' OR table_name = 'loading_slip';");
     dbInstance.run("UPDATE loading_slips SET sync_status = 1 WHERE sync_status = 0;");
+  } catch (e) { }
+
+  try {
+    // Ensure all boulders records have source / quarry set to 'QUARRY' instead of empty or 'CRUSHER'
+    dbInstance.run("UPDATE boulders SET quarry = 'QUARRY' WHERE quarry IS NULL OR quarry = '' OR UPPER(quarry) = 'CRUSHER';");
+    dbInstance.run("UPDATE boulders SET destination = 'HOPPER' WHERE destination IS NULL OR destination = '';");
   } catch (e) { }
 
 
@@ -1945,8 +2313,16 @@ function getRfidCardByNumber(cardNumber) {
   if (!dbInstance || !cardNumber) return null;
   try {
     const cleanCard = String(cardNumber).trim();
-    const stmt = dbInstance.prepare('SELECT * FROM rfid_cards WHERE LOWER(TRIM(card_number)) = LOWER(?)');
-    stmt.bind([cleanCard]);
+    const unpadded = cleanCard.replace(/^0+/, '');
+    const padded10 = unpadded.padStart(10, '0');
+    const stmt = dbInstance.prepare(`
+      SELECT * FROM rfid_cards 
+      WHERE LOWER(TRIM(card_number)) = LOWER(?)
+         OR LOWER(TRIM(card_number)) = LOWER(?)
+         OR LOWER(TRIM(card_number)) = LOWER(?)
+      LIMIT 1
+    `);
+    stmt.bind([cleanCard, unpadded, padded10]);
     const row = stmt.step() ? stmt.getAsObject() : null;
     stmt.free();
     return row;
@@ -1959,13 +2335,21 @@ function getRfidCardByNumber(cardNumber) {
 function saveRfidCard(data) {
   if (!dbInstance || !data || !data.cardNumber || !data.vehicle) return false;
   try {
-    const cleanCard = String(data.cardNumber).trim();
+    let cleanCard = String(data.cardNumber).trim();
+    if (/^\d{1,10}$/.test(cleanCard)) {
+      cleanCard = cleanCard.padStart(10, '0');
+    }
     const cleanVeh = String(data.vehicle).trim().toUpperCase();
     const material = data.material || 'BOULDERS';
     const contractor = data.contractor || '';
 
-    const stmt = dbInstance.prepare('SELECT id FROM rfid_cards WHERE LOWER(TRIM(card_number)) = LOWER(?)');
-    stmt.bind([cleanCard]);
+    const stmt = dbInstance.prepare(`
+      SELECT id FROM rfid_cards 
+      WHERE LOWER(TRIM(card_number)) = LOWER(?) 
+         OR LTRIM(TRIM(card_number), '0') = LTRIM(?, '0')
+      LIMIT 1
+    `);
+    stmt.bind([cleanCard, cleanCard]);
     const existing = stmt.step() ? stmt.getAsObject() : null;
     stmt.free();
 
@@ -2102,6 +2486,13 @@ function addBoulderTransaction(tx, base64Image) {
   tx.dc_num = officialDc;
   tx.dcNum = officialDc;
 
+  const rawQuarry = (tx.quarry || tx.source || '').trim();
+  const resolvedQuarry = (rawQuarry && rawQuarry.toUpperCase() !== 'CRUSHER') ? rawQuarry : 'QUARRY';
+  const resolvedDest = (tx.destination || '').trim() || 'HOPPER';
+  tx.quarry = resolvedQuarry;
+  tx.source = resolvedQuarry;
+  tx.destination = resolvedDest;
+
   dbInstance.run(`
     INSERT INTO boulders (
       uuid, dc_num, date_time, vehicle_no, contractor, quarry,
@@ -2112,17 +2503,19 @@ function addBoulderTransaction(tx, base64Image) {
   `, [
     uuid,
     officialDc,
-    tx.date_time || new Date().toLocaleString(),
+
+    
+    tx.date_time || nowDdMmYyyy(),
     tx.vehicle_no || '',
     tx.contractor || tx.party || '',
-    tx.quarry || '',
+    resolvedQuarry,
     tx.material || 'BOULDERS',
     Number(tx.gross || 0),
     Number(tx.tare || 0),
     Number(tx.net || 0),
     tx.driver || '',
     tx.transporter || '',
-    tx.destination || '',
+    resolvedDest,
     tx.operator || 'Admin',
     imgPath,
     // Photo lives in the .jpg file; base64 is only kept if the file write failed.
@@ -2231,7 +2624,7 @@ function addSalesWeighmentUnits(tx, base64Image) {
     uuid,
     officialDc,
     tx.your_dc || tx.yourDc || '',
-    tx.date_time || new Date().toLocaleString(),
+    tx.date_time || nowDdMmYyyy(),
     tx.vehicle_no || tx.vehicle || '',
     cleanParty,
     customerName,
@@ -2348,7 +2741,7 @@ function addYardWeighment(tx, base64Image) {
   `, [
     uuid,
     officialDc,
-    tx.date_time || new Date().toLocaleString(),
+    tx.date_time || nowDdMmYyyy(),
     tx.vehicle_no || tx.vehicle || '',
     tx.party || 'YARD',
     tx.material || '',
@@ -2440,7 +2833,7 @@ function addLoadingSlip(tx, base64Image) {
     uuid,
     officialDc,
     tx.copy_num || tx.copyNum || '',
-    tx.date_time || new Date().toLocaleString(),
+    tx.date_time || nowDdMmYyyy(),
     tx.vehicle_no || tx.vehicle || '',
     tx.party || '',
     tx.material || '',
@@ -2554,7 +2947,7 @@ function addFirstWeighment(tx, base64Image) {
   `, [
     uuid,
     tx.dc_num || tx.dcNum || '',
-    tx.date_time || new Date().toLocaleString(),
+    tx.date_time || nowDdMmYyyy(),
     tx.vehicle_no || tx.vehicle || '',
     tx.party || '',
     tx.material || '',
@@ -2642,7 +3035,7 @@ function addSecondWeighment(tx, base64Image) {
     uuid,
     tx.dc_num || tx.dcNum || '',
     tx.first_weighment_id || tx.firstWeighmentId || '',
-    tx.date_time || new Date().toLocaleString(),
+    tx.date_time || nowDdMmYyyy(),
     tx.vehicle_no || tx.vehicle || '',
     tx.party || '',
     tx.material || '',
@@ -2807,7 +3200,7 @@ function cleanOrphanImages() {
     let deletedCount = 0;
     for (const file of filesOnDisk) {
       if (!liveFilenames.has(file.toLowerCase())) {
-        try {
+         try {
           fs.unlinkSync(path.join(imagesDir, file));
           deletedCount++;
         } catch (err) {
@@ -3155,7 +3548,7 @@ function updateRecordFromPending(tableName, tx, options = {}) {
 
     // Map fields from pending record, keeping existing values if new values are missing/empty
     const dc_num = tx.dc_no || tx.dcNo || tx.dc_num || tx.dcNum || (existing ? existing.dc_num : '');
-    const date_time = tx.date_time || tx.dateTime || (existing ? existing.date_time : new Date().toLocaleString());
+    const date_time = tx.date_time || tx.dateTime || (existing ? existing.date_time : nowDdMmYyyy());
     const vehicle_no = tx.vehicle_no || tx.vehicleNo || (existing ? existing.vehicle_no : '');
     const contractor = tx.contractor || tx.party || (existing ? existing.contractor : '');
     const quarry = tx.quarry || (existing ? existing.quarry : '');
@@ -3251,7 +3644,7 @@ function updateRecordFromPending(tableName, tx, options = {}) {
 
     const dc_num = tx.dc_no || tx.dcNo || tx.dc_num || tx.dcNum || (existing ? existing.dc_num : '');
     const your_dc = tx.your_dc || tx.yourDc || (existing ? existing.your_dc : '');
-    const date_time = tx.date_time || tx.dateTime || (existing ? existing.date_time : new Date().toLocaleString());
+    const date_time = tx.date_time || tx.dateTime || (existing ? existing.date_time : nowDdMmYyyy());
     const vehicle_no = tx.vehicle_no || tx.vehicle || (existing ? existing.vehicle_no : '');
     const rawIncomingParty = tx.party || (existing ? existing.party : '');
     let party = rawIncomingParty;
@@ -3507,7 +3900,8 @@ function getMaxExistingDcNumber(normModule, normType, currentCycle) {
 
   for (const table of tables) {
     try {
-      const stmt = dbInstance.prepare(`SELECT dc_num, bill_type, date_time, created_at FROM ${table} WHERE dc_num IS NOT NULL AND dc_num != ''`);
+      const cols = table === 'first_weighments' ? 'dc_num, date_time, created_at' : 'dc_num, bill_type, date_time, created_at';
+      const stmt = dbInstance.prepare(`SELECT ${cols} FROM ${table} WHERE dc_num IS NOT NULL AND dc_num != ''`);
       while (stmt.step()) {
         const row = stmt.getAsObject();
         if (!row.dc_num) continue;
@@ -3518,7 +3912,8 @@ function getMaxExistingDcNumber(normModule, normType, currentCycle) {
         const rowDateStr = row.date_time || row.created_at;
         if (rowDateStr) {
           const rowCycle = normType === 'GST' ? getDcFinancialYearStringForDate(rowDateStr) : getDcBusinessDayDateStringForDate(rowDateStr);
-          if (rowCycle !== currentCycle) continue;
+          // 1st weighment serials (SN-) keep counting across days
+          if (normModule !== 'first_weighment' && rowCycle !== currentCycle) continue;
         }
 
         const match = String(row.dc_num).match(/\d+/);
@@ -3569,17 +3964,19 @@ function peekNextDcNumber(type = 'NON-GST', prefix = 'DC-', moduleKey = 'sales')
   const pfx = prefix || 'DC-';
 
   try {
+    // The cycle limit applies only to Sales NON-GST; Boulders, Yard, and GST
+    // sequences retain their normal reset behavior.
     const cycleLimit = getDcCycleLimitSettings();
-    if (cycleLimit.enabled) {
+    if (cycleLimit.enabled && normModule === 'sales' && normType !== 'GST') {
       const maxLimit = Math.max(1, cycleLimit.max);
       const stmt = dbInstance.prepare('SELECT seq_value, cycle_value FROM dc_sequences WHERE module_key = ? AND type_key = ?');
       stmt.bind([normModule, normType]);
+      // Cyclic mode ignores the day / financial-year reset: the number keeps
+      // counting across days and years and only wraps to 1 after the limit.
       let seq = 1;
       if (stmt.step()) {
         const row = stmt.getAsObject();
-        if (row.cycle_value === currentCycle) {
-          seq = Number(row.seq_value) || 1;
-        }
+        seq = Number(row.seq_value) || 1;
       }
       stmt.free();
 
@@ -3595,7 +3992,7 @@ function peekNextDcNumber(type = 'NON-GST', prefix = 'DC-', moduleKey = 'sales')
     let seq = 1;
     if (stmt.step()) {
       const row = stmt.getAsObject();
-      if (row.cycle_value === currentCycle) {
+      if (row.cycle_value === currentCycle || normModule === 'first_weighment') {
         seq = Number(row.seq_value) || 1;
       }
     }
@@ -3626,17 +4023,18 @@ function getAndAssignDc(type = 'NON-GST', prefix = 'DC-', moduleKey = 'sales') {
   const pfx = prefix || 'DC-';
 
   try {
+    // The cycle limit applies only to Sales NON-GST; Boulders, Yard, and GST
+    // sequences retain their normal reset behavior.
     const cycleLimit = getDcCycleLimitSettings();
-    if (cycleLimit.enabled) {
+    if (cycleLimit.enabled && normModule === 'sales' && normType !== 'GST') {
       const maxLimit = Math.max(1, cycleLimit.max);
       const stmt = dbInstance.prepare('SELECT seq_value, cycle_value FROM dc_sequences WHERE module_key = ? AND type_key = ?');
       stmt.bind([normModule, normType]);
+      // Cyclic mode ignores the day / financial-year reset (see peekNextDcNumber).
       let currentSeq = 1;
       if (stmt.step()) {
         const row = stmt.getAsObject();
-        if (row.cycle_value === currentCycle) {
-          currentSeq = Number(row.seq_value) || 1;
-        }
+        currentSeq = Number(row.seq_value) || 1;
       }
       stmt.free();
 
@@ -3662,7 +4060,7 @@ function getAndAssignDc(type = 'NON-GST', prefix = 'DC-', moduleKey = 'sales') {
     let cycleMatched = false;
     if (stmt.step()) {
       const row = stmt.getAsObject();
-      if (row.cycle_value === currentCycle) {
+      if (row.cycle_value === currentCycle || normModule === 'first_weighment') {
         currentSeq = Number(row.seq_value) || 1;
         cycleMatched = true;
       }
@@ -3879,6 +4277,9 @@ module.exports = {
   setCleanupConfig,
   getCleanupStatus,
   saveToDiskSync,
+  getBackupStatus,
+  createManualBackup,
+  verifyDatabaseIntegrity,
   queueOfflineAlert,
   getPendingOfflineAlerts,
   markOfflineAlertCompleted,
@@ -3888,4 +4289,3 @@ module.exports = {
   // above rather than being overwritten by them.
   ...hydratedGetters
 };
-

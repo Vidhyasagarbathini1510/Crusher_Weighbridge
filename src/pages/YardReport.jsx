@@ -1,17 +1,58 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { api } from '../api/client.js';
 import { printReport, printSingleTicketSlip } from '../utils/reportPrinter.js';
 import { printClassicSalesReport, printClassicSummaryReport, toReportStamp } from '../utils/classicReportPrinter.js';
 import SearchableSelect from '../components/SearchableSelect.jsx';
+import { compareMaterials } from '../utils/materialOrder.js';
+import DotMatrixPreviewModal from '../components/DotMatrixPreviewModal.jsx';
+import {
+  getSalesSummaryPrintMode,
+  SALES_SUMMARY_PRINT_MODES,
+  buildDotMatrixDetailPreview,
+  buildDotMatrixSummaryPreview,
+} from '../utils/salesSummaryPrinter.js';
+import {
+  REPORT_GST_MODES,
+  getReportGstModeSync,
+  getRecordBillType
+} from '../utils/reportGstUtil.js';
 
 export default function YardReport() {
+  // Settings → "Reports Print Output Mode": Normal (A4) or Dot Matrix for all reports
+  const [printMode, setPrintMode] = useState(() => getSalesSummaryPrintMode());
+  const [dotMatrix, setDotMatrix] = useState(null); // open preview: { title, badge, previewText, rawText }
+  useEffect(() => {
+    const handleModeUpdate = () => setPrintMode(getSalesSummaryPrintMode());
+    window.addEventListener('storage', handleModeUpdate);
+    window.addEventListener('sales-summary-print-mode-changed', handleModeUpdate);
+    return () => {
+      window.removeEventListener('storage', handleModeUpdate);
+      window.removeEventListener('sales-summary-print-mode-changed', handleModeUpdate);
+    };
+  }, []);
   const [transactions, setTransactions] = useState([]);
   const [filtered, setFiltered] = useState([]);
   const [fromDate, setFromDate] = useState('');
   const [toDate, setToDate] = useState('');
+  const [gstFilter, setGstFilter] = useState(() => getReportGstModeSync());
   const [activeTab, setActiveTab] = useState('Report');
   const [showFilters, setShowFilters] = useState(true);
   const [metrics, setMetrics] = useState({ gross: 0, tare: 0, nett: 0, trips: 0 });
+
+  useEffect(() => {
+    const handleGstUpdate = (e) => {
+      const newMode = (e && e.detail && e.detail.reportGstMode) || getReportGstModeSync();
+      setGstFilter(newMode);
+    };
+    window.addEventListener('storage', handleGstUpdate);
+    window.addEventListener('workflow-setting-changed', handleGstUpdate);
+    window.addEventListener('report-gst-mode-changed', handleGstUpdate);
+    return () => {
+      window.removeEventListener('storage', handleGstUpdate);
+      window.removeEventListener('workflow-setting-changed', handleGstUpdate);
+      window.removeEventListener('report-gst-mode-changed', handleGstUpdate);
+    };
+  }, []);
 
   const [selectedImage, setSelectedImage] = useState(null);
 
@@ -31,10 +72,19 @@ export default function YardReport() {
     return `${year}-${month}-${day}T23:59`;
   };
 
-  const parseTxDateTime = (dtStr) => {
+  const parseTxDateTime = (dtStr, timeStr = '') => {
     if (!dtStr) return null;
-    const str = String(dtStr).trim();
+    let str = String(dtStr).trim();
     if (!str || str === 'N/A') return null;
+
+    if (timeStr && !/[T\s]\d{1,2}:\d{2}/.test(str)) {
+      str = `${str} ${String(timeStr).trim()}`;
+    }
+
+    if (/^\d{4}-\d{2}-\d{2}T.*(?:Z|[+-]\d{2}:?\d{2})$/i.test(str)) {
+      const zonedDate = new Date(str);
+      return Number.isNaN(zonedDate.getTime()) ? null : zonedDate;
+    }
 
     const ymdMatch = str.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})(?:[\sT](\d{1,2}):(\d{2})(?::(\d{2}))?)?/);
     if (ymdMatch) {
@@ -45,21 +95,34 @@ export default function YardReport() {
       const mins = ymdMatch[5] ? parseInt(ymdMatch[5], 10) : 0;
       const secs = ymdMatch[6] ? parseInt(ymdMatch[6], 10) : 0;
       const d = new Date(year, month, day, hours, mins, secs);
-      if (!isNaN(d.getTime())) return d;
+      if (!isNaN(d.getTime()) && d.getFullYear() === year && d.getMonth() === month && d.getDate() === day) return d;
     }
 
     const cleanStr = str.replace(/,/g, ' ').replace(/\s+/g, ' ');
     const dmyMatch = cleanStr.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?(?:\s*([AP]\.?M\.?))?)?/i);
     if (dmyMatch) {
-      let p1 = parseInt(dmyMatch[1], 10);
-      let p2 = parseInt(dmyMatch[2], 10);
+      const first = parseInt(dmyMatch[1], 10);
+      const second = parseInt(dmyMatch[2], 10);
       const year = parseInt(dmyMatch[3], 10);
-      let day = p1;
-      let month = p2;
+      let day;
+      let month;
 
-      if (p1 <= 12 && p2 > 12) {
-        month = p1;
-        day = p2;
+      if (first <= 12 && second > 12) {
+        month = first;
+        day = second;
+      } else if (first > 12 && second <= 12) {
+        day = first;
+        month = second;
+      } else if (cleanStr.charAt(dmyMatch[1].length) === '-') {
+        // The app saves DD-MM-YYYY with dashes; never read it by the PC's region
+        day = first;
+        month = second;
+      } else {
+        const parts = new Intl.DateTimeFormat(undefined, { day: 'numeric', month: 'numeric' })
+          .formatToParts(new Date(2026, 10, 3));
+        const monthFirst = parts.findIndex(part => part.type === 'month') < parts.findIndex(part => part.type === 'day');
+        month = monthFirst ? first : second;
+        day = monthFirst ? second : first;
       }
 
       let hours = dmyMatch[4] ? parseInt(dmyMatch[4], 10) : 0;
@@ -71,7 +134,7 @@ export default function YardReport() {
       if (ampm === 'AM' && hours === 12) hours = 0;
 
       const d = new Date(year, month - 1, day, hours, mins, secs);
-      if (!isNaN(d.getTime())) return d;
+      if (!isNaN(d.getTime()) && d.getFullYear() === year && d.getMonth() === month - 1 && d.getDate() === day) return d;
     }
 
     const fallback = new Date(str);
@@ -108,7 +171,9 @@ export default function YardReport() {
       });
       const data = Array.from(combinedMap.values());
       setTransactions(data);
-      filterData(data, '', '', '', minD, maxD);
+      const initGst = getReportGstModeSync();
+      setGstFilter(initGst);
+      // Records stay hidden until the operator presses Search Yard (or F1)
     }).catch(console.error);
   }, []);
 
@@ -127,19 +192,25 @@ export default function YardReport() {
   const uniqueMaterials = [...new Set(transactions.map(t => t.product || t.material).filter(Boolean))];
   const uniqueVehicles = [...new Set(transactions.map(t => t.vehicle_no || t.vehicle).filter(Boolean))];
 
-  const filterData = (dataList, partyVal, matVal, vehVal, fDate, tDate) => {
+  const filterData = (dataList, partyVal, matVal, vehVal, fDate, tDate, gstVal = gstFilter) => {
     let res = dataList;
 
     if (fDate || tDate) {
-      const fTime = fDate ? new Date(fDate).getTime() : null;
-      const tTime = tDate ? new Date(tDate).getTime() : null;
+      const fTime = fDate ? parseTxDateTime(fDate)?.getTime() ?? null : null;
+      const parsedToDate = tDate ? parseTxDateTime(tDate) : null;
+      const tTime = parsedToDate
+        ? parsedToDate.getTime() + (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(tDate) ? 59999 : 0)
+        : null;
 
       res = res.filter(t => {
-        const txD = parseTxDateTime(t.date_time || t.created_at || t.date || t.dateTime);
+        const txD = parseTxDateTime(
+          t.date_time || t.dateTime || t.gross_date || t.grossDate || t.date,
+          t.gross_time || t.grossTime || t.time
+        );
         if (!txD) return true;
         const txTime = txD.getTime();
-        if (fTime && txTime < fTime) return false;
-        if (tTime && txTime > tTime) return false;
+        if (fTime !== null && txTime < fTime) return false;
+        if (tTime !== null && txTime > tTime) return false;
         return true;
       });
     }
@@ -148,24 +219,32 @@ export default function YardReport() {
     if (matVal) res = res.filter(t => (t.product || t.material || '').toLowerCase().includes(matVal.toLowerCase()));
     if (vehVal) res = res.filter(t => (t.vehicle_no || t.vehicle || '').toLowerCase().includes(vehVal.toLowerCase()));
 
+    if (gstVal && gstVal !== REPORT_GST_MODES.ALL) {
+      res = res.filter(t => getRecordBillType(t) === gstVal);
+    }
+
     setFiltered(res);
     calculateMetrics(res);
   };
 
   const handleSearchCustom = (e) => {
     if (e) e.preventDefault();
-    filterData(transactions, party, material, vehicle, fromDate, toDate);
+    filterData(transactions, party, material, vehicle, fromDate, toDate, gstFilter);
   };
 
   const handleResetFilters = () => {
     setParty('');
     setMaterial('');
     setVehicle('');
+    const defaultGst = getReportGstModeSync();
+    setGstFilter(defaultGst);
     const minD = getMinDateTime();
     const maxD = getMaxDateTime();
     setFromDate(minD);
     setToDate(maxD);
-    filterData(transactions, '', '', '', minD, maxD);
+    // Reset clears the list again; records show after the next search
+    setFiltered([]);
+    calculateMetrics([]);
   };
 
   // Grouped summary calculation for Material and Vehicle tabs
@@ -187,12 +266,59 @@ export default function YardReport() {
       groups[val].tare += Number(t.tare || 0);
       groups[val].nett += Number(t.net || t.nettVal || 0);
     });
-    return Object.values(groups);
+    const list = Object.values(groups);
+    return keyName === 'material' ? list.sort((a, b) => compareMaterials(a.name, b.name)) : list;
   };
+
+  // Dot matrix preview of the current tab (Print in Dot Matrix mode, or F1)
+  const openDotMatrixPreview = () => {
+    const from = toReportStamp(fromDate, false);
+    const to = toReportStamp(toDate, true);
+
+    if (activeTab === 'Report') {
+      setDotMatrix(buildDotMatrixDetailPreview({
+        title: 'YARD Weighment Report',
+        variant: 'yard',
+        filters: { party, material, vehicle },
+        fromDate: from,
+        toDate: to,
+        rows: filtered,
+        totals: metrics
+      }));
+    } else {
+      setDotMatrix(buildDotMatrixSummaryPreview({
+        reportTitle: 'Yard Summary',
+        summaryName: activeTab === 'Material' ? 'Material' : 'Vehicle No',
+        filters: { party, material, vehicle },
+        fromDate: from,
+        toDate: to,
+        groups: getGroupedSummary(activeTab.toLowerCase())
+      }));
+    }
+  };
+
+  // F1 applies the current filters and shows the records in the grid (like
+  // Search Yard). Printing (Normal or Dot Matrix) stays on the Print Full Report button.
+  const showRecordsRef = useRef(null);
+  showRecordsRef.current = () => handleSearchCustom();
+  useEffect(() => {
+    const handleF1 = (e) => {
+      if (e.key !== 'F1') return;
+      e.preventDefault();
+      showRecordsRef.current();
+    };
+    window.addEventListener('keydown', handleF1);
+    return () => window.removeEventListener('keydown', handleF1);
+  }, []);
 
   const handlePrint = () => {
     const from = toReportStamp(fromDate, false);
     const to = toReportStamp(toDate, true);
+
+    if (printMode === SALES_SUMMARY_PRINT_MODES.DOT_MATRIX) {
+      openDotMatrixPreview();
+      return;
+    }
 
     if (activeTab === 'Report') {
       printClassicSalesReport({
@@ -329,7 +455,7 @@ export default function YardReport() {
                     options={uniqueMaterials} emptyLabel="ALL MATERIALS" placeholder="Type to search material..." />
                 </div>
 
-                <div className="col-12">
+                <div className="col-6">
                   <label className="saas-label">Vehicle</label>
                   <SearchableSelect className="saas-input" value={vehicle} onChange={setVehicle}
                     options={uniqueVehicles} emptyLabel="ALL VEHICLES" placeholder="Type to search vehicle..." />
@@ -381,11 +507,12 @@ export default function YardReport() {
                 </button>
                 <button
                   type="button"
-                  className="btn btn-sm btn-dark fw-bold ms-1"
+                  className={`btn btn-sm ${printMode === SALES_SUMMARY_PRINT_MODES.DOT_MATRIX ? 'btn-success text-white' : 'btn-dark'} fw-bold ms-1`}
                   onClick={handlePrint}
                   style={{ fontSize: '0.75rem', padding: '0.25rem 0.65rem' }}
+                  title={printMode === SALES_SUMMARY_PRINT_MODES.DOT_MATRIX ? 'Dot Matrix Printer (ESC/P)' : 'Normal A4 Print Window'}
                 >
-                  🖨️ Print Full Report
+                  🖨️ Print Full Report {printMode === SALES_SUMMARY_PRINT_MODES.DOT_MATRIX ? '⚡ (Dot Matrix)' : ''}
                 </button>
               </div>
 
@@ -406,6 +533,7 @@ export default function YardReport() {
                       <th>DC Num</th>
                       <th>Date & Time</th>
                       <th>Vehicle</th>
+                      <th>Bill Type</th>
                       <th>Material</th>
                       <th className="text-end">Gross (kg)</th>
                       <th className="text-end">Tare (kg)</th>
@@ -421,6 +549,11 @@ export default function YardReport() {
                         <td className="fw-bold">{t.dc_num || t.dcNum || t.token || `TK-${t.id}`}</td>
                         <td>{t.date_time || t.created_at || 'N/A'}</td>
                         <td className="fw-semibold text-primary">{t.vehicle_no || t.vehicle || 'N/A'}</td>
+                        <td>
+                          <span className={`badge ${getRecordBillType(t) === 'GST' ? 'bg-success-subtle text-success border border-success-subtle' : 'bg-secondary-subtle text-secondary border'} px-1.5 py-0.5`} style={{ fontSize: '0.68rem', fontWeight: 700 }}>
+                            {getRecordBillType(t)}
+                          </span>
+                        </td>
                         <td>{t.product || t.material || 'BOULDERS'}</td>
                         <td className="text-end">{Number(t.gross || 0).toLocaleString()}</td>
                         <td className="text-end">{Number(t.tare || 0).toLocaleString()}</td>
@@ -513,6 +646,8 @@ export default function YardReport() {
           </div>
         </div>
       )}
+
+      {dotMatrix && <DotMatrixPreviewModal {...dotMatrix} onClose={() => setDotMatrix(null)} />}
     </div>
   );
 }

@@ -1,17 +1,27 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { api } from '../api/client.js';
 import { printReport, printSingleTicketSlip } from '../utils/reportPrinter.js';
 import { printClassicSalesReport, printClassicSummaryReport, toReportStamp } from '../utils/classicReportPrinter.js';
 import SearchableSelect from '../components/SearchableSelect.jsx';
+import { compareMaterials } from '../utils/materialOrder.js';
 import {
   getSalesSummaryPrintMode,
   SALES_SUMMARY_PRINT_MODES,
   generateDotMatrixPreviewText,
+  sortRowsByCompletionTime,
   generateDotMatrixQuarryReportText,
   generateSummarySalesMPreviewText,
   generateSummarySalesMReportText,
   sendRawToPrinter
 } from '../utils/salesSummaryPrinter.js';
+import {
+  REPORT_GST_MODES,
+  getReportGstModeSync,
+  getRecordBillType,
+  getReportGstShortcutsSync,
+  getReportGstShortcuts
+} from '../utils/reportGstUtil.js';
 
 export default function SalesSummaryReport() {
   const [transactions, setTransactions] = useState([]);
@@ -38,8 +48,23 @@ export default function SalesSummaryReport() {
       window.removeEventListener('sales-summary-print-mode-changed', handleModeUpdate);
     };
   }, []);
-  
+
+  // Escape key closes dot matrix modal
+  useEffect(() => {
+    if (!showDotMatrixModal) return;
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape') {
+        setShowDotMatrixModal(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [showDotMatrixModal]);
+
   // Filters
+  // With the F1 / F2 / F3 switch on, the report opens on GST only (F2 = Non-GST, F3 = both)
+  const defaultGstMode = () => (getReportGstShortcutsSync() ? REPORT_GST_MODES.GST : getReportGstModeSync());
+  const [gstMode, setGstMode] = useState(defaultGstMode);
   const [party, setParty] = useState('');
   const [material, setMaterial] = useState('');
   const [vehicle, setVehicle] = useState('');
@@ -197,7 +222,9 @@ export default function SalesSummaryReport() {
       });
       const processed = Array.from(combinedMap.values());
       setTransactions(processed);
-      filterData(processed, '', '', '', '', '', '', minD, maxD);
+      const initGst = defaultGstMode();
+      setGstMode(initGst);
+      filterData(processed, '', '', '', '', '', '', minD, maxD, initGst);
     }).catch(console.error);
   }, []);
 
@@ -212,7 +239,7 @@ export default function SalesSummaryReport() {
     setMetrics({ gross, tare, nett, trips: data.length, totalAmt });
   };
 
-  const filterData = (dataList, partyVal, matVal, vehVal, srcVal, destVal, payVal, fDate, tDate) => {
+  const filterData = (dataList, partyVal, matVal, vehVal, srcVal, destVal, payVal, fDate, tDate, gstVal = gstMode) => {
     let res = dataList;
 
     if (fDate || tDate) {
@@ -220,7 +247,7 @@ export default function SalesSummaryReport() {
       const tTime = tDate ? new Date(tDate).getTime() : null;
 
       res = res.filter(t => {
-        const txD = parseTxDateTime(t.date_time || t.created_at || t.date || t.dateTime);
+        const txD = parseTxDateTime(t.date_time || t.dateTime || t.date);
         if (!txD) return true;
         const txTime = txD.getTime();
         if (fTime && txTime < fTime) return false;
@@ -236,13 +263,17 @@ export default function SalesSummaryReport() {
     if (destVal) res = res.filter(t => (t.destination || '').toLowerCase().includes(destVal.toLowerCase()));
     if (payVal) res = res.filter(t => (t.payment || '').toLowerCase().includes(payVal.toLowerCase()));
 
+    if (gstVal && gstVal !== REPORT_GST_MODES.ALL) {
+      res = res.filter(t => getRecordBillType(t) === gstVal);
+    }
+
     setFiltered(res);
     calculateMetrics(res);
   };
 
   const handleSearch = (e) => {
     if (e) e.preventDefault();
-    filterData(transactions, party, material, vehicle, source, destination, payment, fromDate, toDate);
+    filterData(transactions, party, material, vehicle, source, destination, payment, fromDate, toDate, gstMode);
   };
 
   const handleResetFilters = () => {
@@ -252,12 +283,55 @@ export default function SalesSummaryReport() {
     setSource('');
     setDestination('');
     setPayment('');
+    const defaultGst = defaultGstMode();
+    setGstMode(defaultGst);
     const minD = getMinDateTime();
     const maxD = getMaxDateTime();
     setFromDate(minD);
     setToDate(maxD);
-    filterData(transactions, '', '', '', '', '', '', minD, maxD);
+    filterData(transactions, '', '', '', '', '', '', minD, maxD, defaultGst);
   };
+
+  // Settings switch: OFF = normal report (all GST & Non-GST), ON = F1 / F2 filter
+  const [gstShortcuts, setGstShortcuts] = useState(() => getReportGstShortcutsSync());
+  useEffect(() => {
+    getReportGstShortcuts().then(setGstShortcuts);
+    const handleShortcutsChange = (e) => setGstShortcuts(Boolean(e?.detail?.enabled));
+    window.addEventListener('report-gst-shortcuts-changed', handleShortcutsChange);
+    return () => window.removeEventListener('report-gst-shortcuts-changed', handleShortcutsChange);
+  }, []);
+
+  // Switch turned on while the report is open: start on GST only, like a fresh open
+  const prevGstShortcutsRef = useRef(gstShortcuts);
+  useEffect(() => {
+    if (gstShortcuts && !prevGstShortcutsRef.current) {
+      setGstMode(REPORT_GST_MODES.GST);
+      filterData(transactions, party, material, vehicle, source, destination, payment, fromDate, toDate, REPORT_GST_MODES.GST);
+    }
+    prevGstShortcutsRef.current = gstShortcuts;
+  }, [gstShortcuts]);
+
+  // F1 = GST only, F2 = Non-GST only, F3 = both.
+  useEffect(() => {
+    if (!gstShortcuts) {
+      // Switched off while filtered: go back to showing everything
+      if (gstMode !== REPORT_GST_MODES.ALL) {
+        setGstMode(REPORT_GST_MODES.ALL);
+        filterData(transactions, party, material, vehicle, source, destination, payment, fromDate, toDate, REPORT_GST_MODES.ALL);
+      }
+      return;
+    }
+    const handleGstShortcut = (e) => {
+      const keyModes = { F1: REPORT_GST_MODES.GST, F2: REPORT_GST_MODES.NON_GST, F3: REPORT_GST_MODES.ALL };
+      const nextMode = keyModes[e.key];
+      if (!nextMode) return;
+      e.preventDefault();
+      setGstMode(nextMode);
+      filterData(transactions, party, material, vehicle, source, destination, payment, fromDate, toDate, nextMode);
+    };
+    window.addEventListener('keydown', handleGstShortcut);
+    return () => window.removeEventListener('keydown', handleGstShortcut);
+  }, [gstShortcuts, gstMode, transactions, party, material, vehicle, source, destination, payment, fromDate, toDate]);
 
   const handlePartyChange = (selectedParty) => {
     setParty(selectedParty);
@@ -375,11 +449,12 @@ export default function SalesSummaryReport() {
       return Object.values(groups).sort((a, b) => {
         const pComp = a.party.localeCompare(b.party);
         if (pComp !== 0) return pComp;
-        return a.material.localeCompare(b.material);
+        return compareMaterials(a.material, b.material);
       });
     }
 
-    return Object.values(groups);
+    const list = Object.values(groups);
+    return normKey === 'material' ? list.sort((a, b) => compareMaterials(a.name, b.name)) : list;
   };
 
   const handleClassicPrint = () => {
@@ -387,13 +462,15 @@ export default function SalesSummaryReport() {
     const to = toReportStamp(toDate, true);
 
     if (printMode === SALES_SUMMARY_PRINT_MODES.DOT_MATRIX) {
+      // F1 / F2 filtered prints say so in the title
+      const gstTag = '';
       if (activeTab === 'Report') {
         const payload = {
-          title: 'SALES Report / Summary',
+          title: 'SALES Report / Summary' + gstTag,
           filters: { party, material, vehicle, source, destination, payment },
           fromDate: from,
           toDate: to,
-          rows: filtered,
+          rows: sortRowsByCompletionTime(filtered),
           totals: {
             gross: metrics.gross,
             tare: metrics.tare,
@@ -403,7 +480,7 @@ export default function SalesSummaryReport() {
         };
         const preview = generateDotMatrixPreviewText(payload);
         const raw = generateDotMatrixQuarryReportText(payload);
-        setDotMatrixTitle('🖨️ Dot Matrix Print Preview — SALES Report / Summary');
+        setDotMatrixTitle('🖨️ Dot Matrix Print Preview — ' + payload.title);
         setDotMatrixPreviewText(preview);
         setDotMatrixRawText(raw);
         setShowDotMatrixModal(true);
@@ -419,7 +496,7 @@ export default function SalesSummaryReport() {
       const totalNett = groups.reduce((acc, g) => acc + Number(g.nett || 0), 0);
 
       const payload = {
-        reportTitle: 'Sales Summary',
+        reportTitle: 'Sales Summary' + gstTag,
         summaryName,
         columnName,
         filters: { party, material, vehicle, source, destination, payment },
@@ -431,7 +508,7 @@ export default function SalesSummaryReport() {
       };
       const preview = generateSummarySalesMPreviewText(payload);
       const raw = generateSummarySalesMReportText(payload);
-      setDotMatrixTitle(`🖨️ Dot Matrix Print Preview — Sales Summary :${summaryName}`);
+      setDotMatrixTitle(`🖨️ Dot Matrix Print Preview — ${payload.reportTitle} :${summaryName}`);
       setDotMatrixPreviewText(preview);
       setDotMatrixRawText(raw);
       setShowDotMatrixModal(true);
@@ -439,7 +516,7 @@ export default function SalesSummaryReport() {
     }
 
     if (activeTab === 'Report') {
-      printClassicSalesReport({ fromDate: from, toDate: to, rows: filtered });
+      printClassicSalesReport({ fromDate: from, toDate: to, rows: sortRowsByCompletionTime(filtered) });
       return;
     }
 
@@ -480,6 +557,8 @@ export default function SalesSummaryReport() {
         { label: 'Date & Time', align: 'left' },
         { label: 'Vehicle', align: 'left' },
         { label: 'Party', align: 'left' },
+        // Bill Type only matters when F1 / F2 GST filtering is switched on
+        ...(gstShortcuts ? [{ label: 'Bill Type', align: 'center' }] : []),
         { label: 'Source', align: 'left' },
         { label: 'Material', align: 'left' },
         { label: 'Payment', align: 'left' },
@@ -488,12 +567,13 @@ export default function SalesSummaryReport() {
         { label: 'Nett (kg)', align: 'right' }
       ];
 
-      reportRows = filtered.map(t => {
+      reportRows = sortRowsByCompletionTime(filtered).map(t => {
         return [
           t.dc_num || t.dcNum || t.token || `TK-${t.id}`,
           t.date_time || t.created_at || 'N/A',
           t.vehicle_no || t.vehicle || 'N/A',
           t.party || 'LOCAL SALE',
+          ...(gstShortcuts ? [getRecordBillType(t)] : []),
           t.quarry || t.source || 'CRUSHER',
           t.product || t.material || 'N/A',
           t.payment || 'Credit',
@@ -780,6 +860,7 @@ export default function SalesSummaryReport() {
                       <th>Date & Time</th>
                       <th>Vehicle</th>
                       <th>Party</th>
+                      {gstShortcuts && <th>Bill Type</th>}
                       <th>Source</th>
                       <th>Material</th>
                       <th>Payment</th>
@@ -796,6 +877,13 @@ export default function SalesSummaryReport() {
                         <td>{t.date_time || t.created_at || 'N/A'}</td>
                         <td className="fw-semibold text-primary">{t.vehicle_no || t.vehicle || 'N/A'}</td>
                         <td>{t.party || 'LOCAL SALE'}</td>
+                        {gstShortcuts && (
+                          <td>
+                            <span className={`badge ${getRecordBillType(t) === 'GST' ? 'bg-success-subtle text-success border border-success-subtle' : 'bg-secondary-subtle text-secondary border'} px-1.5 py-0.5`} style={{ fontSize: '0.68rem', fontWeight: 700 }}>
+                              {getRecordBillType(t)}
+                            </span>
+                          </td>
+                        )}
                         <td>{t.quarry || t.source || 'CRUSHER'}</td>
                         <td>{t.product || t.material || 'N/A'}</td>
                         <td>
@@ -821,7 +909,7 @@ export default function SalesSummaryReport() {
                     ))}
                     {filtered.length === 0 && (
                       <tr>
-                        <td colSpan="10" className="text-center py-4 text-muted">No summary records found for selected filters.</td>
+                        <td colSpan={gstShortcuts ? 12 : 11} className="text-center py-4 text-muted">No summary records found for selected filters.</td>
                       </tr>
                     )}
                   </tbody>
@@ -921,15 +1009,28 @@ export default function SalesSummaryReport() {
       </div>
 
       {/* DOT MATRIX PRINT PREVIEW MODAL */}
-      {showDotMatrixModal && (
+      {showDotMatrixModal && typeof document !== 'undefined' && createPortal(
         <div
-          className="position-fixed top-0 start-0 w-100 h-100 bg-dark bg-opacity-75 d-flex align-items-center justify-content-center p-3 animate-fade-in"
-          style={{ zIndex: 1060 }}
+          className="position-fixed top-0 start-0 w-100 h-100 bg-dark bg-opacity-75 d-flex align-items-center justify-content-center p-2 p-md-3"
+          style={{ zIndex: 99999 }}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setShowDotMatrixModal(false);
+          }}
         >
-          <div className="card shadow-lg w-100 d-flex flex-column border-0" style={{ maxWidth: '1080px', maxHeight: '92vh', borderRadius: '10px', overflow: 'hidden' }}>
-            <div className="card-header bg-dark text-white d-flex justify-content-between align-items-center py-2.5 px-3">
+          <div
+            className="card shadow-lg w-100 d-flex flex-column border-0"
+            style={{
+              maxWidth: '1120px',
+              height: '92vh',
+              maxHeight: '92vh',
+              borderRadius: '10px',
+              overflow: 'hidden'
+            }}
+          >
+            {/* Header: Fixed/Sticky */}
+            <div className="card-header bg-dark text-white d-flex flex-wrap justify-content-between align-items-center py-2 px-3 flex-shrink-0 gap-2" style={{ zIndex: 10 }}>
               <div className="d-flex align-items-center gap-2">
-                <span className="fw-bold" style={{ fontSize: '0.92rem' }}>
+                <span className="fw-bold text-truncate" style={{ fontSize: '0.92rem' }}>
                   {dotMatrixTitle}
                 </span>
                 <span className="badge bg-success text-white" style={{ fontSize: '0.72rem' }}>
@@ -954,15 +1055,6 @@ export default function SalesSummaryReport() {
 
                 <button
                   type="button"
-                  className="btn btn-sm btn-success fw-bold px-3 py-1.5 d-flex align-items-center gap-1.5 shadow-sm"
-                  onClick={handleExecuteDotMatrixPrint}
-                  disabled={isSendingPrint}
-                  style={{ fontSize: '0.82rem' }}
-                >
-                  {isSendingPrint ? '⏳ Printing...' : '🖨️ Send to Printer'}
-                </button>
-                <button
-                  type="button"
                   className="btn btn-sm btn-outline-light fw-semibold px-2 py-1.5"
                   onClick={(e) => {
                     navigator.clipboard?.writeText(dotMatrixPreviewText);
@@ -975,21 +1067,41 @@ export default function SalesSummaryReport() {
                 >
                   📋 Copy
                 </button>
+
                 <button
                   type="button"
-                  className="btn btn-sm btn-light fw-bold px-2 py-1.5"
+                  className="btn btn-sm btn-success fw-bold px-3 py-1.5 d-flex align-items-center gap-1.5 shadow-sm"
+                  onClick={handleExecuteDotMatrixPrint}
+                  disabled={isSendingPrint}
+                  style={{ fontSize: '0.82rem' }}
+                >
+                  {isSendingPrint ? (
+                    <>
+                      <span className="spinner-border spinner-border-sm me-1" role="status"></span>
+                      Printing...
+                    </>
+                  ) : (
+                    '🖨️ Send to Printer'
+                  )}
+                </button>
+
+                <button
+                  type="button"
+                  className="btn btn-sm btn-light fw-bold px-2.5 py-1.5"
                   onClick={() => setShowDotMatrixModal(false)}
                   style={{ fontSize: '0.8rem' }}
+                  title="Close modal (Esc)"
                 >
                   ✕ Close
                 </button>
               </div>
             </div>
 
+            {/* Scrollable Body */}
             <div
-              className={`card-body p-0 overflow-auto ${dotMatrixTheme === 'white' ? 'bg-light' : 'bg-dark'}`}
+              className={`card-body p-0 overflow-auto flex-grow-1 ${dotMatrixTheme === 'white' ? 'bg-light' : 'bg-dark'}`}
               style={{
-                maxHeight: 'calc(92vh - 60px)',
+                minHeight: 0,
                 backgroundColor: dotMatrixTheme === 'white' ? '#f1f5f9' : '#090d16'
               }}
             >
@@ -1016,8 +1128,41 @@ export default function SalesSummaryReport() {
                 </div>
               </div>
             </div>
+
+            {/* Sticky Bottom Action Bar with Always-Visible Print Button */}
+            <div className="card-footer bg-light border-top d-flex flex-wrap justify-content-between align-items-center py-2 px-3 flex-shrink-0 gap-2">
+              <span className="text-muted small">
+                Continuous stationery format • ESC/P high-speed dot matrix output
+              </span>
+              <div className="d-flex align-items-center gap-2 ms-auto">
+                <button
+                  type="button"
+                  className="btn btn-sm btn-secondary fw-semibold px-3 py-1.5"
+                  onClick={() => setShowDotMatrixModal(false)}
+                >
+                  Close
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-sm btn-success fw-bold px-4 py-1.5 d-flex align-items-center gap-1.5 shadow"
+                  onClick={handleExecuteDotMatrixPrint}
+                  disabled={isSendingPrint}
+                  style={{ fontSize: '0.85rem' }}
+                >
+                  {isSendingPrint ? (
+                    <>
+                      <span className="spinner-border spinner-border-sm me-1" role="status"></span>
+                      Printing...
+                    </>
+                  ) : (
+                    '🖨️ Send to Printer'
+                  )}
+                </button>
+              </div>
+            </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );

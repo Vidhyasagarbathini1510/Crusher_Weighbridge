@@ -384,9 +384,12 @@ export function printSingleTicketSlip(data = {}) {
   const dateTime = data.date_time || data.created_at || new Date().toLocaleString();
   const vehicle = data.vehicle_no || data.vehicle || 'N/A';
   const party = data.party || data.contractor || 'LOCAL SALE';
-  const material = data.product || data.material || 'AGGREGATE / BOULDERS';
-  const source = data.quarry || data.source || 'CRUSHER';
-  const destination = data.destination || 'OUT';
+  const isBoulder = data.card === 'BOULDERS' || (data.material || '').toUpperCase().includes('BOULDER') || (data.product || '').toUpperCase().includes('BOULDER') || (data.dc_num && String(data.dc_num).startsWith('DC-'));
+  const rawSource = (data.quarry || data.source || '').trim();
+  const source = isBoulder
+    ? ((rawSource && rawSource.toUpperCase() !== 'CRUSHER') ? rawSource : 'QUARRY')
+    : (rawSource || 'CRUSHER');
+  const destination = data.destination || (isBoulder ? 'HOPPER' : 'OUT');
   const payment = data.payment || 'Credit';
   
   const gross = Number(data.gross || 0);

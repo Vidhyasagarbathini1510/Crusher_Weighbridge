@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { api } from '../api/client.js';
 import { printReport, printSingleTicketSlip } from '../utils/reportPrinter.js';
 import { printClassicSalesReport, printClassicSummaryReport, toReportStamp } from '../utils/classicReportPrinter.js';
@@ -12,6 +13,11 @@ import {
   generateSummarySalesMReportText,
   sendRawToPrinter
 } from '../utils/salesSummaryPrinter.js';
+import {
+  REPORT_GST_MODES,
+  getReportGstModeSync,
+  getRecordBillType
+} from '../utils/reportGstUtil.js';
 
 export default function BouldersReport() {
   const [transactions, setTransactions] = useState([]);
@@ -38,11 +44,39 @@ export default function BouldersReport() {
       window.removeEventListener('sales-summary-print-mode-changed', handleModeUpdate);
     };
   }, []);
+
+  // Escape key closes dot matrix modal
+  useEffect(() => {
+    if (!showDotMatrixModal) return;
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape') {
+        setShowDotMatrixModal(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [showDotMatrixModal]);
   
   // Filters
+  const [gstFilter, setGstFilter] = useState(() => getReportGstModeSync());
   const [contractor, setContractor] = useState('');
   const [quarry, setQuarry] = useState('');
   const [vehicle, setVehicle] = useState('');
+
+  useEffect(() => {
+    const handleGstUpdate = (e) => {
+      const newMode = (e && e.detail && e.detail.reportGstMode) || getReportGstModeSync();
+      setGstFilter(newMode);
+    };
+    window.addEventListener('storage', handleGstUpdate);
+    window.addEventListener('workflow-setting-changed', handleGstUpdate);
+    window.addEventListener('report-gst-mode-changed', handleGstUpdate);
+    return () => {
+      window.removeEventListener('storage', handleGstUpdate);
+      window.removeEventListener('workflow-setting-changed', handleGstUpdate);
+      window.removeEventListener('report-gst-mode-changed', handleGstUpdate);
+    };
+  }, []);
   const [transporter, setTransporter] = useState('');
   const [destination, setDestination] = useState('');
   const [fromDate, setFromDate] = useState('');
@@ -56,6 +90,20 @@ export default function BouldersReport() {
 
   // Boulders Metrics
   const [metrics, setMetrics] = useState({ gross: 0, tare: 0, nett: 0, trips: 0 });
+
+  // Settings → "Boulders Report Lock": records stay hidden until the operator sets
+  // the filters and presses F1. Reset locks again. Off = normal report.
+  const [lockEnabled, setLockEnabled] = useState(() => localStorage.getItem('noris_boulders_report_lock') === 'true');
+  const [unlocked, setUnlocked] = useState(false);
+  const isLocked = lockEnabled && !unlocked;
+  useEffect(() => {
+    const handleLockSetting = () => {
+      setLockEnabled(localStorage.getItem('noris_boulders_report_lock') === 'true');
+      setUnlocked(false);
+    };
+    window.addEventListener('workflow-setting-changed', handleLockSetting);
+    return () => window.removeEventListener('workflow-setting-changed', handleLockSetting);
+  }, []);
 
   const getMinDateTime = () => {
     const d = new Date();
@@ -197,7 +245,9 @@ export default function BouldersReport() {
 
       const data = Array.from(combinedMap.values());
       setTransactions(data);
-      filterData(data, '', '', '', '', '', minD, maxD);
+      const initGst = getReportGstModeSync();
+      setGstFilter(initGst);
+      filterData(data, '', '', '', '', '', minD, maxD, initGst);
     }).catch(console.error);
   }, []);
 
@@ -208,7 +258,7 @@ export default function BouldersReport() {
     setMetrics({ gross, tare, nett, trips: data.length });
   };
 
-  const filterData = (dataList, contractorVal, quarryVal, vehVal, transVal, destVal, fDate, tDate) => {
+  const filterData = (dataList, contractorVal, quarryVal, vehVal, transVal, destVal, fDate, tDate, gstVal = gstFilter) => {
     let res = dataList;
 
     if (fDate || tDate) {
@@ -216,7 +266,7 @@ export default function BouldersReport() {
       const tTime = tDate ? new Date(tDate).getTime() : null;
 
       res = res.filter(t => {
-        const txD = parseTxDateTime(t.date_time || t.created_at || t.date || t.dateTime);
+        const txD = parseTxDateTime(t.date_time || t.dateTime || t.date);
         if (!txD) return true;
         const txTime = txD.getTime();
         if (fTime && txTime < fTime) return false;
@@ -231,13 +281,17 @@ export default function BouldersReport() {
     if (transVal) res = res.filter(t => (t.transporter || '').toLowerCase().includes(transVal.toLowerCase()));
     if (destVal) res = res.filter(t => (t.destination || '').toLowerCase().includes(destVal.toLowerCase()));
 
+    if (gstVal && gstVal !== REPORT_GST_MODES.ALL) {
+      res = res.filter(t => getRecordBillType(t) === gstVal);
+    }
+
     setFiltered(res);
     calculateMetrics(res);
   };
 
   const handleSearch = (e) => {
     if (e) e.preventDefault();
-    filterData(transactions, contractor, quarry, vehicle, transporter, destination, fromDate, toDate);
+    filterData(transactions, contractor, quarry, vehicle, transporter, destination, fromDate, toDate, gstFilter);
   };
 
   const uniqueContractors = [...new Set([
@@ -246,11 +300,13 @@ export default function BouldersReport() {
   ])].filter(c => c && c.trim().toUpperCase() !== 'OTHERS');
 
   const uniqueQuarries = [...new Set([
-    'CRUSHER',
-    'YARD',
     'QUARRY',
+    'YARD',
     ...masterQuarries,
-    ...transactions.map(t => t.quarry || t.source).filter(Boolean)
+    ...transactions.map(t => {
+      const q = (t.quarry || t.source || '').trim();
+      return (q && q.toUpperCase() !== 'CRUSHER') ? q : 'QUARRY';
+    }).filter(Boolean)
   ])];
 
   const uniqueVehicles = [...new Set([
@@ -272,16 +328,19 @@ export default function BouldersReport() {
   ])];
 
   const handleResetFilters = () => {
+    setUnlocked(false);
     setContractor('');
     setQuarry('');
     setVehicle('');
     setTransporter('');
     setDestination('');
+    const defaultGst = getReportGstModeSync();
+    setGstFilter(defaultGst);
     const minD = getMinDateTime();
     const maxD = getMaxDateTime();
     setFromDate(minD);
     setToDate(maxD);
-    filterData(transactions, '', '', '', '', '', minD, maxD);
+    filterData(transactions, '', '', '', '', '', minD, maxD, defaultGst);
   };
 
   // Grouped summary calculation for Quarry, Contractor, and Vehicle tabs
@@ -289,7 +348,10 @@ export default function BouldersReport() {
     const groups = {};
     filtered.forEach(t => {
       let val = '';
-      if (keyName === 'quarry') val = t.quarry || t.source || 'UNSPECIFIED';
+      if (keyName === 'quarry') {
+        const rawQ = (t.quarry || t.source || '').trim();
+        val = (rawQ && rawQ.toUpperCase() !== 'CRUSHER') ? rawQ : 'QUARRY';
+      }
       else if (keyName === 'contractor') val = t.contractor || t.party || 'UNSPECIFIED';
       else if (keyName === 'vehicle') val = t.vehicle_no || t.vehicle || 'UNSPECIFIED';
 
@@ -307,58 +369,82 @@ export default function BouldersReport() {
     return Object.values(groups);
   };
 
+  // Dot matrix preview of the current tab (Print in Dot Matrix mode, or F1)
+  const openDotMatrixPreview = () => {
+    const from = toReportStamp(fromDate, false);
+    const to = toReportStamp(toDate, true);
+
+    if (activeTab === 'Report') {
+      const payload = {
+        title: 'QUARRY Report / Summary',
+        filters: { party: contractor, contractor, quarry, vehicle, transporter, destination },
+        fromDate: from,
+        toDate: to,
+        rows: filtered,
+        totals: {
+          gross: metrics.gross,
+          tare: metrics.tare,
+          nett: metrics.nett,
+          trips: metrics.trips
+        }
+      };
+      const preview = generateDotMatrixPreviewText(payload);
+      const raw = generateDotMatrixQuarryReportText(payload);
+      setDotMatrixTitle('🖨️ Dot Matrix Print Preview — QUARRY Report / Summary');
+      setDotMatrixPreviewText(preview);
+      setDotMatrixRawText(raw);
+      setShowDotMatrixModal(true);
+      return;
+    }
+
+    // Grouped Summary Dot Matrix Report (Image 5 format: QUARRY SUMMARY :Vehicle, etc.)
+    const summaryName = activeTab;
+    const columnName = activeTab;
+    const groups = getGroupedSummary(activeTab.toLowerCase());
+    const totalTrips = groups.reduce((acc, g) => acc + Number(g.trips || 0), 0);
+    const totalNett = groups.reduce((acc, g) => acc + Number(g.nett || 0), 0);
+
+    const payload = {
+      reportTitle: 'QUARRY SUMMARY',
+      summaryName,
+      columnName,
+      filters: { party: contractor, contractor, quarry, vehicle, transporter, destination },
+      fromDate: from,
+      toDate: to,
+      groups,
+      totalTrips,
+      totalNett
+    };
+    const preview = generateSummarySalesMPreviewText(payload);
+    const raw = generateSummarySalesMReportText(payload);
+    setDotMatrixTitle(`🖨️ Dot Matrix Print Preview — QUARRY SUMMARY :${summaryName}`);
+    setDotMatrixPreviewText(preview);
+    setDotMatrixRawText(raw);
+    setShowDotMatrixModal(true);
+  };
+
+  // F1 applies the current filters and shows the records in the grid (like
+  // Search Boulders); with the Boulders Report Lock on, it also unlocks them.
+  // Printing (Normal or Dot Matrix) stays on the Print Full Report button.
+  const showRecordsRef = useRef(null);
+  showRecordsRef.current = () => { handleSearch(); setUnlocked(true); };
+  useEffect(() => {
+    const handleF1 = (e) => {
+      if (e.key !== 'F1') return;
+      e.preventDefault();
+      showRecordsRef.current();
+    };
+    window.addEventListener('keydown', handleF1);
+    return () => window.removeEventListener('keydown', handleF1);
+  }, []);
+
   const handlePrint = () => {
+    if (isLocked) return;
     const from = toReportStamp(fromDate, false);
     const to = toReportStamp(toDate, true);
 
     if (printMode === SALES_SUMMARY_PRINT_MODES.DOT_MATRIX) {
-      if (activeTab === 'Report') {
-        const payload = {
-          title: 'QUARRY Report / Summary',
-          filters: { party: contractor, contractor, quarry, vehicle, transporter, destination },
-          fromDate: from,
-          toDate: to,
-          rows: filtered,
-          totals: {
-            gross: metrics.gross,
-            tare: metrics.tare,
-            nett: metrics.nett,
-            trips: metrics.trips
-          }
-        };
-        const preview = generateDotMatrixPreviewText(payload);
-        const raw = generateDotMatrixQuarryReportText(payload);
-        setDotMatrixTitle('🖨️ Dot Matrix Print Preview — QUARRY Report / Summary');
-        setDotMatrixPreviewText(preview);
-        setDotMatrixRawText(raw);
-        setShowDotMatrixModal(true);
-        return;
-      }
-
-      // Grouped Summary Dot Matrix Report (Image 5 format: QUARRY SUMMARY :Vehicle, etc.)
-      const summaryName = activeTab;
-      const columnName = activeTab;
-      const groups = getGroupedSummary(activeTab.toLowerCase());
-      const totalTrips = groups.reduce((acc, g) => acc + Number(g.trips || 0), 0);
-      const totalNett = groups.reduce((acc, g) => acc + Number(g.nett || 0), 0);
-
-      const payload = {
-        reportTitle: 'QUARRY SUMMARY',
-        summaryName,
-        columnName,
-        filters: { party: contractor, contractor, quarry, vehicle, transporter, destination },
-        fromDate: from,
-        toDate: to,
-        groups,
-        totalTrips,
-        totalNett
-      };
-      const preview = generateSummarySalesMPreviewText(payload);
-      const raw = generateSummarySalesMReportText(payload);
-      setDotMatrixTitle(`🖨️ Dot Matrix Print Preview — QUARRY SUMMARY :${summaryName}`);
-      setDotMatrixPreviewText(preview);
-      setDotMatrixRawText(raw);
-      setShowDotMatrixModal(true);
+      openDotMatrixPreview();
       return;
     }
 
@@ -522,7 +608,7 @@ export default function BouldersReport() {
                     options={uniqueTransporters} emptyLabel="ALL TRANSPORTERS" placeholder="Type to search transporter..." />
                 </div>
 
-                <div className="col-12">
+                <div className="col-6">
                   <label className="saas-label">Destination</label>
                   <SearchableSelect className="saas-input" value={destination} onChange={setDestination}
                     options={uniqueDestinations} emptyLabel="ALL DESTINATIONS" placeholder="Type to search destination..." />
@@ -539,19 +625,19 @@ export default function BouldersReport() {
                 <div className="row g-2">
                   <div className="col-6 border-bottom pb-2">
                     <div className="metric-label">Total Gross</div>
-                    <div className="metric-value text-primary">{metrics.gross.toLocaleString()} kg</div>
+                    <div className="metric-value text-primary">{isLocked ? '—' : `${metrics.gross.toLocaleString()} kg`}</div>
                   </div>
                   <div className="col-6 border-bottom pb-2">
                     <div className="metric-label">Total Tare</div>
-                    <div className="metric-value text-success">{metrics.tare.toLocaleString()} kg</div>
+                    <div className="metric-value text-success">{isLocked ? '—' : `${metrics.tare.toLocaleString()} kg`}</div>
                   </div>
                   <div className="col-6 pt-2">
                     <div className="metric-label">Total Nett</div>
-                    <div className="metric-value text-danger">{metrics.nett.toLocaleString()} kg</div>
+                    <div className="metric-value text-danger">{isLocked ? '—' : `${metrics.nett.toLocaleString()} kg`}</div>
                   </div>
                   <div className="col-6 pt-2">
                     <div className="metric-label">Total Trips</div>
-                    <div className="metric-value">{metrics.trips}</div>
+                    <div className="metric-value">{isLocked ? '—' : metrics.trips}</div>
                   </div>
                 </div>
               </div>
@@ -577,6 +663,7 @@ export default function BouldersReport() {
                   type="button"
                   className={`btn btn-sm ${printMode === SALES_SUMMARY_PRINT_MODES.DOT_MATRIX ? 'btn-success text-white' : 'btn-dark'} fw-bold ms-1`}
                   onClick={handlePrint}
+                  disabled={isLocked}
                   style={{ fontSize: '0.75rem', padding: '0.25rem 0.65rem' }}
                   title={printMode === SALES_SUMMARY_PRINT_MODES.DOT_MATRIX ? 'Dot Matrix Printer (ESC/P 120-Column Quarry Report)' : 'Normal A4 Print Window'}
                 >
@@ -602,6 +689,7 @@ export default function BouldersReport() {
                       <th>Date & Time</th>
                       <th>Vehicle</th>
                       <th>Contractor / Party</th>
+                      <th>Bill Type</th>
                       <th>Source</th>
                       <th className="text-end">Gross (kg)</th>
                       <th className="text-end">Tare (kg)</th>
@@ -611,13 +699,21 @@ export default function BouldersReport() {
                     </tr>
                   </thead>
                   <tbody>
-                    {filtered.map((t, idx) => (
+                    {!isLocked && filtered.map((t, idx) => (
                       <tr key={idx}>
                         <td className="fw-bold">{t.dc_num || t.dcNum || t.token || `TK-${t.id}`}</td>
                         <td>{t.date_time || t.created_at || 'N/A'}</td>
                         <td className="fw-semibold text-primary">{t.vehicle_no || t.vehicle || 'N/A'}</td>
                         <td>{t.contractor || t.party || 'N/A'}</td>
-                        <td>{t.quarry || t.source || 'CRUSHER'}</td>
+                        <td>
+                          <span className={`badge ${getRecordBillType(t) === 'GST' ? 'bg-success-subtle text-success border border-success-subtle' : 'bg-secondary-subtle text-secondary border'} px-1.5 py-0.5`} style={{ fontSize: '0.68rem', fontWeight: 700 }}>
+                            {getRecordBillType(t)}
+                          </span>
+                        </td>
+                        <td>{(() => {
+                          const rawQ = (t.quarry || t.source || '').trim();
+                          return (rawQ && rawQ.toUpperCase() !== 'CRUSHER') ? rawQ : 'QUARRY';
+                        })()}</td>
                         <td className="text-end text-secondary">{Number(t.gross || 0).toLocaleString()}</td>
                         <td className="text-end text-secondary">{Number(t.tare || 0).toLocaleString()}</td>
                         <td className="text-end fw-bold text-danger">{Number(t.net || t.nettVal || 0).toLocaleString()}</td>
@@ -647,7 +743,7 @@ export default function BouldersReport() {
                         </td>
                       </tr>
                     ))}
-                    {filtered.length === 0 && (
+                    {!isLocked && filtered.length === 0 && (
                       <tr>
                         <td colSpan="9" className="text-center py-4 text-muted">No boulder records found for selected filters.</td>
                       </tr>
@@ -670,7 +766,7 @@ export default function BouldersReport() {
                     </tr>
                   </thead>
                   <tbody>
-                    {getGroupedSummary(activeTab.toLowerCase()).map((row, idx) => (
+                    {!isLocked && getGroupedSummary(activeTab.toLowerCase()).map((row, idx) => (
                       <tr key={idx}>
                         <td className="fw-bold text-primary">{row.name}</td>
                         <td className="text-center fw-semibold">{row.trips}</td>
@@ -679,7 +775,7 @@ export default function BouldersReport() {
                         <td className="text-end fw-bold text-danger">{row.nett.toLocaleString()}</td>
                       </tr>
                     ))}
-                    {getGroupedSummary(activeTab.toLowerCase()).length === 0 && (
+                    {!isLocked && getGroupedSummary(activeTab.toLowerCase()).length === 0 && (
                       <tr>
                         <td colSpan="5" className="text-center py-4 text-muted">No grouped summary records found for selected filters.</td>
                       </tr>
@@ -693,15 +789,28 @@ export default function BouldersReport() {
       </div>
 
       {/* DOT MATRIX PRINT PREVIEW MODAL */}
-      {showDotMatrixModal && (
+      {showDotMatrixModal && typeof document !== 'undefined' && createPortal(
         <div
-          className="position-fixed top-0 start-0 w-100 h-100 bg-dark bg-opacity-75 d-flex align-items-center justify-content-center p-3 animate-fade-in"
-          style={{ zIndex: 1060 }}
+          className="position-fixed top-0 start-0 w-100 h-100 bg-dark bg-opacity-75 d-flex align-items-center justify-content-center p-2 p-md-3"
+          style={{ zIndex: 99999 }}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setShowDotMatrixModal(false);
+          }}
         >
-          <div className="card shadow-lg w-100 d-flex flex-column border-0" style={{ maxWidth: '1080px', maxHeight: '92vh', borderRadius: '10px', overflow: 'hidden' }}>
-            <div className="card-header bg-dark text-white d-flex justify-content-between align-items-center py-2.5 px-3">
+          <div
+            className="card shadow-lg w-100 d-flex flex-column border-0"
+            style={{
+              maxWidth: '1120px',
+              height: '92vh',
+              maxHeight: '92vh',
+              borderRadius: '10px',
+              overflow: 'hidden'
+            }}
+          >
+            {/* Header: Fixed/Sticky */}
+            <div className="card-header bg-dark text-white d-flex flex-wrap justify-content-between align-items-center py-2 px-3 flex-shrink-0 gap-2" style={{ zIndex: 10 }}>
               <div className="d-flex align-items-center gap-2">
-                <span className="fw-bold" style={{ fontSize: '0.92rem' }}>
+                <span className="fw-bold text-truncate" style={{ fontSize: '0.92rem' }}>
                   {dotMatrixTitle}
                 </span>
                 <span className="badge bg-success text-white" style={{ fontSize: '0.72rem' }}>
@@ -726,60 +835,114 @@ export default function BouldersReport() {
 
                 <button
                   type="button"
-                  className="btn-close btn-close-white"
+                  className="btn btn-sm btn-outline-light fw-semibold px-2 py-1.5"
+                  onClick={(e) => {
+                    navigator.clipboard?.writeText(dotMatrixPreviewText);
+                    const btn = e.currentTarget;
+                    btn.innerText = '✓ Copied';
+                    setTimeout(() => { btn.innerText = '📋 Copy'; }, 2000);
+                  }}
+                  title="Copy preview text"
+                  style={{ fontSize: '0.8rem' }}
+                >
+                  📋 Copy
+                </button>
+
+                <button
+                  type="button"
+                  className="btn btn-sm btn-success fw-bold px-3 py-1.5 d-flex align-items-center gap-1.5 shadow-sm"
+                  onClick={handleExecuteDotMatrixPrint}
+                  disabled={isSendingPrint}
+                  style={{ fontSize: '0.82rem' }}
+                >
+                  {isSendingPrint ? (
+                    <>
+                      <span className="spinner-border spinner-border-sm me-1" role="status"></span>
+                      Printing...
+                    </>
+                  ) : (
+                    '🖨️ Send to Printer'
+                  )}
+                </button>
+
+                <button
+                  type="button"
+                  className="btn btn-sm btn-light fw-bold px-2.5 py-1.5"
                   onClick={() => setShowDotMatrixModal(false)}
-                ></button>
+                  style={{ fontSize: '0.8rem' }}
+                  title="Close modal (Esc)"
+                >
+                  ✕ Close
+                </button>
               </div>
             </div>
 
+            {/* Scrollable Body */}
             <div
-              className="card-body p-3 overflow-auto flex-grow-1"
+              className={`card-body p-0 overflow-auto flex-grow-1 ${dotMatrixTheme === 'white' ? 'bg-light' : 'bg-dark'}`}
               style={{
-                backgroundColor: dotMatrixTheme === 'white' ? '#ffffff' : '#0c1017',
-                color: dotMatrixTheme === 'white' ? '#000000' : '#39ff14',
-                fontFamily: '"Courier New", Courier, monospace',
-                fontSize: '0.76rem',
-                lineHeight: '1.25',
-                whiteSpace: 'pre',
-                border: dotMatrixTheme === 'white' ? '1px solid #d0d7de' : 'none'
+                minHeight: 0,
+                backgroundColor: dotMatrixTheme === 'white' ? '#f1f5f9' : '#090d16'
               }}
             >
-              {dotMatrixPreviewText}
+              <div className="p-3 d-flex justify-content-center">
+                <div
+                  className="p-4"
+                  style={{
+                    backgroundColor: dotMatrixTheme === 'white' ? '#ffffff' : '#0f172a',
+                    color: dotMatrixTheme === 'white' ? '#000000' : '#38bdf8',
+                    fontFamily: '"Courier New", Courier, Consolas, monospace',
+                    fontSize: '0.82rem',
+                    fontWeight: dotMatrixTheme === 'white' ? '600' : '500',
+                    lineHeight: '1.45',
+                    whiteSpace: 'pre',
+                    overflowX: 'auto',
+                    minWidth: '980px',
+                    width: '100%',
+                    borderRadius: '6px',
+                    border: dotMatrixTheme === 'white' ? '1px solid #cbd5e1' : '1px solid #1e293b',
+                    boxShadow: dotMatrixTheme === 'white' ? '0 4px 15px rgba(0,0,0,0.06)' : 'none'
+                  }}
+                >
+                  {dotMatrixPreviewText}
+                </div>
+              </div>
             </div>
 
-            <div className="card-footer bg-light d-flex justify-content-between align-items-center py-2 px-3 border-top">
+            {/* Sticky Bottom Action Bar with Always-Visible Print Button */}
+            <div className="card-footer bg-light border-top d-flex flex-wrap justify-content-between align-items-center py-2 px-3 flex-shrink-0 gap-2">
               <span className="text-muted small">
                 Continuous stationery format • ESC/P high-speed dot matrix output
               </span>
-              <div className="d-flex gap-2">
+              <div className="d-flex align-items-center gap-2 ms-auto">
                 <button
                   type="button"
-                  className="btn btn-secondary btn-sm fw-semibold"
+                  className="btn btn-sm btn-secondary fw-semibold px-3 py-1.5"
                   onClick={() => setShowDotMatrixModal(false)}
                 >
                   Close
                 </button>
                 <button
                   type="button"
-                  className="btn btn-success btn-sm fw-bold px-3 d-flex align-items-center gap-1.5"
+                  className="btn btn-sm btn-success fw-bold px-4 py-1.5 d-flex align-items-center gap-1.5 shadow"
                   onClick={handleExecuteDotMatrixPrint}
                   disabled={isSendingPrint}
+                  style={{ fontSize: '0.85rem' }}
                 >
                   {isSendingPrint ? (
                     <>
                       <span className="spinner-border spinner-border-sm me-1" role="status"></span>
-                      Sending...
+                      Printing...
                     </>
                   ) : (
-                    <>
-                      🖨️ Print Direct to Dot Matrix
-                    </>
+                    '🖨️ Send to Printer'
                   )}
                 </button>
               </div>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
 
       {/* Image Preview Modal */}

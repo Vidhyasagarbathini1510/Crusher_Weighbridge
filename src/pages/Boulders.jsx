@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client.js';
 import CameraPlayer from '../components/CameraPlayer.jsx';
 import CameraPreviewModal from '../components/CameraPreviewModal.jsx';
@@ -13,6 +14,18 @@ import { getVehicleOptionMode, filterVehiclesBySetting, cleanupVehicleOnWeighmen
 
 
 export default function Boulders() {
+  // F1 opens the Boulders Report
+  const navigate = useNavigate();
+  useEffect(() => {
+    const handleF1 = (e) => {
+      if (e.key !== 'F1') return;
+      e.preventDefault();
+      navigate('/reports/boulders');
+    };
+    window.addEventListener('keydown', handleF1);
+    return () => window.removeEventListener('keydown', handleF1);
+  }, [navigate]);
+
   const { user } = useAuth();
   const [cameras, setCameras] = useState(null);
   const [previewCamera, setPreviewCamera] = useState(null);
@@ -28,6 +41,7 @@ export default function Boulders() {
     tare: scaleTare, setTare: setScaleTare,
     nett: scaleNett, setNett: setScaleNett
   } = useScale();
+  const [frozenWeights, setFrozenWeights] = useState(null);
 
   // Vehicle lives in the shared scale context so the bottom status bar mirrors
   // this field — but it is wiped on unmount, so leaving this page never carries
@@ -67,6 +81,10 @@ export default function Boulders() {
   // the form editable. Null until a save succeeds, which is what keeps the Print
   // button hidden — including after a refresh, when this resets to null.
   const [savedTicket, setSavedTicket] = useState(null);
+  const [showWeighTimes, setShowWeighTimes] = useState(
+    () => localStorage.getItem('noris_sales_show_weigh_times') === 'true'
+  );
+  const [clockNow, setClockNow] = useState(() => new Date());
 
   // Scale / status states
   const [netronWeight, setNetronWeight] = useState('0');
@@ -79,9 +97,65 @@ export default function Boulders() {
   const [localTare, setLocalTare] = useState('');
   const [localNett, setLocalNett] = useState('0');
 
-  const grossVal = manualMode ? localGross : scaleGross;
-  const tareVal = manualMode ? localTare : scaleTare;
-  const nettVal = manualMode ? localNett : scaleNett;
+  const grossVal = frozenWeights ? frozenWeights.gross : (manualMode ? localGross : scaleGross);
+  const tareVal = frozenWeights ? frozenWeights.tare : (manualMode ? localTare : scaleTare);
+  const nettVal = frozenWeights ? frozenWeights.nett : (manualMode ? localNett : scaleNett);
+  const firstWeighDateTime = (() => {
+    const key = (vehicleNo || '').trim().toUpperCase().replace(/\s+/g, '');
+    if (!key) return '';
+    let cachedTares = [];
+    try {
+      cachedTares = JSON.parse(localStorage.getItem('noris_vehicle_tares') || '[]');
+    } catch (e) {
+      console.error('[Boulders] Unable to read cached vehicle tare times:', e);
+    }
+    const matched = [...vehicleTares, ...cachedTares].find(
+      record => record.vehicle && record.vehicle.replace(/\s+/g, '').toUpperCase() === key
+    );
+    if (!matched) return '';
+    const date = matched.date || matched.tare_date || matched.date_time || '';
+    const time = matched.time || matched.tare_time || '';
+    return [date, time].filter(Boolean).join(' ');
+  })();
+  const timeOnly = (value) => {
+    const match = String(value || '').match(/\d{1,2}:\d{2}(?::\d{2})?(?:\s*[AaPp][Mm])?/);
+    return match ? match[0] : '';
+  };
+  const currentWeighDateTime = (() => {
+    const pad = (value) => String(value).padStart(2, '0');
+    return `${pad(clockNow.getDate())}-${pad(clockNow.getMonth() + 1)}-${clockNow.getFullYear()} ${pad(clockNow.getHours())}:${pad(clockNow.getMinutes())}:${pad(clockNow.getSeconds())}`;
+  })();
+  const weighTimes = (() => {
+    if (!showWeighTimes) return { gross: '', tare: '' };
+    if (savedTicket) {
+      return {
+        gross: timeOnly(savedTicket.grossDateTime),
+        tare: timeOnly([savedTicket.tareDate, savedTicket.tareTime].filter(Boolean).join(' '))
+      };
+    }
+    if (manualMode) {
+      return {
+        gross: timeOnly(grossVal ? currentWeighDateTime : ''),
+        tare: timeOnly(tareVal ? currentWeighDateTime : '')
+      };
+    }
+    const firstWeight = parseFloat(savedWeight) || 0;
+    if (firstWeight > 0) {
+      const firstIsTare = firstWeight === (parseFloat(tareVal) || 0);
+      return firstIsTare
+        ? { gross: timeOnly(grossVal ? currentWeighDateTime : ''), tare: timeOnly(firstWeighDateTime) }
+        : { gross: timeOnly(firstWeighDateTime), tare: timeOnly(tareVal ? currentWeighDateTime : '') };
+    }
+    return { gross: timeOnly(grossVal ? currentWeighDateTime : ''), tare: '' };
+  })();
+  const weighTimeStyle = {
+    fontSize: '0.95rem',
+    fontWeight: 700,
+    color: 'var(--ink)',
+    marginTop: '3px',
+    minHeight: '1.2rem',
+    whiteSpace: 'nowrap'
+  };
 
   const setGrossVal = (val) => {
     if (manualMode) {
@@ -145,6 +219,24 @@ export default function Boulders() {
       window.removeEventListener('storage', syncManualMode);
     };
   }, []);
+
+  useEffect(() => {
+    const syncWeighTimeSetting = () => {
+      setShowWeighTimes(localStorage.getItem('noris_sales_show_weigh_times') === 'true');
+    };
+    window.addEventListener('workflow-setting-changed', syncWeighTimeSetting);
+    window.addEventListener('storage', syncWeighTimeSetting);
+    return () => {
+      window.removeEventListener('workflow-setting-changed', syncWeighTimeSetting);
+      window.removeEventListener('storage', syncWeighTimeSetting);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!showWeighTimes || frozenWeights) return;
+    const intervalId = setInterval(() => setClockNow(new Date()), 1000);
+    return () => clearInterval(intervalId);
+  }, [showWeighTimes, frozenWeights]);
 
   // Master data lists
   const [rawContractorMaterials, setRawContractorMaterials] = useState([]);
@@ -264,7 +356,17 @@ export default function Boulders() {
 
       getVehicleOptionMode().then(mode => {
         const filteredObjs = filterVehiclesBySetting(quarryVehObjs, txs, mode);
-        const quarryVehicles = filteredObjs.map(t => t.vehicle);
+        // Same truck can sit in the master list and the local cache with different
+        // spacing/case, so match on a normalised key
+        const seenVehicles = new Set();
+        const quarryVehicles = filteredObjs
+          .map(t => (t.vehicle || '').trim())
+          .filter(v => {
+            const key = v.toUpperCase().replace(/[\s\-\.]/g, '');
+            if (!key || seenVehicles.has(key)) return false;
+            seenVehicles.add(key);
+            return true;
+          });
 
         setSuggestions(prev => ({
           ...prev,
@@ -401,6 +503,7 @@ export default function Boulders() {
   useEffect(() => {
     if (!window.electronAPI) return;
     const unsubscribe = window.electronAPI.onNetronData((data) => {
+      if (frozenWeights) return;
       if (data && data.value) {
         const numeric = data.value.replace(/[^0-9.-]/g, '');
         if (numeric) {
@@ -427,17 +530,19 @@ export default function Boulders() {
     return () => {
       if (unsubscribe) unsubscribe();
     };
-  }, [manualMode, savedWeight]);
+  }, [manualMode, savedWeight, frozenWeights]);
 
   // Calculate net weight (higher value - lower value = net)
   useEffect(() => {
+    if (frozenWeights) return;
     const g = parseFloat(grossVal) || 0;
     const t = parseFloat(tareVal) || 0;
     setNettVal(Math.abs(g - t).toString());
-  }, [grossVal, tareVal]);
+  }, [grossVal, tareVal, frozenWeights]);
 
   // Auto-populate gross and tare weights when vehicle is selected (Only in standard automatic mode)
   useEffect(() => {
+    if (frozenWeights) return;
     if (manualMode) {
       // In manual mode: Do NOT auto-populate Gross or Tare! Both are 100% manual entry.
       return;
@@ -482,7 +587,7 @@ export default function Boulders() {
         setGrossVal(currentScaleWeight.toString());
       }
     }
-  }, [vehicleNo, netronWeight, vehicleTares, manualMode]);
+  }, [vehicleNo, netronWeight, vehicleTares, manualMode, frozenWeights]);
 
   // Dynamic contractor options
   const uniqueHelper = (arr) => [...new Set(arr.filter(Boolean))];
@@ -678,6 +783,7 @@ export default function Boulders() {
 
   const handleSave = async (e) => {
     if (e) e.preventDefault();
+    if (frozenWeights) return;
     const cleanVehicle = (vehicleNo || '').trim().toUpperCase();
     const cleanVehAlpha = cleanVehicle.replace(/[\s\-\.]/g, '');
     if (!cleanVehicle || cleanVehAlpha === 'N/A' || cleanVehAlpha === 'NA' || cleanVehAlpha === 'NONE' || cleanVehAlpha.length === 0) {
@@ -780,6 +886,7 @@ export default function Boulders() {
     setGrossVal(finalGross);
     setTareVal(finalTare);
     setNettVal(finalNet);
+    setFrozenWeights({ gross: finalGross, tare: finalTare, nett: finalNet });
 
     const rateVal = rate;
     const netWeightTons = (parseFloat(finalNet) || 0) / 1000;
@@ -808,11 +915,12 @@ export default function Boulders() {
       // Boulder specific fields
       dc_num: dcNum,
       contractor: contractor || '',
-      quarry: quarry || '',
+      quarry: (quarry && quarry.toUpperCase() !== 'CRUSHER') ? quarry : 'QUARRY',
+      source: (quarry && quarry.toUpperCase() !== 'CRUSHER') ? quarry : 'QUARRY',
       material: material || '',
       driver: driver || '',
       transporter: transporter || '',
-      destination: destination || '',
+      destination: destination || 'HOPPER',
       tare_date: tareDate,
       tare_time: tareTime,
       rate: rateVal,
@@ -839,11 +947,13 @@ export default function Boulders() {
         vehicle: cleanVehicle,
         material: material || '',
         party: contractor || '',
-        destination: destination || '',
-        source: quarry || '',
+        destination: destination || 'HOPPER',
+        source: (quarry && quarry.toUpperCase() !== 'CRUSHER') ? quarry : 'QUARRY',
+        quarry: (quarry && quarry.toUpperCase() !== 'CRUSHER') ? quarry : 'QUARRY',
         gross: finalGross,
         tare: finalTare,
         net: finalNet || nettVal || '0',
+        grossDateTime,
         transporter: transporter || '',
         date: nowDateFormatted,
         time: nowTimeFormatted,
@@ -860,12 +970,14 @@ export default function Boulders() {
       setTransactions(txs);
     } catch (err) {
       console.error(err);
+      setFrozenWeights(null);
       alert('Error saving weighment transaction.');
     }
   };
 
   const handleResetForm = () => {
     setSavedTicket(null);
+    setFrozenWeights(null);
     setVehicleNo('');
     setGrossVal('');
     setTareVal('');
@@ -1217,8 +1329,7 @@ export default function Boulders() {
                       value={grossVal}
                       onChange={manualMode ? (e) => setGrossVal(e.target.value.replace(/[^0-9.]/g, '')) : undefined}
                       readOnly={!manualMode}
-                    />
-                  </div>
+                    />                  </div>
                   <div className="col-4">
                     <label className="saas-label" style={{ color: '#16a34a' }}>Tare (kg)</label>
                     <input
@@ -1228,8 +1339,7 @@ export default function Boulders() {
                       value={tareVal}
                       onChange={manualMode ? (e) => setTareVal(e.target.value.replace(/[^0-9.]/g, '')) : undefined}
                       readOnly={!manualMode}
-                    />
-                  </div>
+                    />                  </div>
                   <div className="col-4">
                     <label className="saas-label" style={{ color: '#dc2626' }}>Nett (kg)</label>
                     <input

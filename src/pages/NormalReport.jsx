@@ -3,6 +3,19 @@ import { api } from '../api/client.js';
 import { printReport, printSingleTicketSlip } from '../utils/reportPrinter.js';
 import { printClassicSalesReport, printClassicSummaryReport, toReportStamp } from '../utils/classicReportPrinter.js';
 import SearchableSelect from '../components/SearchableSelect.jsx';
+import { compareMaterials } from '../utils/materialOrder.js';
+import DotMatrixPreviewModal from '../components/DotMatrixPreviewModal.jsx';
+import {
+  getSalesSummaryPrintMode,
+  SALES_SUMMARY_PRINT_MODES,
+  buildDotMatrixDetailPreview,
+  buildDotMatrixSummaryPreview
+} from '../utils/salesSummaryPrinter.js';
+import {
+  REPORT_GST_MODES,
+  getReportGstModeSync,
+  getRecordBillType
+} from '../utils/reportGstUtil.js';
 
 const getMinDateTime = () => {
   const d = new Date();
@@ -21,16 +34,44 @@ const getMaxDateTime = () => {
 };
 
 export default function NormalReport() {
+  // Settings → "Reports Print Output Mode": Normal (A4) or Dot Matrix for all reports
+  const [printMode, setPrintMode] = useState(() => getSalesSummaryPrintMode());
+  const [dotMatrix, setDotMatrix] = useState(null); // open preview: { title, badge, previewText, rawText }
+  useEffect(() => {
+    const handleModeUpdate = () => setPrintMode(getSalesSummaryPrintMode());
+    window.addEventListener('storage', handleModeUpdate);
+    window.addEventListener('sales-summary-print-mode-changed', handleModeUpdate);
+    return () => {
+      window.removeEventListener('storage', handleModeUpdate);
+      window.removeEventListener('sales-summary-print-mode-changed', handleModeUpdate);
+    };
+  }, []);
   const [transactions, setTransactions] = useState([]);
   const [filtered, setFiltered] = useState([]);
   const [showFilters, setShowFilters] = useState(true);
   
   // Filters
+  const [gstFilter, setGstFilter] = useState(() => getReportGstModeSync());
   const [party, setParty] = useState('');
   const [material, setMaterial] = useState('');
   const [vehicle, setVehicle] = useState('');
   const [fromDate, setFromDate] = useState(() => getMinDateTime());
   const [toDate, setToDate] = useState(() => getMaxDateTime());
+
+  useEffect(() => {
+    const handleGstUpdate = (e) => {
+      const newMode = (e && e.detail && e.detail.reportGstMode) || getReportGstModeSync();
+      setGstFilter(newMode);
+    };
+    window.addEventListener('storage', handleGstUpdate);
+    window.addEventListener('workflow-setting-changed', handleGstUpdate);
+    window.addEventListener('report-gst-mode-changed', handleGstUpdate);
+    return () => {
+      window.removeEventListener('storage', handleGstUpdate);
+      window.removeEventListener('workflow-setting-changed', handleGstUpdate);
+      window.removeEventListener('report-gst-mode-changed', handleGstUpdate);
+    };
+  }, []);
   
   // Tabs
   const [activeTab, setActiveTab] = useState('Report');
@@ -113,7 +154,9 @@ export default function NormalReport() {
       });
       const data = Array.from(combinedMap.values());
       setTransactions(data);
-      filterData(data, '', '', '', minD, maxD);
+      const initGst = getReportGstModeSync();
+      setGstFilter(initGst);
+      filterData(data, '', '', '', minD, maxD, initGst);
     }).catch(console.error);
   }, []);
 
@@ -125,7 +168,7 @@ export default function NormalReport() {
     setMetrics({ charges, gross, tare, nett, trips: data.length });
   };
 
-  const filterData = (dataList, partyVal, matVal, vehVal, fDate, tDate) => {
+  const filterData = (dataList, partyVal, matVal, vehVal, fDate, tDate, gstVal = gstFilter) => {
     let res = dataList;
 
     if (fDate || tDate) {
@@ -146,13 +189,17 @@ export default function NormalReport() {
     if (matVal) res = res.filter(t => (t.product || t.material || '').toLowerCase().includes(matVal.toLowerCase()));
     if (vehVal) res = res.filter(t => (t.vehicle_no || t.vehicle || '').toLowerCase().includes(vehVal.toLowerCase()));
 
+    if (gstVal && gstVal !== REPORT_GST_MODES.ALL) {
+      res = res.filter(t => getRecordBillType(t) === gstVal);
+    }
+
     setFiltered(res);
     calculateMetrics(res);
   };
 
   const handleSearch = (e) => {
     if (e) e.preventDefault();
-    filterData(transactions, party, material, vehicle, fromDate, toDate);
+    filterData(transactions, party, material, vehicle, fromDate, toDate, gstFilter);
   };
 
   const uniqueParties = [...new Set(transactions.map(t => t.party).filter(Boolean))];
@@ -163,11 +210,13 @@ export default function NormalReport() {
     setParty('');
     setMaterial('');
     setVehicle('');
+    const defaultGst = getReportGstModeSync();
+    setGstFilter(defaultGst);
     const minD = getMinDateTime();
     const maxD = getMaxDateTime();
     setFromDate(minD);
     setToDate(maxD);
-    filterData(transactions, '', '', '', minD, maxD);
+    filterData(transactions, '', '', '', minD, maxD, defaultGst);
   };
 
   // Grouped summary calculation for Material and Party tabs
@@ -208,12 +257,37 @@ export default function NormalReport() {
       groups[val].charges += rowCharge;
     });
 
-    return Object.values(groups);
+    const list = Object.values(groups);
+    return normKey === 'material' ? list.sort((a, b) => compareMaterials(a.name, b.name)) : list;
   };
 
   const handlePrint = () => {
     const from = toReportStamp(fromDate, false);
     const to = toReportStamp(toDate, true);
+
+    if (printMode === SALES_SUMMARY_PRINT_MODES.DOT_MATRIX) {
+      if (activeTab === 'Report') {
+        setDotMatrix(buildDotMatrixDetailPreview({
+          title: 'NORMAL Weighment Report',
+          variant: 'normal',
+          filters: { party, material, vehicle },
+          fromDate: from,
+          toDate: to,
+          rows: filtered,
+          totals: metrics
+        }));
+      } else {
+        setDotMatrix(buildDotMatrixSummaryPreview({
+          reportTitle: 'Weighment Summary',
+          summaryName: activeTab,
+          filters: { party, material, vehicle },
+          fromDate: from,
+          toDate: to,
+          groups: getGroupedSummary(activeTab.toLowerCase())
+        }));
+      }
+      return;
+    }
 
     if (activeTab === 'Report') {
       printClassicSalesReport({
@@ -350,7 +424,7 @@ export default function NormalReport() {
                     options={uniqueMaterials} emptyLabel="ALL MATERIALS" placeholder="Type to search material..." />
                 </div>
 
-                <div className="col-12">
+                <div className="col-6">
                   <label className="saas-label">Vehicle</label>
                   <SearchableSelect className="saas-input" value={vehicle} onChange={setVehicle}
                     options={uniqueVehicles} emptyLabel="ALL VEHICLES" placeholder="Type to search vehicle..." />
@@ -407,11 +481,12 @@ export default function NormalReport() {
                 </button>
                 <button
                   type="button"
-                  className="btn btn-sm btn-dark fw-bold ms-1"
+                  className={`btn btn-sm ${printMode === SALES_SUMMARY_PRINT_MODES.DOT_MATRIX ? 'btn-success text-white' : 'btn-dark'} fw-bold ms-1`}
                   onClick={handlePrint}
                   style={{ fontSize: '0.75rem', padding: '0.25rem 0.65rem' }}
+                  title={printMode === SALES_SUMMARY_PRINT_MODES.DOT_MATRIX ? 'Dot Matrix Printer (ESC/P)' : 'Normal A4 Print Window'}
                 >
-                  🖨️ Print Full Report
+                  🖨️ Print Full Report {printMode === SALES_SUMMARY_PRINT_MODES.DOT_MATRIX ? '⚡ (Dot Matrix)' : ''}
                 </button>
               </div>
 
@@ -433,6 +508,7 @@ export default function NormalReport() {
                       <th>Date & Time</th>
                       <th>Vehicle</th>
                       <th>Party</th>
+                      <th>Bill Type</th>
                       <th>Material</th>
                       <th className="text-end">Gross (kg)</th>
                       <th className="text-end">Tare (kg)</th>
@@ -451,6 +527,11 @@ export default function NormalReport() {
                           <td>{t.date_time || t.created_at || 'N/A'}</td>
                           <td className="fw-semibold text-primary">{t.vehicle_no || t.vehicle || 'N/A'}</td>
                           <td>{t.party || 'LOCAL SALE'}</td>
+                          <td>
+                            <span className={`badge ${getRecordBillType(t) === 'GST' ? 'bg-success-subtle text-success border border-success-subtle' : 'bg-secondary-subtle text-secondary border'} px-1.5 py-0.5`} style={{ fontSize: '0.68rem', fontWeight: 700 }}>
+                              {getRecordBillType(t)}
+                            </span>
+                          </td>
                           <td>{t.product || t.material || 'N/A'}</td>
                           <td className="text-end text-secondary">{Number(t.gross || 0).toLocaleString()}</td>
                           <td className="text-end text-secondary">{Number(t.tare || 0).toLocaleString()}</td>
@@ -546,6 +627,8 @@ export default function NormalReport() {
           </div>
         </div>
       )}
+
+      {dotMatrix && <DotMatrixPreviewModal {...dotMatrix} onClose={() => setDotMatrix(null)} />}
     </div>
   );
 }

@@ -11,7 +11,7 @@ export default function Navbar() {
   const currentUser = user || { username: 'Admin', full_name: 'Administrator', role: 'admin' };
   const handleLogout = logout || (() => {});
 
-  const { isConnected } = useScale();
+  const { isConnected } = useScale() || {};
   const [time, setTime] = useState(new Date());
   const [liveWeight, setLiveWeight] = useState('0');
   const [isSlipEnabled, setIsSlipEnabled] = useState(() => localStorage.getItem('noris_enable_loading_slip') === 'true');

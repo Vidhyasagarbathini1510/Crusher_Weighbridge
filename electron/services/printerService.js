@@ -341,11 +341,12 @@ const WINDOWS_PAPER = {
  * is a best effort — a printer that cannot take the form, or a queue this
  * account may not configure, leaves the job to print as it would have.
  */
-function applyPrinterPaper(printerName, pageSize) {
+function applyPrinterPaper(printerName, pageSize, landscape = false) {
   const wanted = WINDOWS_PAPER[pageSize];
   if (process.platform !== 'win32' || !wanted) return Promise.resolve(null);
+  const orientation = landscape ? 'Landscape' : 'Portrait';
 
-  const cacheKey = `${printerName || '(default)'}::${wanted}`;
+  const cacheKey = `${printerName || '(default)'}::${wanted}::${orientation}`;
   const lastApplied = appliedPaper.get(cacheKey);
   if (lastApplied && Date.now() - lastApplied < PAPER_CACHE_MS) return Promise.resolve(null);
 
@@ -358,7 +359,16 @@ function applyPrinterPaper(printerName, pageSize) {
       "if (-not $n) { throw 'no printer' }",
       '$c = Get-PrintConfiguration -PrinterName $n',
       `if ($c.PaperSize -ne '${wanted}') { Set-PrintConfiguration -PrinterName $n -PaperSize '${wanted}' }`,
-      `Write-Output ('PAPER|' + $n + '|' + $c.PaperSize + '|${wanted}')`
+      // Orientation lives in the print ticket, not in Set-PrintConfiguration's
+      // switches. Host-based drivers (Samsung SCX, HP P1108) ignore the
+      // orientation Chromium puts in the job and use the queue's own, so
+      // the queue itself is switched. Best effort: a driver without the
+      // feature is left alone.
+      "try { $t = (Get-PrintConfiguration -PrinterName $n).PrintTicketXml; " +
+        `$new = [regex]::Replace($t, '(<(?:psf:)?Feature name="psk:PageOrientation">\\s*<(?:psf:)?Option name=")psk:\\w+(")', '$1psk:${orientation}$2'); ` +
+        "if ($new -ne $t) { Set-PrintConfiguration -PrinterName $n -PrintTicketXml $new } } catch { }",
+      "$o = [regex]::Match((Get-PrintConfiguration -PrinterName $n).PrintTicketXml, 'PageOrientation\\W+Option name=\"psk:(\\w+)').Groups[1].Value",
+      `Write-Output ('PAPER|' + $n + '|' + $c.PaperSize + '|${wanted}|' + $o)`
     ].join('; ');
 
     // Handed over base64 rather than as a command line. A printer name carries
@@ -379,7 +389,8 @@ function applyPrinterPaper(printerName, pageSize) {
         }
         appliedPaper.set(cacheKey, Date.now());
         const line = String(stdout).split(/\r?\n/).find(l => l.startsWith('PAPER|')) || '';
-        const [, name, was] = line.split('|');
+        const [, name, was, , orient] = line.split('|');
+        console.log(`[Printer Service] Queue "${name}" orientation is now ${orient || 'unknown (driver has no orientation feature)'}; wanted ${orientation}`);
         if (was && was !== wanted) {
           console.log(`[Printer Service] Paper for "${name}" changed from ${was} to ${wanted}`);
         }
@@ -393,17 +404,40 @@ function applyPrinterPaper(printerName, pageSize) {
  * area, the slip centred on it and scaled to fit. Built here rather than inline
  * so the same page can be rendered to PDF and checked without a printer.
  */
-function buildPrintablePage(htmlContent, { pageSize = 'A4', landscape = false, marginMm = 12, jobName = 'Weighment Slip' } = {}) {
+function buildPrintablePage(htmlContent, { pageSize = 'A4', landscape = false, marginMm = 12, jobName = 'Weighment Slip', rotate = false, sheetMm = null, feedPaper = null } = {}) {
   const isA5 = pageSize === 'A5';
+  const isA5Portrait = isA5 && !landscape;
 
-  // For A5 horizontal paper feed (Image 1 format):
-  // Laying out a 210mm width x 148mm height slip at the top of an A4 frame
-  // ensures standard Windows printer drivers print 100% full size without thumbnail scaling.
-  const pageWidthMm = 210;
-  const pageHeightMm = isA5 ? 148 : (landscape ? 210 : 297);
-  const effectiveMargin = isA5 ? 4 : Math.min(marginMm, 8);
-  const areaWidthMm = Math.max(20, pageWidthMm - effectiveMargin * 2);
-  const areaHeightMm = Math.max(20, pageHeightMm - effectiveMargin * 2);
+  // Laying out slip:
+  // For A5 portrait: 148mm width x 210mm height
+  // For A5 landscape: 210mm width x 148mm height (or top half of A4)
+  // For A4: 210mm width x 297mm height
+  const pageWidthMm = isA5Portrait ? 148 : (!isA5 && landscape ? 297 : 210);
+  const pageHeightMm = isA5Portrait ? 210 : (isA5 ? 148 : (landscape ? 210 : 297));
+  const effectiveMargin = isA5 ? (isA5Portrait ? 3 : 4) : Math.min(marginMm, 8);
+  // A custom sheet (e.g. 210 x 148 mm, A5 fed sideways) is its own page: the
+  // driver is told exactly that size and nothing is rotated.
+  const sheetW = sheetMm ? Number(sheetMm.width) : 0;
+  const sheetH = sheetMm ? Number(sheetMm.height) : 0;
+  const custom = sheetW > 0 && sheetH > 0;
+  const areaWidthMm = Math.max(20, (custom ? sheetW : pageWidthMm) - effectiveMargin * 2);
+  const areaHeightMm = Math.max(20, (custom ? sheetH : pageHeightMm) - effectiveMargin * 2);
+
+  // Rotated mode: the slip is laid out landscape as usual but the sheet sent to
+  // the driver is portrait, with the slip turned 90 degrees on it. Drivers
+  // that ignore the job's orientation (Samsung SCX class driver) then still
+  // put the slip on the paper the right way round.
+  const rotated = !!(rotate && landscape);
+  const paperName = isA5 ? 'A5' : 'A4';
+  const pageRule = custom
+    ? (feedPaper ? `size: ${feedPaper} portrait; margin: ${effectiveMargin}mm;` : `size: ${sheetW}mm ${sheetH}mm; margin: ${effectiveMargin}mm;`)
+    : rotated
+    ? `size: ${paperName} portrait; margin: 0;`
+    : `size: ${isA5 ? (landscape ? 'A5 landscape' : 'A5 portrait') : (landscape ? 'A4 landscape' : 'A4 portrait')}; margin: ${effectiveMargin}mm;`;
+  const rotatedCss = rotated ? `
+        html, body { width: ${pageHeightMm}mm; height: ${pageWidthMm}mm; overflow: hidden; }
+        .noris-rotate { position: absolute; top: ${effectiveMargin}mm; left: ${pageHeightMm - effectiveMargin}mm; transform-origin: top left; transform: rotate(90deg); }` : '';
+  const body = `<div class="noris-sheet"><div class="noris-slip">${htmlContent}</div></div>`;
 
   return `<!DOCTYPE html>
     <html>
@@ -411,10 +445,7 @@ function buildPrintablePage(htmlContent, { pageSize = 'A4', landscape = false, m
       <meta charset="utf-8">
       <title>${jobName}</title>
       <style>
-        @page {
-          size: A4 portrait;
-          margin: ${effectiveMargin}mm;
-        }
+        @page { ${pageRule} }
         html, body { margin: 0; padding: 0; background: #ffffff; }
         body { font-family: sans-serif; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
         /* Printable sheet area formatted for A5 wide feed (202mm x 140mm) */
@@ -430,18 +461,77 @@ function buildPrintablePage(htmlContent, { pageSize = 'A4', landscape = false, m
           overflow: hidden;
         }
         /* Full width of printable area */
-        .noris-slip { flex: 1 1 auto; width: 100%; box-sizing: border-box; }
+        .noris-slip { flex: 1 1 auto; width: 100%; box-sizing: border-box; }${rotatedCss}
       </style>
     </head>
     <body>
     
-      <div class="noris-sheet"><div class="noris-slip">${htmlContent}</div></div>
+      ${rotated ? `<div class="noris-rotate">${body}</div>` : body}
       <script>${FIT_TO_PAGE_SCRIPT}<\/script>
     </body>
     </html>`;
 }
 
+// Does this printer's driver expose an orientation setting at all? Drivers
+// that do (most HP / Epson / Canon / Brother) honour a landscape job. Class
+// drivers that do not (Samsung SCX-3400 class driver) silently print portrait,
+// so a landscape slip has to be placed differently for them. Asked once per
+// printer per session. If the question cannot be answered the printer is
+// assumed to be ordinary, so a normal landscape job is sent.
+const orientationSupport = new Map();
+function detectOrientationSupport(printerName) {
+  if (process.platform !== 'win32') return Promise.resolve(true);
+  const key = printerName || '(default)';
+  if (orientationSupport.has(key)) return Promise.resolve(orientationSupport.get(key));
+  return new Promise((resolve) => {
+    const safeName = String(printerName || '').replace(/'/g, "''");
+    const script = [
+      "$ErrorActionPreference = 'Stop'",
+      `$n = '${safeName}'`,
+      "if (-not $n) { $n = (Get-CimInstance Win32_Printer | Where-Object { $_.Default } | Select-Object -First 1).Name }",
+      "$t = (Get-PrintConfiguration -PrinterName $n).PrintTicketXml",
+      "$d = ''; try { $d = (Get-Printer -Name $n).DriverName } catch { }",
+      "$f = 0; if ($t -match 'psk:PageOrientation') { $f = 1 }",
+      "Write-Output ('ORIENT|' + $f + '|' + $n + '|' + $d)"
+    ].join('; ');
+    const encoded = Buffer.from(script, 'utf16le').toString('base64');
+    exec(`powershell -NoProfile -NonInteractive -EncodedCommand ${encoded}`, { timeout: 15000, windowsHide: true }, (error, stdout) => {
+      let supported = true;
+      if (!error) {
+        const line = String(stdout).split('\n').map(l => l.trim()).find(l => l.startsWith('ORIENT|')) || '';
+        if (line) {
+          const [, flag, pname, driver] = line.split('|');
+          // Class / generic drivers advertise an orientation setting but do not
+          // act on it (the Samsung SCX-3400 class driver printed every landscape
+          // job as portrait), so they are treated as not supporting it.
+          const unreliable = /class driver|generic|universal/i.test(`${pname} ${driver}`);
+          supported = flag === '1' && !unreliable;
+        }
+        orientationSupport.set(key, supported);
+      }
+      console.log(`[Printer Service] Orientation support for "${key}": ${error ? 'unknown (assuming yes)' : supported}`);
+      resolve(supported);
+    });
+  });
+}
+
 function printSilentHtml(printerName, htmlContent, options = {}) {
+  if (options.landscapeAuto && options.landscape && !options.sheetMm) {
+    return detectOrientationSupport(printerName).then((supported) => {
+      if (supported) return printSilentHtmlNow(printerName, htmlContent, { ...options, rotateLandscape: false });
+      if (options.pageSize === 'A5') {
+        return printSilentHtmlNow(printerName, htmlContent, {
+          ...options, landscape: false, rotateLandscape: false,
+          sheetMm: { width: 210, height: 148 }, feedPaper: 'A4'
+        });
+      }
+      return printSilentHtmlNow(printerName, htmlContent, { ...options, rotateLandscape: true });
+    });
+  }
+  return printSilentHtmlNow(printerName, htmlContent, options);
+}
+
+function printSilentHtmlNow(printerName, htmlContent, options = {}) {
   return new Promise((resolve, reject) => {
     let printWin = null;
     let tempPath = null;
@@ -475,6 +565,14 @@ function printSilentHtml(printerName, htmlContent, options = {}) {
       // jammed against the top-left corner of the paper.
       const pageSize = options.pageSize || 'A4';
       const isA5 = pageSize === 'A5';
+      const landscape = !!options.landscape;
+      // Default on: send landscape slips as a rotated portrait page, which every
+      // driver prints correctly. options.rotateLandscape === false opts out.
+      const rotateLandscape = landscape && options.rotateLandscape !== false;
+      // feedPaper: the sheet the driver is told about when the slip is only part
+      // of it (a 210 x 148 slip printed on the top half of an A4 page).
+      const feedPaper = options.feedPaper && WINDOWS_PAPER[options.feedPaper] ? options.feedPaper : null;
+      const sheetMm = options.sheetMm && options.sheetMm.width > 0 && options.sheetMm.height > 0 ? options.sheetMm : null;
       const marginMm = isA5 ? 4 : (options.marginMm === undefined ? 12 : Number(options.marginMm));
       // Windows names the spool job after the document title. Without one the
       // queue filled up with entries called "data_text_html;charset=utf-8,..."
@@ -490,11 +588,12 @@ function printSilentHtml(printerName, htmlContent, options = {}) {
         }
       });
 
-      const html = buildPrintablePage(htmlContent, { pageSize, marginMm, jobName });
+      console.log(`[Printer Service] Layout v2: ${pageSize} landscape=${landscape} rotatedPortraitSheet=${rotateLandscape} customSheet=${sheetMm ? sheetMm.width + 'x' + sheetMm.height + 'mm' : 'no'} feedPaper=${feedPaper || 'none'}`);
+      const html = buildPrintablePage(htmlContent, { pageSize, landscape, marginMm, jobName, rotate: rotateLandscape, sheetMm, feedPaper });
 
       // Started now rather than at print time so the queue is being set while
       // the slip renders — the operator waits for one of the two, not both.
-      const paperReady = applyPrinterPaper(printerName, 'A4');
+      const paperReady = sheetMm ? (feedPaper ? applyPrinterPaper(printerName, feedPaper, false) : Promise.resolve(null)) : applyPrinterPaper(printerName, pageSize, landscape && !rotateLandscape);
 
       // Loaded from a file rather than a data: URL. A data URL carries the whole
       // slip in the address, so the spooler took that for the job name and the
@@ -514,24 +613,28 @@ function printSilentHtml(printerName, htmlContent, options = {}) {
         console.log(`[Printer Service] Printing HTML ticket silently to target printer "${printerName || '(auto)'}" -> Resolved deviceName: "${resolvedName}"`);
 
         const printSettings = {
-          silent: true,
+          silent: !options.dialog,
           printBackground: true,
           deviceName: resolvedName,
           copies: Number(options.copies) || 1,
-          pageSize: 'A4',
-          landscape: false,
+          pageSize: sheetMm ? (feedPaper || { width: Math.round(sheetMm.width * 1000), height: Math.round(sheetMm.height * 1000) }) : pageSize,
+          landscape: landscape && !rotateLandscape,
           // Let the @page rule above own the margins; asking Chromium for the
           // printable area as well would inset the page a second time.
           margins: { marginType: 'none' }
         };
 
-        const ackTimer = setTimeout(() => {
+        const ackTimer = options.dialog ? null : setTimeout(() => {
           console.warn('[Printer Service] No response from the driver after 30s — job may still be spooling:', printerName || '(default)');
           settle(new Error('The printer did not respond. Check the Windows print queue for stuck jobs.'));
         }, PRINT_ACK_TIMEOUT_MS);
 
         printWin.webContents.print(printSettings, (success, failureReason) => {
-          clearTimeout(ackTimer);
+          if (ackTimer) clearTimeout(ackTimer);
+          if (!success && options.dialog && /cancel/i.test(String(failureReason || ''))) {
+            // The operator closed the Windows dialog: not an error.
+            return settle();
+          }
           if (!success) {
             console.error('[Printer Service] Silent HTML print failed:', failureReason);
             settle(new Error(`Print failed: ${failureReason || 'unknown driver error'}`));

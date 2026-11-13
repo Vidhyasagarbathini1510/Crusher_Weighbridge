@@ -88,6 +88,23 @@ export async function fetchAllTransactions() {
  * @param {String} mode - VEHICLE_OPTION_MODES value
  * @returns {Array} Filtered list of vehicles
  */
+/**
+ * Removes repeated vehicle numbers from a dropdown list. The same truck can come from
+ * the master list and the local cache with different spacing / case, so entries are
+ * compared on a normalised key and the first spelling is kept.
+ */
+export function uniqueVehicleNumbers(list = []) {
+  const seen = new Set();
+  return list
+    .map(v => String(v == null ? '' : v).trim())
+    .filter(v => {
+      const key = v.toUpperCase().replace(/[\s\-\.]/g, '');
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+}
+
 export function filterVehiclesBySetting(vehicles = [], transactions = [], mode = VEHICLE_OPTION_MODES.STAY_ALL) {
   if (mode === VEHICLE_OPTION_MODES.STAY_ALL || !mode) {
     return vehicles;

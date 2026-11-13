@@ -1,7 +1,32 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { api } from '../api/client.js';
 
-const ScaleContext = createContext();
+const defaultScaleContext = {
+  showFooter: true,
+  setShowFooter: () => {},
+  card: '',
+  setCard: () => {},
+  vehicle: '',
+  setVehicle: () => {},
+  gross: '',
+  setGross: () => {},
+  tare: '',
+  setTare: () => {},
+  nett: '',
+  setNett: () => {},
+  isConnected: true,
+  setIsConnected: () => {},
+  signalGo: false,
+  setSignalGo: () => {},
+  signalStop: true,
+  setSignalStop: () => {},
+  signalAlert: false,
+  setSignalAlert: () => {},
+  cooldownAlert: null,
+  setCooldownAlert: () => {}
+};
+
+const ScaleContext = createContext(defaultScaleContext);
 
 export function ScaleProvider({ children }) {
   const [showFooter, setShowFooter] = useState(true);
@@ -85,6 +110,23 @@ export function ScaleProvider({ children }) {
     };
   }, []);
 
+  // Listen to Unmanned Serial Box globally (IPC channel)
+  useEffect(() => {
+    if (!window.electronAPI || !window.electronAPI.onUnmannedCardData) return;
+    const unsubscribe = window.electronAPI.onUnmannedCardData((data) => {
+      if (data && data.cardNo) {
+        console.log('[ScaleContext] Unmanned card scan received:', data.cardNo);
+        setCard(String(data.cardNo).trim());
+        if (data.vehicleNo) setVehicle(String(data.vehicleNo).trim());
+        if (data.gross !== undefined && data.gross !== null && !isNaN(data.gross)) setGross(String(data.gross));
+        if (data.tare !== undefined && data.tare !== null && !isNaN(data.tare)) setTare(String(data.tare));
+      }
+    });
+    return () => {
+      if (unsubscribe) unsubscribe();
+    };
+  }, []);
+
   // Global USB Keyboard RFID Scanner listener (for USB HID mode RFID readers)
   useEffect(() => {
     let scanBuffer = '';
@@ -120,6 +162,44 @@ export function ScaleProvider({ children }) {
     };
   }, []);
 
+  const [cooldownAlert, setCooldownAlert] = useState(null);
+
+  // Listen to Card Cooldown Blocked events (IPC channel)
+  useEffect(() => {
+    if (!window.electronAPI || !window.electronAPI.onCardCooldownBlocked) return;
+    const unsubscribe = window.electronAPI.onCardCooldownBlocked((data) => {
+      if (data && data.cardNo) {
+        console.warn(`[ScaleContext] Card ${data.cardNo} blocked by cooldown! Remaining: ${data.remainingMins} min`);
+        setCooldownAlert({
+          cardNo: data.cardNo,
+          remainingMins: data.remainingMins,
+          remainingSecs: data.remainingSecs,
+          source: data.source
+        });
+        setTimeout(() => {
+          setCooldownAlert(null);
+        }, 6000);
+      }
+    });
+    return () => {
+      if (unsubscribe) unsubscribe();
+    };
+  }, []);
+
+  // Listen to physical signal changes (B = Green, C = Red) from Unmanned Serial Box
+  useEffect(() => {
+    if (!window.electronAPI || !window.electronAPI.onSignalStatusChange) return;
+    const unsubscribe = window.electronAPI.onSignalStatusChange((data) => {
+      if (data) {
+        if (typeof data.signalGo === 'boolean') setSignalGo(data.signalGo);
+        if (typeof data.signalStop === 'boolean') setSignalStop(data.signalStop);
+      }
+    });
+    return () => {
+      if (unsubscribe) unsubscribe();
+    };
+  }, []);
+
   return (
     <ScaleContext.Provider value={{
       showFooter, setShowFooter,
@@ -131,7 +211,8 @@ export function ScaleProvider({ children }) {
       signalGo, setSignalGo,
       signalStop, setSignalStop,
       signalAlert, setSignalAlert,
-      isConnected, setIsConnected
+      isConnected, setIsConnected,
+      cooldownAlert, setCooldownAlert
     }}>
       {children}
     </ScaleContext.Provider>
@@ -139,5 +220,6 @@ export function ScaleProvider({ children }) {
 }
 
 export function useScale() {
-  return useContext(ScaleContext);
+  const context = useContext(ScaleContext);
+  return context || defaultScaleContext;
 }

@@ -36,6 +36,8 @@ export default function UpdateModal() {
           setUpdateInfo(info);
           setShow(true);
           setErrorMsg('');
+          // Navbar icon click: start downloading the .exe right away
+          startDownload(info);
         } else if (info && info.error) {
           toast?.warning?.('Update check: ' + info.error);
         } else {
@@ -87,21 +89,23 @@ export default function UpdateModal() {
     };
   }, []);
 
-  const handleStartUpdate = async () => {
-    if (!updateInfo || !updateInfo.downloadUrl) return;
+  const startDownload = async (info) => {
+    if (!info || !info.downloadUrl) return;
     setDownloading(true);
     setProgress(0);
     setErrorMsg('');
     setStatusMessage('Connecting to server...');
 
     try {
-      await window.electronAPI.startUpdateDownload(updateInfo.downloadUrl);
+      await window.electronAPI.startUpdateDownload(info.downloadUrl);
     } catch (err) {
       console.error('[UpdateModal] Update failed:', err);
       setErrorMsg(err.message || 'Failed to download update. Please check internet connection.');
       setDownloading(false);
     }
   };
+
+  const handleStartUpdate = () => startDownload(updateInfo);
 
   const handleClose = () => {
     if (downloading) return; // Prevent closing mid-download

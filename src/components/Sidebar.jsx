@@ -9,7 +9,7 @@ export default function Sidebar() {
   const [activeDropdown, setActiveDropdown] = useState(null);
   const [profileDropdownOpen, setProfileDropdownOpen] = useState(false);
   const { logout, user, isAdmin } = useAuth();
-  const { isConnected } = useScale();
+  const { isConnected } = useScale() || {};
 
   const [isSlipEnabled, setIsSlipEnabled] = useState(() => localStorage.getItem('noris_enable_loading_slip') === 'true');
   const [menuMode, setMenuMode] = useState(() => {
@@ -17,6 +17,10 @@ export default function Sidebar() {
     if (saved) return saved;
     return localStorage.getItem('noris_enable_loading_slip') === 'true' ? 'both' : 'vehicles';
   });
+  // Which weighment modules this machine runs: 'boulders', 'sales' or 'both'.
+  const [moduleMode, setModuleMode] = useState(() => localStorage.getItem('noris_module_mode') || 'both');
+  // Settings → "Sales Cash Report": show / hide it in the Reports menu (shown by default)
+  const [showSalesCash, setShowSalesCash] = useState(() => localStorage.getItem('noris_show_sales_cash_report') !== 'false');
   const [duplicateBillsMode, setDuplicateBillsMode] = useState(() => {
     return localStorage.getItem('noris_duplicate_bills_mode') || DUPLICATE_BILL_MODES.SHOW;
   });
@@ -35,6 +39,8 @@ export default function Sidebar() {
       setIsSlipEnabled(localStorage.getItem('noris_enable_loading_slip') === 'true');
       const dupMode = localStorage.getItem('noris_duplicate_bills_mode') || DUPLICATE_BILL_MODES.SHOW;
       setDuplicateBillsMode(dupMode);
+      setModuleMode(localStorage.getItem('noris_module_mode') || 'both');
+      setShowSalesCash(localStorage.getItem('noris_show_sales_cash_report') !== 'false');
     };
     window.addEventListener('storage', handleUpdate);
     window.addEventListener('workflow-setting-changed', handleUpdate);
@@ -185,7 +191,7 @@ export default function Sidebar() {
           </NavLink>
         )}
 
-        {renderDropdown(
+        {moduleMode !== 'sales' && renderDropdown(
           'Boulders',
           [
             { to: '/boulders/weighment', label: 'Weighment' },
@@ -200,7 +206,7 @@ export default function Sidebar() {
           'boulders'
         )}
 
-        {renderDropdown(
+        {moduleMode !== 'boulders' && renderDropdown(
           'Sales',
           [
             { to: '/sales/weighment-units', label: 'Weighment - Units' },
@@ -245,7 +251,7 @@ export default function Sidebar() {
           'Reports',
           [
             { to: '/reports/sales-summary', label: 'Sales Summary' },
-            { to: '/reports/sales-cash', label: 'Sales Cash' },
+            ...(showSalesCash ? [{ to: '/reports/sales-cash', label: 'Sales Cash' }] : []),
             { to: '/reports/yard', label: 'Yard Report' },
             { to: '/reports/boulders', label: 'Boulders View' },
             { to: '/reports/normal', label: 'Normal Report' }

@@ -1431,3 +1431,31 @@ input[list]::-webkit-calendar-picker-indicator:hover { opacity: 1 !important; }
 .ss-menu::-webkit-scrollbar { width: 8px; }
 .ss-menu::-webkit-scrollbar-thumb { background: #E0D4BC; border-radius: 4px; }
 .ss-menu::-webkit-scrollbar-thumb:hover { background: #C6B492; }
+
+/* Rate enable checkbox in Payment Calculation */
+input.rate-check {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  margin: 0;
+  cursor: pointer;
+  border: 2px solid #2563eb;
+  border-radius: 5px;
+  background: #fff;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.25);
+  display: inline-grid;
+  place-content: center;
+}
+input.rate-check:checked {
+  background: #2563eb;
+}
+input.rate-check:checked::after {
+  content: '';
+  width: 6px;
+  height: 11px;
+  border: solid #fff;
+  border-width: 0 3px 3px 0;
+  transform: rotate(45deg) translate(-1px, -1px);
+}

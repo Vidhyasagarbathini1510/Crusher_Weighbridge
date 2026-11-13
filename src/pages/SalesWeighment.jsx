@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { api } from '../api/client.js';
 import CameraPlayer from '../components/CameraPlayer.jsx';
 import CameraPreviewModal from '../components/CameraPreviewModal.jsx';
@@ -9,7 +9,7 @@ import { printTicket, getSelectedTemplate, getDcPrintTemplate, getGatePassTempla
 import { getNextDcNumber, incrementDcNumber, syncDcCounterFromTransactions } from '../utils/dcHelper.js';
 import { useScale } from '../context/ScaleContext.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
-import { getVehicleOptionMode, filterVehiclesBySetting, fetchAllTransactions, cleanupVehicleOnWeighmentCompletion } from '../utils/vehicleFilterUtil.js';
+import { getVehicleOptionMode, filterVehiclesBySetting, uniqueVehicleNumbers, fetchAllTransactions, cleanupVehicleOnWeighmentCompletion } from '../utils/vehicleFilterUtil.js';
 
 
 
@@ -144,6 +144,7 @@ export default function SalesWeighment() {
   const [allTransporters, setAllTransporters] = useState([]);
   const [transportersList, setTransportersList] = useState([]);
   const [sourcesList, setSourcesList] = useState([]);
+  const [vehicleTares, setVehicleTares] = useState([]);
 
   const loadDropdownData = () => {
     Promise.all([
@@ -177,13 +178,14 @@ export default function SalesWeighment() {
           console.error(e);
         }
       }
+      setVehicleTares(Array.isArray(vehicleTaresData) ? vehicleTaresData : []);
       const dbTareObjs = (vehicleTaresData || []).filter(t => (t.ownership || '').toUpperCase() === 'OTHERS');
       const allOtherVehObjs = [...tareObjs, ...dbTareObjs];
 
       getVehicleOptionMode().then(mode => {
         const filteredObjs = filterVehiclesBySetting(allOtherVehObjs, txs, mode);
         const vehNos = filteredObjs.map(t => t.vehicle || t.vehicleNo);
-        setVehiclesList([...new Set(vehNos)].filter(Boolean));
+        setVehiclesList(uniqueVehicleNumbers(vehNos));
       });
 
 
@@ -350,7 +352,7 @@ export default function SalesWeighment() {
         }
       }
     }
-  }, [party, allMaterials, transactions]);
+  }, [party, allMaterials]);
 
   // Dynamically update destinations list based on selected Party while keeping 'OUT' option
   useEffect(() => {
@@ -478,16 +480,22 @@ export default function SalesWeighment() {
   }, [partyTransportAmount, transporterAmount, partyTransportRate]);
 
   // Auto-fill tare and material when vehicle is selected & perform order validation
+  const lastTransporterVehicleRef = useRef('');
   useEffect(() => {
     if (!vehicle) {
       setSavedWeight('');
       setTareVal('');
+      lastTransporterVehicleRef.current = '';
       return;
     }
     const cleanVehicle = vehicle.replace(/\s+/g, '').toUpperCase();
+    const vehicleChanged = cleanVehicle !== lastTransporterVehicleRef.current;
+    lastTransporterVehicleRef.current = cleanVehicle;
 
-    // Auto-fill Transporter mapped to this vehicle
-    const storedTransporterVehicles = localStorage.getItem('noris_transporter_vehicles');
+    // Auto-fill Transporter mapped to this vehicle — only when the vehicle changes.
+    // This effect also re-runs on party / master-data reloads; refilling then would
+    // overwrite a transporter the operator picked by hand.
+    const storedTransporterVehicles = vehicleChanged ? localStorage.getItem('noris_transporter_vehicles') : null;
     if (storedTransporterVehicles) {
       try {
         const transList = JSON.parse(storedTransporterVehicles);
@@ -721,7 +729,7 @@ export default function SalesWeighment() {
         // Case 2: Live scale is lower (Tare is weighed NOW, Gross was from Master/Previous)
         finalGross = previousWeight.toString();
         finalTare = liveWeight.toString();
-        grossDateTime = (previousDate && previousTime) ? `${previousDate} ${previousTime}:00` : (previousDate || nowFormatted);
+        grossDateTime = (previousDate && previousTime) ? `${previousDate} ${/^\d{1,2}:\d{2}$/.test(String(previousTime).trim()) ? `${String(previousTime).trim()}:00` : previousTime}` : (previousDate || nowFormatted);
         tareDate = nowDateFormatted;
         tareTime = nowTimeFormatted;
       }
@@ -737,7 +745,7 @@ export default function SalesWeighment() {
       } else {
         finalGross = t.toString();
         finalTare = g.toString();
-        grossDateTime = (previousDate && previousTime) ? `${previousDate} ${previousTime}:00` : (previousDate || nowFormatted);
+        grossDateTime = (previousDate && previousTime) ? `${previousDate} ${/^\d{1,2}:\d{2}$/.test(String(previousTime).trim()) ? `${String(previousTime).trim()}:00` : previousTime}` : (previousDate || nowFormatted);
         tareDate = nowDateFormatted;
         tareTime = nowTimeFormatted;
       }
@@ -825,6 +833,7 @@ export default function SalesWeighment() {
         tare: finalTare,
         net: nettVal || '0',
         transporter: transporter || '',
+        stationary: stationary || '',
         driver: driver || '',
         phone: phone || '',
         rate: rate || '0',
@@ -1070,7 +1079,11 @@ export default function SalesWeighment() {
               </div>
               <div className="col-6">
                 <label className="saas-label">Stationary</label>
-                <input type="text" className="form-control saas-input" value={stationary} onChange={(e) => setStationary(e.target.value)} />
+                <input type="text" className="form-control saas-input" value={stationary} onChange={(e) => {
+                  const v = e.target.value;
+                  setStationary(v);
+                  if (v.trim() && localStorage.getItem('noris_auto_royalty_by_stationary') === 'true') setRoyaltyType('Government');
+                }} />
               </div>
               <div className="col-6">
                 <label className="saas-label">Royalty Type</label>

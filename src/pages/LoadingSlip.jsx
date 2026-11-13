@@ -458,7 +458,6 @@ export default function LoadingSlip() {
                   onChange={(val) => setMaterial(val)}
                   options={availableMaterials}
                   placeholder="Select Material..."
-                  allowCustom={true}
                 />
               </div>
 

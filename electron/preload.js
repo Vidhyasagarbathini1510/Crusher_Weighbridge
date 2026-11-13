@@ -96,6 +96,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getRfidCardByNumber: (cardNumber) => ipcRenderer.invoke('db:getRfidCardByNumber', cardNumber),
   getVehicleTareByNumber: (vehicleNo) => ipcRenderer.invoke('db:getVehicleTareByNumber', vehicleNo),
   syncMasterData: () => ipcRenderer.invoke('db:syncMasterData'),
+  pullSyncedMasterData: () => ipcRenderer.invoke('db:pullSyncedMasterData'),
   resetSyncStatus: () => ipcRenderer.invoke('db:resetSyncStatus'),
   getSyncQueueSummary: () => ipcRenderer.invoke('db:get-sync-queue-summary'),
   getFailedSyncQueue: (limit) => ipcRenderer.invoke('db:get-failed-sync-queue', limit),
@@ -107,6 +108,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getCleanupConfig: () => ipcRenderer.invoke('db:get-cleanup-config'),
   setCleanupConfig: (payload) => ipcRenderer.invoke('db:set-cleanup-config', payload),
   getCleanupStatus: () => ipcRenderer.invoke('db:get-cleanup-status'),
+  getBackupStatus: () => ipcRenderer.invoke('db:get-backup-status'),
+  createBackup: (reason) => ipcRenderer.invoke('db:create-backup', reason),
+  verifyDatabaseIntegrity: () => ipcRenderer.invoke('db:verify-integrity'),
+  openBackupFolder: () => ipcRenderer.invoke('db:open-backup-folder'),
   listSerialPorts: () => ipcRenderer.invoke('serial:list-ports'),
 
   // ---- DC Sequence operations (Host Centralized) ----
@@ -142,6 +147,27 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const listener = (event, data) => callback(data);
     ipcRenderer.on('rfid-auto-weigh-success', listener);
     return () => ipcRenderer.removeListener('rfid-auto-weigh-success', listener);
+  },
+
+  // ---- Unmanned Serial Reader operations (Card scan for Footer only) ----
+  onUnmannedCardData: (callback) => {
+    const listener = (event, data) => callback(data);
+    ipcRenderer.on('unmanned-card-data', listener);
+    return () => ipcRenderer.removeListener('unmanned-card-data', listener);
+  },
+  sendUnmannedSignal: (signalCode) => ipcRenderer.invoke('unmanned:sendSignal', signalCode),
+  onSignalStatusChange: (callback) => {
+    const listener = (event, data) => callback(data);
+    ipcRenderer.on('signal-status-change', listener);
+    return () => ipcRenderer.removeListener('signal-status-change', listener);
+  },
+
+  // ---- Card Scan Cooldown operations ----
+  clearCardCooldownCache: () => ipcRenderer.invoke('card:clearCooldownCache'),
+  onCardCooldownBlocked: (callback) => {
+    const listener = (event, data) => callback(data);
+    ipcRenderer.on('card-scan-cooldown-blocked', listener);
+    return () => ipcRenderer.removeListener('card-scan-cooldown-blocked', listener);
   },
 
   // ---- Auto-Updater operations ----

@@ -247,7 +247,7 @@ export default function BouldersDuplicate() {
                       material: material || 'BOULDERS',
                       party: contractor || 'LOCAL',
                       destination: destination || 'HOPPER',
-                      source: quarry || 'CRUSHER',
+                      source: (quarry && quarry.toUpperCase() !== 'CRUSHER') ? quarry : 'QUARRY',
                       gross: grossVal || '0',
                       tare: tareVal || '0',
                       net: nettVal || '0',

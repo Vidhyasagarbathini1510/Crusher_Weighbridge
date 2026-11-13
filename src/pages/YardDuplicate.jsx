@@ -18,6 +18,8 @@ export default function YardDuplicate() {
   const [nettVal, setNettVal] = useState('');
   const [dateVal, setDateVal] = useState('');
   const [timeVal, setTimeVal] = useState('');
+  // The record as saved, so reprints carry its gross / tare date & time
+  const [loadedRecord, setLoadedRecord] = useState(null);
 
   useEffect(() => {
     api.cameras().then(setCameras).catch(() => setCameras([]));
@@ -72,13 +74,16 @@ export default function YardDuplicate() {
       }
       
       if (match) {
+        setLoadedRecord(match);
         setVehicle(match.vehicle_no || '');
         setMaterial(match.material || match.product || '');
         setGrossVal(match.gross || '');
         setTareVal(match.tare || '');
         setNettVal(match.net || '');
-        setDateVal(match.date || (match.date_time ? match.date_time.split(',')[0] : ''));
-        setTimeVal(match.time || (match.date_time ? match.date_time.split(',')[1] : ''));
+        // date_time is "DD-MM-YYYY HH:MM:SS" (older PCs saved "D/M/YYYY, h:mm:ss am")
+        const dtParts = String(match.date_time || '').split(/[,s]+/);
+        setDateVal(match.date || dtParts[0] || '');
+        setTimeVal(match.time || dtParts.slice(1).join(' '));
         showNotice('Yard Transaction Bill Loaded Successfully!', 'success');
       } else {
         showNotice('No matching yard transaction bill found.', 'warning');
@@ -216,15 +221,15 @@ export default function YardDuplicate() {
 
               <div className="col-12 d-flex gap-2 mt-4 justify-content-end">
                 <button type="button" onClick={() => {
-                  const ticket = { dcNum: searchDc || '1', vehicle: vehicle || '-', material: material || '-', gross: grossVal || '0', tare: tareVal || '0', net: nettVal || '0' };
+                  const ticket = { ...(loadedRecord || {}), dcNum: searchDc || '1', vehicle: vehicle || '-', material: material || '-', gross: grossVal || '0', tare: tareVal || '0', net: nettVal || '0' };
                   printTicket(ticket, undefined, 'PRINT');
                 }} className="btn btn-danger saas-btn px-4" style={{ backgroundColor: '#ef4444' }}>Print Bill</button>
                 <button type="button" onClick={() => {
-                  const ticket = { dcNum: searchDc || '1', vehicle: vehicle || '-', material: material || '-', gross: grossVal || '0', tare: tareVal || '0', net: nettVal || '0' };
+                  const ticket = { ...(loadedRecord || {}), dcNum: searchDc || '1', vehicle: vehicle || '-', material: material || '-', gross: grossVal || '0', tare: tareVal || '0', net: nettVal || '0' };
                   printTicket(ticket, getDcPrintTemplate(), 'DC');
                 }} className="btn btn-dark saas-btn px-3">DC Print</button>
                 <button type="button" onClick={() => {
-                  const ticket = { dcNum: searchDc || '1', vehicle: vehicle || '-', material: material || '-', gross: grossVal || '0', tare: tareVal || '0', net: nettVal || '0' };
+                  const ticket = { ...(loadedRecord || {}), dcNum: searchDc || '1', vehicle: vehicle || '-', material: material || '-', gross: grossVal || '0', tare: tareVal || '0', net: nettVal || '0' };
                   printTicket(ticket, getGatePassTemplate(), 'GATE_PASS');
                 }} className="btn btn-secondary saas-btn px-3">Gate Pass</button>
               </div>

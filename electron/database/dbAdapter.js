@@ -150,7 +150,7 @@ async function call(methodName, ...args) {
   }
 
   // Mode === CLIENT: Send over LAN network to Host PC
-  if (methodName === 'loginUser') {
+  if (methodName === 'loginUser') {    
     try {
       return await performRemoteCall(methodName, args);
     } catch (err) {

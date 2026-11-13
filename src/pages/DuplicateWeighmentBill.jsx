@@ -33,14 +33,18 @@ export default function DuplicateWeighmentBill() {
       const searchNumMatch = cleanSearch.match(/\d+/);
       const searchNum = searchNumMatch ? parseInt(searchNumMatch[0], 10) : null;
 
-      const [salesTxs, standardTxs, boulderTxs, yardTxs] = await Promise.all([
+      const searchPrefix = cleanSearch.replace(/[^A-Z]/g, '');
+
+      const [secondTxs, salesTxs, standardTxs, boulderTxs, yardTxs] = await Promise.all([
+        api.secondWeighments ? api.secondWeighments().catch(() => []) : Promise.resolve([]),
         api.salesUnits ? api.salesUnits().catch(() => []) : Promise.resolve([]),
         api.transactions ? api.transactions().catch(() => []) : Promise.resolve([]),
         api.boulders ? api.boulders().catch(() => []) : Promise.resolve([]),
         api.yardWeighments ? api.yardWeighments().catch(() => []) : Promise.resolve([])
       ]);
 
-      const allTxs = [...(salesTxs || []), ...(standardTxs || []), ...(boulderTxs || []), ...(yardTxs || [])];
+      // 2nd weighments (SN-) first, newest first, since serials can repeat on later days
+      const allTxs = [...(secondTxs || []), ...(salesTxs || []), ...(standardTxs || []), ...(boulderTxs || []), ...(yardTxs || [])];
 
       const match = allTxs.find(t => {
         if (!t) return false;
@@ -55,7 +59,9 @@ export default function DuplicateWeighmentBill() {
 
         if (searchNum !== null) {
           const recordNumMatch = rawDc.match(/\d+/);
-          if (recordNumMatch && parseInt(recordNumMatch[0], 10) === searchNum) {
+          // Same number only counts with the same prefix (SN-01 must not load DC-1)
+          const recordPrefix = rawDc.replace(/[^A-Z]/g, '');
+          if (recordNumMatch && parseInt(recordNumMatch[0], 10) === searchNum && (searchPrefix === '' || recordPrefix === searchPrefix)) {
             return true;
           }
         }
@@ -218,6 +224,7 @@ export default function DuplicateWeighmentBill() {
                       net: nettVal || loadedRecord.net,
                       qty: qty || loadedRecord.qty,
                       transporter: loadedRecord.transporter || 'N/A',
+                      stationary: loadedRecord.stationary || '',
                       driver: loadedRecord.driver || 'N/A',
                       tareDate: loadedRecord.tare_date || loadedRecord.tareDate,
                       tareTime: loadedRecord.tare_time || loadedRecord.tareTime,

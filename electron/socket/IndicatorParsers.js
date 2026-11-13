@@ -16,7 +16,8 @@ const INDICATOR_PROTOCOLS = {
   ICOM: 'Icom',
   EASSEY: 'Eassey',
   AVERY: 'Avery',
-  GENERIC: 'Generic'
+  GENERIC: 'Generic',
+  STX_ETX: 'STX-ETX'
 };
 
 /**
@@ -33,8 +34,11 @@ function getProtocolDelimiter(protocolName) {
   if (norm.includes('icom') || norm.includes('eassey')) {
     return ':';
   }
-  // Avery, Generic, or fallback: CR / LF
-  return /[\r\n]+/;
+  if (norm.includes('stx') || norm.includes('etx') || norm.includes('none') || norm.includes('standard')) {
+    return /[\x03\r\n]+/;
+  }
+  // Avery, Generic, or fallback: CR / LF or ETX (\x03)
+  return /[\r\n\x03]+/;
 }
 
 /**
@@ -153,10 +157,50 @@ function parseIndicatorFrame(chunk, protocolName) {
     return { value: null, raw };
   }
 
-  // 5. GENERIC / AVERY / ASCII STANDARD
-  const numeric = raw.replace(/[^0-9.-]/g, '');
+  // 5. STX-ETX / STANDARD / NONE (e.g. '\x02 000000\x03', '\x02 015420♥', Cardinal, Toledo, generic scale)
+  if (norm.includes('stx') || norm.includes('none') || norm.includes('standard') || norm.includes('etx')) {
+    const cleanStr = raw.replace(/[\x00-\x1F\x7F]/g, ' ').trim();
+    const signedMatch = cleanStr.match(/([+-]?\s*\d+(\.\d+)?)/);
+    if (signedMatch) {
+      const cleanNumStr = signedMatch[1].replace(/\s+/g, '');
+      const parsedNum = parseFloat(cleanNumStr);
+      if (!isNaN(parsedNum)) {
+        return {
+          value: Number.isInteger(parsedNum) ? String(parsedNum) : String(parsedNum),
+          isStable: true,
+          raw
+        };
+      }
+    }
+    const digits = cleanStr.replace(/[^0-9]/g, '');
+    if (digits) {
+      const val = parseInt(digits, 10);
+      return {
+        value: String(isNaN(val) ? 0 : val),
+        isStable: true,
+        raw
+      };
+    }
+    return { value: null, raw };
+  }
+
+  // 6. GENERIC / AVERY / ASCII STANDARD
+  const cleanGeneric = raw.replace(/[\x00-\x1F\x7F]/g, ' ').trim();
+  const signedMatch = cleanGeneric.match(/([+-]?\s*\d+(\.\d+)?)/);
+  if (signedMatch) {
+    const cleanNumStr = signedMatch[1].replace(/\s+/g, '');
+    const parsedNum = parseFloat(cleanNumStr);
+    if (!isNaN(parsedNum)) {
+      return {
+        value: Number.isInteger(parsedNum) ? String(parsedNum) : String(parsedNum),
+        isStable: true,
+        raw
+      };
+    }
+  }
+
+  const numeric = cleanGeneric.replace(/[^0-9.-]/g, '');
   if (numeric && !isNaN(Number(numeric))) {
-    // Clean redundant negative signs or points
     const parsed = parseFloat(numeric);
     if (!isNaN(parsed)) {
       return {

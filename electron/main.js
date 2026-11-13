@@ -13,12 +13,20 @@
  *   └─────────────────────┘                       └──────────────────────────┘
  * ----------------------------------------------------------------------------
  */
-const { app, BrowserWindow, ipcMain, nativeTheme, Menu } = require('electron');
+const { app, BrowserWindow, ipcMain, nativeTheme, Menu, shell } = require('electron');
 const path = require('path');
 const bcrypt = require('bcryptjs');
 const { registerCameraHandlers } = require('./ipc/cameraHandlers');
 const NetronReader = require('./socket/NetronReader');
 const db = require('./database/db');
+
+// Fixed DD-MM-YYYY HH:mm:ss (24h). toLocaleString() follows each PC's Windows region
+// and was misread with day/month swapped.
+function nowDdMmYyyy() {
+  const d = new Date();
+  const p = n => String(n).padStart(2, '0');
+  return `${p(d.getDate())}-${p(d.getMonth() + 1)}-${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
 const dbAdapter = require('./database/dbAdapter');
 const networkServer = require('./services/networkServer');
 const updaterService = require('./services/updaterService');
@@ -234,6 +242,15 @@ function registerDatabaseHandlers() {
         global.restartRfidReader();
       }
     }
+    if (key === 'unmannedComPort' || key === 'unmannedBaudRate' || key === 'unmannedScaleType' || key === 'unmannedScaleIp' || key === 'unmannedProtocol') {
+      console.log(`[Main] Unmanned setting '${key}' changed to '${value}'. Restarting Unmanned reader...`);
+      if (global.restartUnmannedReader) {
+        global.restartUnmannedReader();
+      }
+      if (global.restartRfidReader) {
+        global.restartRfidReader();
+      }
+    }
     return result;
   });
   ipcMain.handle('db:getDebitors', async () => {
@@ -286,6 +303,12 @@ function registerDatabaseHandlers() {
   });
   ipcMain.handle('db:getVehicleTareByNumber', async (event, vehicleNo) => {
     return dbAdapter.call('getVehicleTareByNumber', vehicleNo);
+  });
+  ipcMain.handle('card:clearCooldownCache', async () => {
+    if (global.clearCardCooldownCache) {
+      global.clearCardCooldownCache();
+    }
+    return { success: true };
   });
   ipcMain.handle('db:saveVehicleTare', async (event, data) => {
     return dbAdapter.call('saveVehicleTare', data);
@@ -347,6 +370,10 @@ function registerDatabaseHandlers() {
     const { syncMasterData } = require('./services/syncService');
     return syncMasterData();
   });
+  ipcMain.handle('db:pullSyncedMasterData', async () => {
+    const { pullSyncedMasterData } = require('./services/syncService');
+    return pullSyncedMasterData();
+  });
   ipcMain.handle('db:resetSyncStatus', async () => {
     const result = db.resetSyncStatus();
     runSyncCycle().catch(() => {});
@@ -400,6 +427,32 @@ function registerDatabaseHandlers() {
   ipcMain.handle('db:get-cleanup-status', async () => {
     return db.getCleanupStatus();
   });
+  ipcMain.handle('db:get-backup-status', async () => {
+    return db.getBackupStatus();
+  });
+  ipcMain.handle('db:create-backup', async (event, reason) => {
+    return db.createManualBackup(reason);
+  });
+  ipcMain.handle('db:verify-integrity', async () => {
+    return db.verifyDatabaseIntegrity();
+  });
+  ipcMain.handle('db:open-backup-folder', async () => {
+    try {
+      const status = db.getBackupStatus ? db.getBackupStatus() : null;
+      let targetDir = status?.mirrorDirectory;
+      if (!targetDir || !fs.existsSync(targetDir)) {
+        targetDir = status?.backupDirectory || path.join(app.getPath('userData'), 'weighbridge_backups');
+      }
+      if (!fs.existsSync(targetDir)) {
+        fs.mkdirSync(targetDir, { recursive: true });
+      }
+      await shell.openPath(targetDir);
+      return { success: true, path: targetDir };
+    } catch (e) {
+      console.error('[Main] Failed to open backup folder:', e);
+      return { success: false, error: e.message };
+    }
+  });
   ipcMain.handle('serial:list-ports', async () => {
     try {
       const { SerialPort } = require('serialport');
@@ -451,9 +504,91 @@ function registerDatabaseHandlers() {
 
     return { started: true };
   });
+
+  // ---- Unmanned Traffic Light / Barrier Signal Handlers (B = Green, C = Red) ----
+  ipcMain.handle('unmanned:sendSignal', async (event, signalCode) => {
+    if (signalCode === 'B') {
+      sendUnmannedSignal('B', 7);
+    } else {
+      sendUnmannedSignal(signalCode || 'C');
+    }
+    return { ok: true };
+  });
 }
 
 let mainWindow = null;
+let activeUnmannedReader = null;
+let signalResetTimer = null;
+let isGreenSignalActive = false;
+let hasSeenLoadedWeight = false;
+let globalLatestLiveWeight = '0';
+
+function handleScaleWeightForSignal(liveWeightKg) {
+  if (!isGreenSignalActive) return;
+  const wt = parseFloat(liveWeightKg) || 0;
+  if (wt >= 200) {
+    hasSeenLoadedWeight = true;
+  }
+  // When truck leaves the scale and scale returns to zero (<= 50 kg threshold to account for minor scale drift)
+  if ((hasSeenLoadedWeight && wt <= 50) || wt <= 0) {
+    console.log(`[Main] Scale weight returned to zero (${wt} kg). Sending RED signal ('C').`);
+    isGreenSignalActive = false;
+    hasSeenLoadedWeight = false;
+    sendUnmannedSignal('C');
+  }
+}
+
+function sendUnmannedSignal(signalCode, autoResetSeconds = 0) {
+  if (signalResetTimer) {
+    clearTimeout(signalResetTimer);
+    signalResetTimer = null;
+  }
+
+  const code = String(signalCode || 'C').trim();
+  if (activeUnmannedReader && typeof activeUnmannedReader.sendSignal === 'function') {
+    activeUnmannedReader.sendSignal(code);
+    console.log(`[Main] Sent signal "${code}" to unmanned serial port`);
+  } else {
+    console.warn(`[Main] Cannot send signal "${code}": unmanned reader is not connected.`);
+  }
+
+  const isGreen = code === 'B';
+  if (isGreen) {
+    isGreenSignalActive = true;
+    hasSeenLoadedWeight = (parseFloat(globalLatestLiveWeight) || 0) >= 200;
+  } else {
+    isGreenSignalActive = false;
+    hasSeenLoadedWeight = false;
+  }
+
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('signal-status-change', {
+      signal: code,
+      signalGo: isGreen,
+      signalStop: !isGreen
+    });
+  }
+
+  // If turning GREEN ('B') and autoResetSeconds > 0, auto-revert to RED ('C') after timeout if truck hasn't already left
+  if (isGreen && autoResetSeconds > 0) {
+    signalResetTimer = setTimeout(() => {
+      signalResetTimer = null;
+      console.log(`[Main] Safety timeout reached (${autoResetSeconds}s). Auto-resetting signal to RED ('C').`);
+      isGreenSignalActive = false;
+      hasSeenLoadedWeight = false;
+      if (activeUnmannedReader && typeof activeUnmannedReader.sendSignal === 'function') {
+        activeUnmannedReader.sendSignal('C');
+      }
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('signal-status-change', {
+          signal: 'C',
+          signalGo: false,
+          signalStop: true
+        });
+      }
+    }, autoResetSeconds * 1000);
+  }
+}
 
 function createWindow() {
   const win = new BrowserWindow({
@@ -492,7 +627,6 @@ function createWindow() {
   // Dynamic scale reader setup
   let activeReader = null;
   let restartTimeout = null;
-  let globalLatestLiveWeight = '0';
 
   const startReader = () => {
     if (restartTimeout) {
@@ -539,6 +673,7 @@ function createWindow() {
             const numeric = String(data.value).replace(/[^0-9.-]/g, '');
             if (numeric) {
               globalLatestLiveWeight = numeric;
+              handleScaleWeightForSignal(numeric);
             }
           }
           if (!win.isDestroyed()) {
@@ -565,6 +700,52 @@ function createWindow() {
   global.restartSerialReader = startReader;
   startReader();
 
+  // Shared Card Scan Cooldown tracker (shared across Unmanned and RFID readers)
+  const cardLastScannedMap = new Map();
+  global.clearCardCooldownCache = () => {
+    cardLastScannedMap.clear();
+    console.log('[Main] Card scan cooldown cache cleared.');
+  };
+
+  function checkCardCooldown(cardNo) {
+    if (!cardNo) return { allowed: false };
+    const settings = db.getSettings ? db.getSettings() : {};
+    const enabledSetting = settings.card_scan_cooldown_enabled;
+    const isEnabled = enabledSetting === undefined || enabledSetting === 'true' || enabledSetting === true || enabledSetting === '1';
+    if (!isEnabled) {
+      return { allowed: true, cooldownMinutes: 0 };
+    }
+
+    const cooldownSetting = settings.card_scan_cooldown_minutes !== undefined ? settings.card_scan_cooldown_minutes : '15';
+    const cooldownMinutes = Number(cooldownSetting);
+
+    if (isNaN(cooldownMinutes) || cooldownMinutes <= 0) {
+      return { allowed: true, cooldownMinutes: 0 };
+    }
+
+    const cooldownMs = cooldownMinutes * 60 * 1000;
+    const now = Date.now();
+    const lastScanTime = cardLastScannedMap.get(cardNo);
+
+    if (lastScanTime && (now - lastScanTime) < cooldownMs) {
+      const elapsedMs = now - lastScanTime;
+      const remainingMs = cooldownMs - elapsedMs;
+      const remainingSecs = Math.ceil(remainingMs / 1000);
+      const remainingMins = Math.ceil(remainingMs / (60 * 1000));
+      return {
+        allowed: false,
+        remainingMs,
+        remainingSecs,
+        remainingMins,   
+        cooldownMinutes,
+        lastScanTime
+      };
+    }
+
+    cardLastScannedMap.set(cardNo, now);
+    return { allowed: true, cooldownMinutes };
+  }
+
   // ---- RFID Serial Reader Setup ----
   let activeRfidReader = null;
   const startRfidReader = () => {
@@ -572,6 +753,7 @@ function createWindow() {
       const settings = db.getSettings ? db.getSettings() : {};
       const rfidPortSetting = settings.rfid_com_port || settings.rfidComPort || 'COM1';
       const rfidBaudSetting = settings.rfid_baud_rate || settings.rfidBaudRate || '9600';
+      const unmannedPortSetting = settings.unmannedComPort || 'COM8';
       const RfidSerialReader = require('./socket/RfidSerialReader');
 
       if (activeRfidReader) {
@@ -579,14 +761,44 @@ function createWindow() {
         activeRfidReader = null;
       }
 
+      const scalePortSetting = settings.comPort || 'COM9';
+      const scaleType = settings.scaleType || 'serial';
+
+      // If RFID port happens to match the Primary Scale port, yield port to Primary Scale
+      if (scaleType === 'serial' && rfidPortSetting && scalePortSetting && rfidPortSetting.toUpperCase() === scalePortSetting.toUpperCase()) {
+        console.warn(`[Main] RFID port (${rfidPortSetting}) is identical to Primary Scale port (${scalePortSetting}). RFID reader yielding port to Primary Scale.`);
+        return;
+      }
+
+      // If RFID port happens to match Unmanned Serial Port, yield port to Unmanned Reader to avoid COM lock conflicts
+      if (rfidPortSetting && unmannedPortSetting && rfidPortSetting.toUpperCase() === unmannedPortSetting.toUpperCase()) {
+        console.warn(`[Main] RFID port (${rfidPortSetting}) is identical to Unmanned port (${unmannedPortSetting}). RFID reader yielding port to Unmanned Serial box.`);
+        return;
+      }
+
       console.log(`[Main] Starting RfidSerialReader on ${rfidPortSetting} (${rfidBaudSetting} baud)...`);
       activeRfidReader = new RfidSerialReader(rfidPortSetting, rfidBaudSetting);
       activeRfidReader.on('card', async (cardData) => {
         if (!win || win.isDestroyed()) return;
-        win.webContents.send('rfid-card-data', cardData);
 
         const cardNo = cardData.cardNo || cardData.epc;
         if (!cardNo) return;
+
+        // Check Card Scan Cooldown Window
+        const cooldownCheck = checkCardCooldown(cardNo);
+        if (!cooldownCheck.allowed) {
+          console.warn(`[AutoWeigh] RFID Card ${cardNo} already scanned! Cooldown active for another ${cooldownCheck.remainingMins} minute(s). Skipping duplicate scan.`);
+          win.webContents.send('card-scan-cooldown-blocked', {
+            source: 'RFID Scanner',
+            cardNo,
+            remainingMins: cooldownCheck.remainingMins,
+            remainingSecs: cooldownCheck.remainingSecs,
+            cooldownMinutes: cooldownCheck.cooldownMinutes
+          });
+          return;
+        }
+
+        win.webContents.send('rfid-card-data', cardData);
 
         try {
           const rfidCard = await dbAdapter.call('getRfidCardByNumber', cardNo);
@@ -608,12 +820,34 @@ function createWindow() {
               grossWeight
             });
 
+            // Resolve contractor quarry if available, otherwise default to QUARRY
+            let contractorQuarry = 'QUARRY';
+            try {
+              const cName = (rfidCard.contractor || '').trim().toUpperCase();
+              if (cName) {
+                const cmList = await dbAdapter.call('getContractorMaterials');
+                const cmMatch = (cmList || []).find(cm => (cm.contractorName || '').trim().toUpperCase() === cName && cm.quarryName);
+                if (cmMatch && cmMatch.quarryName && cmMatch.quarryName.toUpperCase() !== 'CRUSHER') {
+                  contractorQuarry = cmMatch.quarryName;
+                } else {
+                  const cList = await dbAdapter.call('getContractors');
+                  const cMatch = (cList || []).find(c => ((c.contractorName || c.contractor || '')).trim().toUpperCase() === cName && (c.quarryName || c.quarry));
+                  if (cMatch && (cMatch.quarryName || cMatch.quarry) && (cMatch.quarryName || cMatch.quarry).toUpperCase() !== 'CRUSHER') {
+                    contractorQuarry = cMatch.quarryName || cMatch.quarry;
+                  }
+                }
+              }
+            } catch (_) {}
+
             // Automatically save Boulder transaction into local SQLite DB & queue for server upload without manual save click
             const txData = {
-              date_time: new Date().toLocaleString(),
+              date_time: nowDdMmYyyy(),
               vehicle_no: vehicleNo,
               contractor: rfidCard.contractor || 'N/A',
               party: rfidCard.contractor || 'N/A',
+              quarry: contractorQuarry,
+              source: contractorQuarry,
+              destination: 'HOPPER',
               material: rfidCard.material || 'BOULDERS',
               gross: grossWeight,
               tare: tareWeight,
@@ -643,10 +877,197 @@ function createWindow() {
   global.restartRfidReader = startRfidReader;
   startRfidReader();
 
+  // ---- Unmanned Serial Reader Setup (Reads card number for footer only - no auto-weighing) ----
+  let unmannedRestartTimeout = null;
+  const startUnmannedReader = () => {
+    if (unmannedRestartTimeout) {
+      clearTimeout(unmannedRestartTimeout);
+    }
+    unmannedRestartTimeout = setTimeout(() => {
+      try {
+        const settings = db.getSettings ? db.getSettings() : {};
+        const unmannedPort = settings.unmannedComPort || 'COM8';
+        const unmannedBaud = Number(settings.unmannedBaudRate) || 9600;
+        try {
+          delete require.cache[require.resolve('./socket/UnmannedSerialReader')];
+        } catch (_) {}
+        cardLastScannedMap.clear();
+        const UnmannedSerialReader = require('./socket/UnmannedSerialReader');
+
+        const scalePortSetting = settings.comPort || 'COM9';
+        const scaleType = settings.scaleType || 'serial';
+
+        // If Unmanned port happens to match Primary Scale port, yield port to Primary Scale
+        if (scaleType === 'serial' && unmannedPort && scalePortSetting && unmannedPort.toUpperCase() === scalePortSetting.toUpperCase()) {
+          console.warn(`[Main] Unmanned port (${unmannedPort}) is identical to Primary Scale port (${scalePortSetting}). Unmanned reader yielding port to Primary Scale.`);
+          return;
+        }
+
+        const runNewUnmannedReader = () => {
+          console.log(`[Main] Starting UnmannedSerialReader on ${unmannedPort} (${unmannedBaud} baud)...`);
+          activeUnmannedReader = new UnmannedSerialReader(unmannedPort, unmannedBaud);
+          activeUnmannedReader.on('card', async (cardData) => {
+            if (!win || win.isDestroyed()) return;
+            const cardNo = cardData.cardNo || cardData.epc;
+            if (!cardNo) return;
+
+            console.log(`[Main] Unmanned card scanned: "${cardNo}"`);
+
+            // 1. Immediately send cardNo so "RF IDs Adding" and Footer display the card number
+            win.webContents.send('unmanned-card-data', { cardNo });
+
+            // 2. Lookup registered vehicle mapping in rfid_cards
+            let rfidCard = null;
+            try {
+              rfidCard = await dbAdapter.call('getRfidCardByNumber', cardNo);
+            } catch (err) {
+              console.error('[Unmanned AutoWeigh] Error querying rfid_cards:', err.message);
+            }
+
+            // If card is not registered to a vehicle yet, nothing to auto-weigh
+            if (!rfidCard || !rfidCard.vehicle) {
+              console.log(`[Unmanned AutoWeigh] Card "${cardNo}" is not registered to a vehicle yet.`);
+              sendUnmannedSignal('C'); // Keep RED signal for unregistered card
+              return;
+            }
+
+            const vehicleNo = (rfidCard.vehicle || '').trim().toUpperCase();
+
+            // 3. Check Card Scan Cooldown Window for registered auto-weigh cards
+            const cooldownCheck = checkCardCooldown(cardNo);
+            if (!cooldownCheck.allowed) {
+              console.warn(`[Unmanned AutoWeigh] Card "${cardNo}" (${vehicleNo}) already scanned! Cooldown active for another ${cooldownCheck.remainingMins} minute(s).`);
+              sendUnmannedSignal('C'); // Turn RED signal for cooldown-blocked card
+              win.webContents.send('unmanned-card-data', { cardNo, vehicleNo });
+              win.webContents.send('card-scan-cooldown-blocked', {
+                source: 'Unmanned Reader',
+                cardNo,
+                remainingMins: cooldownCheck.remainingMins,
+                remainingSecs: cooldownCheck.remainingSecs,
+                cooldownMinutes: cooldownCheck.cooldownMinutes
+              });
+              return;
+            }
+
+            // 4. Auto-Weigh: Fetch Tare, Live Scale Weight, and compute Nett
+            try {
+              const tareRecord = await dbAdapter.call('getVehicleTareByNumber', vehicleNo);
+              const tareWeight = tareRecord ? Number(tareRecord.weight || 0) : 0;
+              const grossWeight = Number(globalLatestLiveWeight) || 0;
+              const nettWeight = Math.abs(grossWeight - tareWeight);
+
+              console.log(`[Unmanned AutoWeigh] Card ${cardNo} mapped to Vehicle ${vehicleNo} | Tare: ${tareWeight} kg | Gross: ${grossWeight} kg | Nett: ${nettWeight} kg`);
+
+              // Update Footer & frontend UI with complete mapped weighment
+              win.webContents.send('unmanned-card-data', {
+                cardNo,
+                vehicleNo,
+                material: rfidCard.material || 'BOULDERS',
+                contractor: rfidCard.contractor || '',
+                gross: grossWeight,
+                tare: tareWeight,
+                net: nettWeight
+              });
+
+              win.webContents.send('rfid-auto-mapped', {
+                cardNo,
+                vehicleNo,
+                material: rfidCard.material || 'BOULDERS',
+                contractor: rfidCard.contractor || '',
+                tareWeight,
+                grossWeight
+              });
+
+              // Resolve contractor quarry if available, otherwise default to QUARRY
+              let contractorQuarry = 'QUARRY';
+              try {
+                const cName = (rfidCard.contractor || '').trim().toUpperCase();
+                if (cName) {
+                  const cmList = await dbAdapter.call('getContractorMaterials');
+                  const cmMatch = (cmList || []).find(cm => (cm.contractorName || '').trim().toUpperCase() === cName && cm.quarryName);
+                  if (cmMatch && cmMatch.quarryName && cmMatch.quarryName.toUpperCase() !== 'CRUSHER') {
+                    contractorQuarry = cmMatch.quarryName;
+                  } else {
+                    const cList = await dbAdapter.call('getContractors');
+                    const cMatch = (cList || []).find(c => ((c.contractorName || c.contractor || '')).trim().toUpperCase() === cName && (c.quarryName || c.quarry));
+                    if (cMatch && (cMatch.quarryName || cMatch.quarry) && (cMatch.quarryName || cMatch.quarry).toUpperCase() !== 'CRUSHER') {
+                      contractorQuarry = cMatch.quarryName || cMatch.quarry;
+                    }
+                  }
+                }
+              } catch (_) {}
+
+              // 5. Automatically save Boulder transaction into local SQLite DB & queue for server upload
+              // Tare date/time = when the saved vehicle tare was recorded (not the gross scan time).
+              // Only accept an unambiguous DD-MM-YYYY / HH:mm[:ss]; otherwise leave empty (sync falls back to gross time).
+              const tDateMatch = String((tareRecord && tareRecord.date) || '').trim().match(/^(\d{1,2})[-\/](\d{1,2})[-\/](\d{4})$/);
+              const tTimeMatch = String((tareRecord && tareRecord.time) || '').trim().match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+              const tareDateStr = tDateMatch ? `${tDateMatch[1].padStart(2, '0')}-${tDateMatch[2].padStart(2, '0')}-${tDateMatch[3]}` : '';
+              const tareTimeStr = (tDateMatch && tTimeMatch) ? `${tTimeMatch[1].padStart(2, '0')}:${tTimeMatch[2]}:${tTimeMatch[3] || '00'}` : '';
+
+              const txData = {
+                date_time: nowDdMmYyyy(),
+                tare_date: tareDateStr,
+                tare_time: tareTimeStr,
+                vehicle_no: vehicleNo,
+                contractor: rfidCard.contractor || 'N/A',
+                party: rfidCard.contractor || 'N/A',
+                quarry: contractorQuarry,
+                source: contractorQuarry,
+                destination: 'HOPPER',
+                material: rfidCard.material || 'BOULDERS',
+                gross: grossWeight,
+                tare: tareWeight,
+                net: nettWeight,
+                operator: 'Unmanned Auto-Weigh',
+                card: cardNo
+              };
+
+              const savedTx = await dbAdapter.call('addBoulderTransaction', txData, null);
+              console.log(`[Unmanned AutoWeigh] Successfully saved Boulder transaction DC ${savedTx.dc_num} (UUID: ${savedTx.uuid}) for ${vehicleNo}. Pushed to sync queue for cloud server upload.`);
+
+              // 6. Send GREEN signal ('B') to allow vehicle passage. Will turn RED ('C') as soon as weight returns to zero (or after 20s safety timeout)
+              sendUnmannedSignal('B', 20);
+
+              win.webContents.send('rfid-auto-weigh-success', {
+                tx: savedTx,
+                message: `Auto-weighed vehicle ${vehicleNo} (${nettWeight} kg Net). Saved DC ${savedTx.dc_num} and syncing to server!`
+              });
+            } catch (e) {
+              console.error('[Unmanned AutoWeigh] Error auto-weighing vehicle:', e.message);
+              sendUnmannedSignal('C'); // Red signal on error
+            }
+          });
+          activeUnmannedReader.start();
+        };
+
+        if (activeUnmannedReader) {
+          const oldReader = activeUnmannedReader;
+          activeUnmannedReader = null;
+          oldReader.stop(() => {
+            setTimeout(() => {
+              runNewUnmannedReader();
+            }, 300);
+          });
+        } else {
+          runNewUnmannedReader();
+        }
+      } catch (e) {
+        console.error('[Main] Error starting UnmannedSerialReader:', e);
+      }
+    }, 500);
+  };
+
+  global.restartUnmannedReader = startUnmannedReader;
+  startUnmannedReader();
+
   win.on('closed', () => {
     mainWindow = null;
     if (restartTimeout) {
       clearTimeout(restartTimeout);
+    }
+    if (unmannedRestartTimeout) {
+      clearTimeout(unmannedRestartTimeout);
     }
     if (activeReader) {
       activeReader.stop();
@@ -655,8 +1076,13 @@ function createWindow() {
       activeRfidReader.stop();
       activeRfidReader = null;
     }
+    if (activeUnmannedReader) {
+      activeUnmannedReader.stop();
+      activeUnmannedReader = null;
+    }
     global.restartSerialReader = null;
     global.restartRfidReader = null;
+    global.restartUnmannedReader = null;
     try {
       db.saveToDiskSync();
     } catch (e) {
