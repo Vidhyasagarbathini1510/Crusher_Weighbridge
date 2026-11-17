@@ -1336,31 +1336,21 @@ export function generateSlipHtml(data = {}, template = getSelectedTemplate(), ca
     const headerResult = resolveDotMatrixHeader(data);
 
     const line0 = divider;
-    const line1Left = `SERIAL NO   :    ${esc(dcNum)}`;
-    const line1Right = `VEHICLE     : ${esc(vehicle)}`;
-    const line1 = `${line1Left.padEnd(RIGHT_COL)}${line1Right}`;
-
-    const line2Left = `PARTY       : ${esc(party)}`;
-    const line2Right = `MATERIAL    : ${esc(material)}`;
-    const line2 = `${line2Left.padEnd(RIGHT_COL)}${line2Right}`;
-
-    const line3Left = `SOURCE      : ${esc(source)}`;
-    const line3Right = `DESTINATION : ${esc(destination)}`;
-    const line3 = `${line3Left.padEnd(RIGHT_COL)}${line3Right}`;
-
+    const IND = ' '.repeat(10);
+    const lbl = t => `${t.padEnd(10)}: `;
+    const RC = 33;
+    const row = (l, r) => `${IND}${l.padEnd(RC)}${r}`;
+    const wRow = (label, w, right) => {
+      const gap = Math.max(1, RC - 12 - w.length);
+      return `${IND}${lbl(label)}<b><span style="font-size: 14px; letter-spacing: 1.5px;">${esc(w)}</span></b>${' '.repeat(gap)}${right}`;
+    };
+    const line1 = row(`${lbl('SERIAL NO')}${esc(dcNum)}`, `${lbl('VEHICLE')}${esc(vehicle)}`);
+    const line2 = row(`${lbl('PARTY')}${esc(party)}`, `${lbl('MATERIAL')}${esc(material)}`);
+    const line3 = row(`${lbl('SOURCE')}${esc(source)}`, `${lbl('DESTINATION')}${esc(destination)}`);
     const line3Mid = divider;
-
-    const grossRight = `DATE:${esc(date)}   TIME:${esc(time)}`;
-    const grossGap = Math.max(1, RIGHT_COL - 16 - gross.length);
-    const line4 = `GROSS       :   <b><span style="font-size: 14px; letter-spacing: 1.5px;">${esc(gross)}</span></b>${' '.repeat(grossGap)}${grossRight}`;
-
-    const tareRight = tareDate || date ? `DATE:${esc(tareDate || date)}   TIME:${esc(tareTime || time)}` : '';
-    const tareGap = Math.max(1, RIGHT_COL - 16 - tare.length);
-    const line5 = `TARE        :   <b><span style="font-size: 14px; letter-spacing: 1.5px;">${esc(tare)}</span></b>${' '.repeat(tareGap)}${tareRight}`;
-
-    const nettRight = `DRIVER      : ${esc(activeDriver)}`;
-    const nettGap = Math.max(1, RIGHT_COL - 16 - nett.length);
-    const line6 = `NETT        :   <b><span style="font-size: 14px; letter-spacing: 1.5px;">${esc(nett)}</span></b>${' '.repeat(nettGap)}${nettRight}`;
+    const line4 = wRow('GROSS', gross, `DATE:${esc(date)}   TIME:${esc(time)}`);
+    const line5 = wRow('TARE', tare, tareDate || date ? `DATE:${esc(tareDate || date)}   TIME:${esc(tareTime || time)}` : '');
+    const line6 = wRow('NETT', nett, `${lbl('DRIVER')}${esc(activeDriver)}`);
 
     const line7 = divider;
     const line8 = `${esc(activeDriver).padEnd(RIGHT_COL)}${esc(party)}`;
@@ -1658,44 +1648,25 @@ export function generateEscpSlipText(data = {}, template = '') {
   // Line 0: Top Dashed Line
   const line0 = divider;
 
-  // Line 1: SERIAL NO & VEHICLE
-  const line1Left = `SERIAL NO   :    ${dcNum}`;
-  const line1Right = `VEHICLE     : ${vehicle}`;
-  const line1 = `${line1Left.padEnd(RIGHT_COL)}${line1Right}`;
+  // Reference slip: text block indented from the dashed rules, labels padded so
+  // every value starts in the same column, right-hand block at a fixed column.
+  const IND = ' '.repeat(10);
+  const lbl = t => `${t.padEnd(10)}: `;                 // value always starts 12 cols in
+  const RC = 33;                                        // right block column (after indent)
+  const row = (l, r) => `${IND}${l.padEnd(RC)}${r}`;
+  const wRow = (label, w, right) => {
+    const gap = Math.max(1, RC - 12 - w.length * 2);
+    return `${IND}${lbl(label)}${ESC_DBL_ON}${ESC_BOLD_ON}${w}${ESC_BOLD_OFF_INNER}${ESC_DBL_OFF}${' '.repeat(gap)}${right}`;
+  };
 
-  // Line 2: PARTY & MATERIAL
-  const line2Left = `PARTY       : ${party}`;
-  const line2Right = `MATERIAL    : ${material}`;
-  const line2 = `${line2Left.padEnd(RIGHT_COL)}${line2Right}`;
-
-  // Line 3: SOURCE & DESTINATION
-  const line3Left = `SOURCE      : ${source}`;
-  const line3Right = `DESTINATION : ${destination}`;
-  const line3 = `${line3Left.padEnd(RIGHT_COL)}${line3Right}`;
-
-  // Line 3.5: Middle Dashed Line (Source below / Gross above)
+  const line1 = row(`${lbl('SERIAL NO')}${dcNum}`, `${lbl('VEHICLE')}${vehicle}`);
+  const line2 = row(`${lbl('PARTY')}${party}`, `${lbl('MATERIAL')}${material}`);
+  const line3 = row(`${lbl('SOURCE')}${source}`, `${lbl('DESTINATION')}${destination}`);
   const line3Mid = divider;
 
-  // Line 4: GROSS
-  const grossDblWidth = gross.length * 2;
-  const grossLeftPrintCols = 16 + grossDblWidth;
-  const grossGap = Math.max(1, RIGHT_COL - grossLeftPrintCols);
-  const grossRight = `DATE:${grossDate}   TIME:${grossTime}`;
-  const line4 = `GROSS       :   ${ESC_DBL_ON}${ESC_BOLD_ON}${gross}${ESC_BOLD_OFF_INNER}${ESC_DBL_OFF}${' '.repeat(grossGap)}${grossRight}`;
-
-  // Line 5: TARE
-  const tareDblWidth = tare.length * 2;
-  const tareLeftPrintCols = 16 + tareDblWidth;
-  const tareGap = Math.max(1, RIGHT_COL - tareLeftPrintCols);
-  const tareRight = tareDate ? `DATE:${tareDate}   TIME:${tareTime}` : '';
-  const line5 = `TARE        :   ${ESC_DBL_ON}${ESC_BOLD_ON}${tare}${ESC_BOLD_OFF_INNER}${ESC_DBL_OFF}${' '.repeat(tareGap)}${tareRight}`;
-
-  // Line 6: NETT
-  const nettDblWidth = nett.length * 2;
-  const nettLeftPrintCols = 16 + nettDblWidth;
-  const nettGap = Math.max(1, RIGHT_COL - nettLeftPrintCols);
-  const nettRight = `DRIVER      : ${driver}`;
-  const line6 = `NETT        :   ${ESC_DBL_ON}${ESC_BOLD_ON}${nett}${ESC_BOLD_OFF_INNER}${ESC_DBL_OFF}${' '.repeat(nettGap)}${nettRight}`;
+  const line4 = wRow('GROSS', gross, `DATE:${grossDate}   TIME:${grossTime}`);
+  const line5 = wRow('TARE', tare, tareDate ? `DATE:${tareDate}   TIME:${tareTime}` : '');
+  const line6 = wRow('NETT', nett, `${lbl('DRIVER')}${driver}`);
 
   // Line 7: Bottom Dashed Line
   const line7 = divider;

@@ -6,12 +6,13 @@ import 'bootstrap/dist/css/bootstrap.min.css';
 import './styles.css';
 import App from './App.jsx';
 import { restorePrintSettings } from './utils/printHelper.js';
+import { restoreWorkflowSettings } from './utils/workflowSettings.js';
 
 // HashRouter is used (not BrowserRouter) because Electron loads index.html via
 // file://, where path-based routing breaks but hash routing works cleanly.
 // Print settings are read back from the database before the first screen
 // renders, so the saved template and printer are in place when pages load.
-restorePrintSettings().finally(() => {
+Promise.all([restorePrintSettings(), restoreWorkflowSettings()]).finally(() => {
   ReactDOM.createRoot(document.getElementById('root')).render(
     <HashRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
       <App />
