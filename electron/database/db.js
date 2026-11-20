@@ -42,7 +42,7 @@ let lastDailyBackupDate = null;
 let lastSlotBackupTime = 0;
 let currentSlot = 1;
 const MAX_SLOTS = 5;
-const MAX_DAILY_BACKUPS = 30;
+const MAX_DAILY_BACKUPS = 10;
 
 function isValidSqliteHeader(buffer) {
   if (!buffer || buffer.length < 100) return false;
@@ -156,7 +156,7 @@ function cleanOldDailyBackups(targetDir = backupsDir) {
  * Multi-Tier Backup Engine:
  * 1. Immediate .bak (with size/health protection)
  * 2. 5 rolling slot backups
- * 3. Daily backups (retained for 30 days, mirrored to D:\ or C:\ drive)
+ * 3. Daily backups (retained for 10 days, mirrored to D:\ or C:\ drive)
  */
 function createVerifiedBackups(SQL, buffer, forceDaily = false) {
   if (!SQL || !buffer || buffer.length < 100) return;

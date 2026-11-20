@@ -1,4 +1,4 @@
-import { getCompanyDetails } from './classicReportPrinter.js';
+import { getCompanyDetails, getSavedCompanyNameHtml } from './classicReportPrinter.js';
 
 // Report cells come straight from database fields, so a value containing < or &
 // would otherwise break the page layout.
@@ -330,7 +330,7 @@ export function printReport({
         <div class="document-wrapper">
           <div class="report-header">
             <div>
-              <div class="company-name">NORIS WEIGHBRIDGE</div>
+              <div class="company-name">${getSavedCompanyNameHtml('').toUpperCase()} WEIGHBRIDGE</div>
               <div class="report-title">${escapeHtml(title)}</div>
               ${subtitle ? `<div class="report-scope">${escapeHtml(subtitle.toUpperCase())} view</div>` : ''}
             </div>
@@ -361,7 +361,7 @@ export function printReport({
 
           <div class="footer">
             <div>${escapeHtml(footerText)}</div>
-            <div>NORIS Weighbridge Desktop</div>
+            <div>${getSavedCompanyNameHtml('')} Weighbridge Desktop</div>
           </div>
         </div>
       </body>

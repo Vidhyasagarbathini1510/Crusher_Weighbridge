@@ -2,8 +2,9 @@ import React, { useState, useEffect } from 'react';
 import { NavLink } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useScale } from '../context/ScaleContext.jsx';
-import logoImg from '../assets/logo.jpg';
+import logoImg from '../assets/app-icon.png';
 import { DUPLICATE_BILL_MODES, getDuplicateBillsMode } from '../utils/duplicateBillUtil.js';
+import { getSavedCompanyName } from '../utils/classicReportPrinter.js';
 
 export default function Sidebar() {
   const [activeDropdown, setActiveDropdown] = useState(null);
@@ -11,6 +12,12 @@ export default function Sidebar() {
   const { logout, user, isAdmin } = useAuth();
   const { isConnected } = useScale() || {};
 
+  const [brandName, setBrandName] = useState(() => getSavedCompanyName(''));
+  useEffect(() => {
+    const h = () => setBrandName(getSavedCompanyName(''));
+    window.addEventListener('company-details-changed', h);
+    return () => window.removeEventListener('company-details-changed', h);
+  }, []);
   const [isSlipEnabled, setIsSlipEnabled] = useState(() => localStorage.getItem('noris_enable_loading_slip') === 'true');
   const [menuMode, setMenuMode] = useState(() => {
     const saved = localStorage.getItem('noris_loading_slip_menu_mode');
@@ -146,10 +153,10 @@ export default function Sidebar() {
   return (
     <nav className="sidebar-container px-3 py-0 d-flex align-items-center justify-content-between">
       {/* Brand Header */}
-      <div className="d-flex align-items-center gap-2" style={{ height: '100%' }}>
-        <img src={logoImg} alt="Noris Logo" style={{ width: '22px', height: '22px', borderRadius: '4px', objectFit: 'contain' }} />
+      <div className="d-flex align-items-center gap-2" style={{ height: '100%', flexShrink: 0 }}>
+        <img src={logoImg} alt="Logo" style={{ width: '32px', height: '32px', borderRadius: '6px', objectFit: 'contain' }} />
         <div className="brand-text d-flex align-items-baseline gap-1">
-          <span className="fw-bold tracking-wide" style={{ fontSize: '1rem', letterSpacing: '0.16em', color: 'var(--side-text-hi)' }}>NORIS</span>
+          <span className="fw-bold tracking-wide" style={{ fontSize: '1rem', letterSpacing: '0.16em', color: 'var(--side-text-hi)', textTransform: 'uppercase', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '190px', display: 'block' }} title={brandName}>{brandName}</span>
           {/* <span className="text-muted fw-semibold" style={{ fontSize: '0.68rem', letterSpacing: '0.05em' }}>WEIGHBRIDGE</span> */}
         </div>
       </div>

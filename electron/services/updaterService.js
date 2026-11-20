@@ -148,7 +148,10 @@ function downloadAndInstallUpdate(downloadUrl, onProgress) {
             // Launch installer with silent flag and restart
             try {
               console.log('[Updater] Launching installer in silent mode and exiting old app...');
-              const child = spawn(targetFile, ['/S'], {
+              // /S = silent install. --force-run makes the installer start the
+              // app again once it finishes (a silent install otherwise skips
+              // the "Run app" step and the app stays closed).
+              const child = spawn(targetFile, ['/S', '--force-run'], {
                 detached: true,
                 stdio: 'ignore'
               });

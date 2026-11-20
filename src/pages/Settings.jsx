@@ -16,6 +16,8 @@ import {
   getRptHeaderGap, setRptHeaderGap, getCompanyHeaderLines
 } from '../utils/rptPageHeader.js';
 import { useScale } from '../context/ScaleContext.jsx';
+import { isThickFieldDesign, loadFieldDesign, saveFieldDesign } from '../utils/fieldDesign.js';
+import { DATE_FORMAT_OPTIONS, getClockSettings, saveClockSettings } from '../utils/clockSettings.js';
 import { VEHICLE_OPTION_MODES, getVehicleOptionMode, setVehicleOptionMode } from '../utils/vehicleFilterUtil.js';
 import { SALES_SUMMARY_PRINT_MODES, getSalesSummaryPrintMode, setSalesSummaryPrintMode, getSalesDotMatrixPaperConfig, setSalesDotMatrixPaperConfig } from '../utils/salesSummaryPrinter.js';
 import {
@@ -58,7 +60,8 @@ const TEMPLATE_CATALOGUE_RAW = [
   { id: 'IMAGE-9', name: 'IMAGE-9 (Weighment Slip 2-Up A5 Vertical Photo Match)', detail: 'Twin weighment slips vertically on A5 paper matching printed sample photo', paper: 'A5 P' },
   { id: 'RAW', name: 'Dot-Matrix Slip', detail: 'ESC/P text, 5in continuous form, auto form feed', paper: 'RAW' },
   { id: 'RAW_LARGE', name: 'Dot-Matrix Slip (Large Text)', detail: 'ESC/P text, enlarged font size for high visibility', paper: 'RAW' },
-  { id: 'RAW_BOLD', name: 'Dot-Matrix Slip (Bold + Spaced)', detail: 'ESC/P text, slightly bold with extra line spacing for clean reading', paper: 'RAW' }
+  { id: 'RAW_BOLD', name: 'Dot-Matrix Slip (Bold + Spaced)', detail: 'ESC/P text, slightly bold with extra line spacing for clean reading', paper: 'RAW' },
+  { id: 'RAW_SPACED', name: 'Dot-Matrix Slip (Gross/Tare/Nett Spaced)', detail: 'Same ESC/P slip with a blank line between Gross, Tare and Nett', paper: 'RAW' }
 ];
 
 const TEMPLATE_CATALOGUE = TEMPLATE_CATALOGUE_RAW;
@@ -352,6 +355,19 @@ export default function Settings() {
   };
 
   // Sales Weighment Units Screen Layout State ('compact' = New Type screen-fit without scroll, 'classic' = Old Design)
+  const [clockCfg, setClockCfg] = useState(getClockSettings);
+  const [boldFields, setBoldFields] = useState(isThickFieldDesign());
+  useEffect(() => {
+    const h = () => setBoldFields(isThickFieldDesign());
+    window.addEventListener('field-design-changed', h);
+    loadFieldDesign();
+    return () => window.removeEventListener('field-design-changed', h);
+  }, []);
+  useEffect(() => {
+    const h = () => setClockCfg({ ...getClockSettings() });
+    window.addEventListener('clock-settings-changed', h);
+    return () => window.removeEventListener('clock-settings-changed', h);
+  }, []);
   const [salesLayoutDesign, setSalesLayoutDesign] = useState(
     () => localStorage.getItem('noris_sales_layout_design') || 'compact'
   );
@@ -2275,6 +2291,65 @@ export default function Settings() {
               </div>
             </div>
 
+            {/* Date & Time Display Settings */}
+            <div className="mt-4 pt-3 border-top">
+              <h6 className="fw-bold mb-1" style={{ color: 'var(--ink)' }}>🕒 Date &amp; Time Display Settings</h6>
+              <p className="text-muted mb-3 small">
+                Customize the clock shown in the top bar. Changes apply immediately and are saved automatically.
+              </p>
+              <div className="row g-3 align-items-end">
+                <div className="col-12 col-md-4">
+                  <label className="form-label small fw-bold mb-1">Time Format</label>
+                  <div className="btn-group btn-group-sm w-100" role="group">
+                    {[['12', '12-hour (AM/PM)'], ['24', '24-hour']].map(([v, l]) => (
+                      <button key={v} type="button"
+                        className={`btn ${clockCfg.timeFormat === v ? 'btn-primary active fw-bold' : 'btn-outline-secondary'}`}
+                        onClick={() => saveClockSettings({ timeFormat: v })}>{l}</button>
+                    ))}
+                  </div>
+                </div>
+                <div className="col-12 col-md-4">
+                  <label className="form-label small fw-bold mb-1">Date Format</label>
+                  <select className="form-select form-select-sm" value={clockCfg.dateFormat}
+                    onChange={(e) => saveClockSettings({ dateFormat: e.target.value })}>
+                    {DATE_FORMAT_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                  </select>
+                </div>
+                <div className="col-12 col-md-4">
+                  <label className="form-label small fw-bold mb-1">Date &amp; Time Size</label>
+                  <div className="btn-group btn-group-sm w-100" role="group">
+                    {[['normal', 'Normal'], ['large', 'Larger']].map(([v, l]) => (
+                      <button key={v} type="button"
+                        className={`btn ${clockCfg.size === v ? 'btn-primary active fw-bold' : 'btn-outline-secondary'}`}
+                        onClick={() => saveClockSettings({ size: v })}>{l}</button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Field Text Style (Boulders & Sales Weighment Units) */}
+            <div className="mt-4 pt-3 border-top">
+              <div className="d-flex justify-content-between align-items-center mb-2">
+                <div>
+                  <h6 className="fw-bold mb-1" style={{ color: 'var(--ink)' }}>🔲 Field Text Style (Input &amp; Dropdown Boxes)</h6>
+                  <p className="text-muted mb-0 small">
+                    Bold makes the field labels bold and the text typed or selected in input boxes and dropdowns a light bold in the Boulders and Sales Weighment (Units) screens. Normal keeps the current look.
+                  </p>
+                </div>
+                <div className="btn-group btn-group-sm" role="group">
+                  <button type="button"
+                    className={`btn ${!boldFields ? 'btn-primary active fw-bold' : 'btn-outline-secondary'}`}
+                    onClick={() => saveFieldDesign(false)}
+                    style={{ fontSize: '0.82rem', padding: '0.35rem 0.9rem' }}>Normal</button>
+                  <button type="button"
+                    className={`btn ${boldFields ? 'btn-primary active fw-bold' : 'btn-outline-secondary'}`}
+                    onClick={() => saveFieldDesign(true)}
+                    style={{ fontSize: '0.82rem', padding: '0.35rem 0.9rem' }}>Bold</button>
+                </div>
+              </div>
+            </div>
+
             {/* Cash Party & Cash Default Options Setting */}
             <div className="mt-4 pt-3 border-top">
               <div className="d-flex justify-content-between align-items-center mb-2">
@@ -4020,7 +4095,7 @@ export default function Settings() {
                 </div>
                 <div className="d-flex align-items-center gap-2">
                   <span className="badge bg-light text-secondary border px-2 py-1" style={{ fontSize: '0.70rem' }}>
-                    Rolling 30-Day Retention
+                    Rolling 10-Day Retention
                   </span>
                 </div>
               </div>
@@ -4106,7 +4181,7 @@ export default function Settings() {
                         <div className="d-flex justify-content-between align-items-center py-1 border-bottom" style={{ fontSize: '0.78rem' }}>
                           <span className="text-secondary">Retained Daily Backups:</span>
                           <span className="fw-bold text-dark">
-                            {backupStatus?.totalDailyBackups ?? 0} files (Up to 30 days)
+                            {backupStatus?.totalDailyBackups ?? 0} files (Up to 10 days)
                           </span>
                         </div>
                         <div className="d-flex justify-content-between align-items-center py-1 border-bottom" style={{ fontSize: '0.78rem' }}>
@@ -4928,7 +5003,7 @@ export default function Settings() {
                   onClick={async () => {
                     const trans = (transporterForm.transporter || '').trim();
                     const veh = (transporterForm.vehicleNo || '').trim().toUpperCase();
-                    if (!trans || !veh) return alert('Please enter both Transporter and Vehicle Number');
+                    if (!trans || !veh) return;
 
                     if (api.saveTransporterVehicle) {
                       await api.saveTransporterVehicle({ transporter: trans, vehicleNo: veh });

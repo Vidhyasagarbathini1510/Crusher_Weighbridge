@@ -4,6 +4,7 @@ import { useAuth } from '../context/AuthContext.jsx';
 import { useScale } from '../context/ScaleContext.jsx';
 
 import SevenSegmentDisplay from './SevenSegmentDisplay.jsx';
+import { getClockSettings, loadClockSettings, formatClockDate, formatClockTime, clockFontSizes } from '../utils/clockSettings.js';
 
 export default function Navbar() {
   const location = useLocation();
@@ -68,14 +69,18 @@ export default function Navbar() {
     };
   }, []);
 
-  const formatDate = (date) => {
-    const options = { day: 'numeric', month: 'long', year: 'numeric', weekday: 'long' };
-    return date.toLocaleDateString('en-GB', options);
-  };
+  const [clockCfg, setClockCfg] = useState(getClockSettings);
+  useEffect(() => {
+    const h = () => setClockCfg(getClockSettings());
+    window.addEventListener('clock-settings-changed', h);
+    loadClockSettings();
+    return () => window.removeEventListener('clock-settings-changed', h);
+  }, []);
+  const clockSizes = clockFontSizes(clockCfg.size);
 
-  const formatTime = (date) => {
-    return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true });
-  };
+  const formatDate = (date) => formatClockDate(date, clockCfg.dateFormat);
+
+  const formatTime = (date) => formatClockTime(date, clockCfg.timeFormat);
 
   // Get active title and subtitle based on route
   const getHeaderInfo = () => {
@@ -184,8 +189,8 @@ export default function Navbar() {
             <polyline points="12 6 12 12 16 14" />
           </svg>
           <div style={{ lineHeight: 1.1 }}>
-            <div className="fw-bold" style={{ fontSize: '0.75rem' }}>{formatTime(time)}</div>
-            <div className="text-secondary" style={{ fontSize: '0.65rem', fontWeight: 500 }}>{formatDate(time)}</div>
+            <div className="fw-bold" style={{ fontSize: clockSizes.time }}>{formatTime(time)}</div>
+            <div className="text-secondary" style={{ fontSize: clockSizes.date, fontWeight: 500 }}>{formatDate(time)}</div>
           </div>
         </div>
 

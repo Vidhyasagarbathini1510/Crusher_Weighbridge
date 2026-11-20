@@ -43,6 +43,26 @@ export function saveCompanyDetails(details) {
   try {
     localStorage.setItem(COMPANY_STORAGE_KEY, JSON.stringify(details));
   } catch (_) {}
+  try { window.dispatchEvent(new Event('company-details-changed')); } catch (_) {}
+}
+
+// Company name saved in Settings > Address Setting. Wherever the app used to
+// print / show "NORIS", it now shows this; if no name is saved it shows
+// nothing (empty) rather than a default brand.
+export function getSavedCompanyName(fallback = '') {
+  try {
+    const raw = localStorage.getItem(COMPANY_STORAGE_KEY);
+    if (raw) {
+      const name = String(JSON.parse(raw).companyName || '').trim();
+      if (name) return name;
+    }
+  } catch (_) {}
+  return fallback;
+}
+
+// Same, but safe to drop into an HTML string.
+export function getSavedCompanyNameHtml(fallback = '') {
+  return escapeHtml(getSavedCompanyName(fallback));
 }
 
 // Records arrive with dates in whatever shape the writing screen produced them:

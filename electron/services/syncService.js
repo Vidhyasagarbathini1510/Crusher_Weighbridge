@@ -2,6 +2,7 @@
 
 const http = require('http');
 const https = require('https');
+const zlib = require('zlib');
 const fs = require('fs');
 const path = require('path');
 const urlModule = require('url');
@@ -35,6 +36,9 @@ function injectCompanyId(urlStr, companyId) {
   }
 }
 
+const MASTER_POLL_MS = 120000;
+const EDITS_POLL_MS = 120000;
+
 function startSyncService(intervalMs = 3000) {
   console.log('[Sync Service] Starting sync service (polling every', intervalMs, 'ms)...');
   
@@ -46,15 +50,16 @@ function startSyncService(intervalMs = 3000) {
     runSyncCycle();
   }, intervalMs);
 
-  // Poll master data automatically every 2 seconds (2000 ms) for near-instant updates
+  // These feeds are almost always empty, and every plant asks the same server,
+  // so polling them every 2-5 seconds put heavy load on it. Poll every 2 min.
   masterSyncInterval = setInterval(() => {
     syncMasterData();
-  }, 2000);
+  }, MASTER_POLL_MS);
 
-  // Poll pending server edits (boulders and sales) every 5 seconds (5000 ms)
+  // Pending server edits (boulders and sales)
   editsSyncInterval = setInterval(() => {
     syncServerEdits();
-  }, 5000);
+  }, EDITS_POLL_MS);
 
   // Run immediately on start
   setTimeout(runSyncCycle, 1000);
@@ -240,7 +245,13 @@ function checkOnline(targetUrl) {
       if (!targetUrl || typeof targetUrl !== 'string') {
         return resolve(false);
       }
-      const parsedUrl = urlModule.parse(targetUrl);
+      // This is only a reachability ping. Ask for today's records only (the
+      // server needs from_date + to_date together) instead of the whole history,
+      // accept gzip, and drop the body as soon as the headers arrive.
+      const d = new Date();
+      const today = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      const pingUrl = targetUrl + (targetUrl.includes('?') ? '&' : '?') + `from_date=${today}&to_date=${today}`;
+      const parsedUrl = urlModule.parse(pingUrl);
       const protocol = parsedUrl.protocol === 'https:' ? https : http;
 
       const options = {
@@ -248,12 +259,13 @@ function checkOnline(targetUrl) {
         port: parsedUrl.port || (parsedUrl.protocol === 'https:' ? 443 : 80),
         path: parsedUrl.path,
         method: 'GET',
+        headers: { 'Accept-Encoding': 'gzip' },
         timeout: 4000,
         rejectUnauthorized: false
       };
 
       const req = protocol.request(options, (res) => {
-        res.resume(); // Consume data stream so socket closes cleanly
+        res.destroy(); // headers received = server is reachable; don't download the body
         resolve(true);
       });
 
@@ -847,7 +859,8 @@ function fetchJson(targetUrl) {
         path: parsedUrl.path,
         method: 'GET',
         headers: {
-          'Accept': 'application/json'
+          'Accept': 'application/json',
+          'Accept-Encoding': 'gzip'
         },
         timeout: 10000,
         rejectUnauthorized: false
@@ -855,8 +868,12 @@ function fetchJson(targetUrl) {
 
       const req = protocol.request(options, (res) => {
         let body = '';
-        res.on('data', (chunk) => { body += chunk; });
-        res.on('end', () => {
+        // Server gzips the response when asked; decompress before reading.
+        const stream = /gzip/i.test(res.headers['content-encoding'] || '') ? res.pipe(zlib.createGunzip()) : res;
+        stream.setEncoding('utf8');
+        stream.on('error', reject);
+        stream.on('data', (chunk) => { body += chunk; });
+        stream.on('end', () => {
           if (res.statusCode >= 200 && res.statusCode < 300) {
             try {
               resolve(JSON.parse(body));

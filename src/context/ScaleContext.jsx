@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
 import { api } from '../api/client.js';
 
 const defaultScaleContext = {
@@ -23,7 +23,8 @@ const defaultScaleContext = {
   signalAlert: false,
   setSignalAlert: () => {},
   cooldownAlert: null,
-  setCooldownAlert: () => {}
+  setCooldownAlert: () => {},
+  setSuppressLiveGross: () => {}
 };
 
 const ScaleContext = createContext(defaultScaleContext);
@@ -37,6 +38,11 @@ export function ScaleProvider({ children }) {
   const [nett, setNett] = useState('');
   
   const [isConnected, setIsConnected] = useState(true);
+
+  // A page can ask the provider to stop copying live scale readings into Gross
+  // (e.g. Sales Weighment keeps the boxes empty until a vehicle is selected).
+  const suppressLiveRef = useRef(false);
+  const setSuppressLiveGross = useCallback((v) => { suppressLiveRef.current = !!v; }, []);
   
   const [signalGo, setSignalGo] = useState(false);
   const [signalStop, setSignalStop] = useState(true);
@@ -67,7 +73,7 @@ export function ScaleProvider({ children }) {
   useEffect(() => {
     const g = parseFloat(gross) || 0;
     const t = parseFloat(tare) || 0;
-    setNett(Math.abs(g - t).toString());
+    setNett(!gross && !tare ? '' : Math.abs(g - t).toString());
   }, [gross, tare]);
 
   // Optionally listen to Electron Netron Weight Scale globally
@@ -85,6 +91,7 @@ export function ScaleProvider({ children }) {
           if (isBouldersManual && isBouldersHash) {
             return;
           }
+          if (suppressLiveRef.current) return;
           const numeric = valStr.replace(/[^0-9.-]/g, '');
           if (numeric) {
             setGross(numeric);
@@ -212,7 +219,8 @@ export function ScaleProvider({ children }) {
       signalStop, setSignalStop,
       signalAlert, setSignalAlert,
       isConnected, setIsConnected,
-      cooldownAlert, setCooldownAlert
+      cooldownAlert, setCooldownAlert,
+      setSuppressLiveGross
     }}>
       {children}
     </ScaleContext.Provider>

@@ -1,5 +1,6 @@
 // Utility for Printer Templates & Ticket Printing
 import { generateRptSlipHtml, RPT_TEMPLATE_IDS, RPT_TEMPLATE_CATALOGUE } from './rptSlipTemplates.js';
+import { getSavedCompanyNameHtml } from './classicReportPrinter.js';
 import { renderRptPageHeader, getCompanyHeaderLines, getRptHeaderMode, getRptHeaderGap } from './rptPageHeader.js';
 
 export const PRINTER_TEMPLATES = [
@@ -21,7 +22,8 @@ export const PRINTER_TEMPLATES = [
   'IMAGE-9',
   'RAW',
   'RAW_LARGE',
-  'RAW_BOLD'
+  'RAW_BOLD',
+  'RAW_SPACED'
 ];
 
 export const TEMPLATE_STORAGE_KEY = 'noris_selected_printer_template';
@@ -285,7 +287,7 @@ export function generateSlipHtml(data = {}, template = getSelectedTemplate(), ca
           <div style="display: flex; align-items: center; gap: 12px;">
             <div style="font-size: 32px; color: #1e3a8a;">🚛</div>
             <div>
-              <div style="font-size: 20px; font-weight: 900; color: #1e3a8a; letter-spacing: 0.5px;">NORIS INDUSTRIES PVT. LTD.</div>
+              <div style="font-size: 20px; font-weight: 900; color: #1e3a8a; letter-spacing: 0.5px;">${getSavedCompanyNameHtml('').toUpperCase()}</div>
               <div style="font-size: 13px; font-weight: 700; color: #1e3a8a; letter-spacing: 1px;">WEIGHBRIDGE SLIP</div>
               <div style="font-size: 11px; color: #475569;">Address : 123, Industrial Area, Hyderabad - 500070</div>
               <div style="font-size: 11px; color: #475569;">Phone : +91 9876543210 | Email : info@noris.com</div>
@@ -819,7 +821,7 @@ export function generateSlipHtml(data = {}, template = getSelectedTemplate(), ca
     return `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 24px; border: 2px solid #1a365d; border-radius: 8px;">
         <div style="background: #1a365d; color: #fff; padding: 12px; text-align: center; border-radius: 4px; margin-bottom: 16px;">
-          <h2 style="margin:0; font-size: 18px; letter-spacing: 2px;">NORIS INDUSTRIAL WEIGHBRIDGE</h2>
+          <h2 style="margin:0; font-size: 18px; letter-spacing: 2px;">${getSavedCompanyNameHtml('').toUpperCase()} WEIGHBRIDGE</h2>
           <div style="font-size: 11px; opacity: 0.85;">Certified Automated Dispatch Ticket</div>
         </div>
         <div style="display: flex; justify-content: space-between; margin-bottom: 14px; font-size: 13px;">
@@ -852,7 +854,7 @@ export function generateSlipHtml(data = {}, template = getSelectedTemplate(), ca
         <!-- Header -->
         <div style="text-align: center; border-bottom: 2px solid #000; padding-bottom: 6px; margin-bottom: 8px;">
           <div style="font-size: 18px; font-weight: 900; letter-spacing: 1.5px; text-transform: uppercase;">DISPATCH DELIVERY CHALLAN</div>
-          <div style="font-size: 13px; font-weight: 800; color: #111; margin-top: 2px;">NORIS WEIGHBRIDGE OPERATIONS — HYDERABAD</div>
+          <div style="font-size: 13px; font-weight: 800; color: #111; margin-top: 2px;">${getSavedCompanyNameHtml('').toUpperCase()} WEIGHBRIDGE OPERATIONS — HYDERABAD</div>
           <div style="font-size: 9.5px; font-weight: 600; color: #475569; letter-spacing: 0.5px;">Government Approved Computerized Electronic Weighbridge</div>
         </div>
 
@@ -936,7 +938,7 @@ export function generateSlipHtml(data = {}, template = getSelectedTemplate(), ca
     return `
       <div style="font-family: Georgia, serif; max-width: 620px; margin: auto; padding: 20px; border: 3px double #334155; background: #fff;">
         <div style="text-align: center; font-size: 20px; font-weight: bold; color: #1e293b; margin-bottom: 4px;">WEIGHBRIDGE WEIGHT CERTIFICATE</div>
-        <div style="text-align: center; font-size: 11px; color: #64748b; font-style: italic; margin-bottom: 16px;">Noris Automated Weighing Systems • Official Inspection Slip</div>
+        <div style="text-align: center; font-size: 11px; color: #64748b; font-style: italic; margin-bottom: 16px;">${getSavedCompanyNameHtml('')} Automated Weighing Systems • Official Inspection Slip</div>
         <div style="border-top: 1px solid #cbd5e1; border-bottom: 1px solid #cbd5e1; padding: 8px 0; margin-bottom: 14px; font-size: 12px; display: flex; justify-content: space-between;">
           <span>Ticket #: <b>${dcNum}</b></span>
           <span>Vehicle #: <b>${vehicle}</b></span>
@@ -964,7 +966,7 @@ export function generateSlipHtml(data = {}, template = getSelectedTemplate(), ca
   if (template === 'IMAGE-5') {
     return `
       <div style="font-family: monospace; width: 280px; margin: auto; padding: 10px; border: 1px solid #ccc; font-size: 11px; background: #fff;">
-        <div style="text-align: center; font-weight: bold; font-size: 14px;">NORIS WEIGHBRIDGE</div>
+        <div style="text-align: center; font-weight: bold; font-size: 14px;">${getSavedCompanyNameHtml('').toUpperCase()} WEIGHBRIDGE</div>
         <div style="text-align: center; font-size: 10px; margin-bottom: 8px;">Dammaiguda, Hyderabad</div>
         <div>--------------------------------</div>
         <div>DC NO   : ${dcNum}</div>
@@ -1322,8 +1324,9 @@ export function generateSlipHtml(data = {}, template = getSelectedTemplate(), ca
   };
 
   // 10. RAW (Dot-Matrix High-Speed Slip Format - Photo Match)
-  if (template === 'RAW' || template === 'RAW_BOLD') {
+  if (template === 'RAW' || template === 'RAW_BOLD' || template === 'RAW_SPACED') {
     const isBoldSlip = template === 'RAW_BOLD';
+    const isSpacedSlip = template === 'RAW_SPACED';
     const esc = text => String(text == null ? '' : text)
       .replace(/&/g, '&amp;')
       .replace(/</g, '&lt;')
@@ -1344,9 +1347,13 @@ export function generateSlipHtml(data = {}, template = getSelectedTemplate(), ca
       const gap = Math.max(1, RC - 12 - w.length);
       return `${IND}${lbl(label)}<b><span style="font-size: 14px; letter-spacing: 1.5px;">${esc(w)}</span></b>${' '.repeat(gap)}${right}`;
     };
-    const line1 = row(`${lbl('SERIAL NO')}${esc(dcNum)}`, `${lbl('VEHICLE')}${esc(vehicle)}`);
-    const line2 = row(`${lbl('PARTY')}${esc(party)}`, `${lbl('MATERIAL')}${esc(material)}`);
-    const line3 = row(`${lbl('SOURCE')}${esc(source)}`, `${lbl('DESTINATION')}${esc(destination)}`);
+    // Serial No and Vehicle are printed in bold
+    // Bold top block only on the "Gross/Tare/Nett Spaced" format; the plain
+    // Dot-Matrix Slip keeps its original (non-bold) look.
+    const topRow = (l, r) => isSpacedSlip ? `${IND}<b>${l.padEnd(RC)}${r}</b>` : row(l, r);
+    const line1 = topRow(`${lbl('SERIAL NO')}${esc(dcNum)}`, `${lbl('VEHICLE')}${esc(vehicle)}`);
+    const line2 = topRow(`${lbl('PARTY')}${esc(party)}`, `${lbl('MATERIAL')}${esc(material)}`);
+    const line3 = topRow(`${lbl('SOURCE')}${esc(source)}`, `${lbl('DESTINATION')}${esc(destination)}`);
     const line3Mid = divider;
     const line4 = wRow('GROSS', gross, `DATE:${esc(date)}   TIME:${esc(time)}`);
     const line5 = wRow('TARE', tare, tareDate || date ? `DATE:${esc(tareDate || date)}   TIME:${esc(tareTime || time)}` : '');
@@ -1355,7 +1362,21 @@ export function generateSlipHtml(data = {}, template = getSelectedTemplate(), ca
     const line7 = divider;
     const line8 = `${esc(activeDriver).padEnd(RIGHT_COL)}${esc(party)}`;
 
-    const previewLines = isBoldSlip ? [
+    const previewLines = isSpacedSlip ? [
+      line0,
+      line1,
+      line2,
+      line3,
+      line3Mid,
+      line4,
+      '',
+      line5,
+      '',
+      line6,
+      line7,
+      '',
+      line8
+    ] : isBoldSlip ? [
       line0,
       '',
       line1,
@@ -1526,6 +1547,7 @@ export function generateEscpSlipText(data = {}, template = '') {
   const feedMode = config.feedMode || 'EXACT_LINES';
   const isLarge = template === 'RAW_LARGE' || template === 'RAW - LARGE TEXT';
   const isBold = template === 'RAW_BOLD';
+  const isSpaced = template === 'RAW_SPACED';
 
   const pick = (...keys) => {
     for (const k of keys) {
@@ -1659,9 +1681,13 @@ export function generateEscpSlipText(data = {}, template = '') {
     return `${IND}${lbl(label)}${ESC_DBL_ON}${ESC_BOLD_ON}${w}${ESC_BOLD_OFF_INNER}${ESC_DBL_OFF}${' '.repeat(gap)}${right}`;
   };
 
-  const line1 = row(`${lbl('SERIAL NO')}${dcNum}`, `${lbl('VEHICLE')}${vehicle}`);
-  const line2 = row(`${lbl('PARTY')}${party}`, `${lbl('MATERIAL')}${material}`);
-  const line3 = row(`${lbl('SOURCE')}${source}`, `${lbl('DESTINATION')}${destination}`);
+  // Serial No and Vehicle are printed in bold (emphasized)
+  // Bold top block only on the "Gross/Tare/Nett Spaced" format; the plain
+  // Dot-Matrix Slip keeps its original (non-bold) look.
+  const topRow = (l, r) => isSpaced ? `${IND}${ESC_BOLD_ON}${l.padEnd(RC)}${r}${ESC_BOLD_OFF}` : row(l, r);
+  const line1 = topRow(`${lbl('SERIAL NO')}${dcNum}`, `${lbl('VEHICLE')}${vehicle}`);
+  const line2 = topRow(`${lbl('PARTY')}${party}`, `${lbl('MATERIAL')}${material}`);
+  const line3 = topRow(`${lbl('SOURCE')}${source}`, `${lbl('DESTINATION')}${destination}`);
   const line3Mid = divider;
 
   const line4 = wRow('GROSS', gross, `DATE:${grossDate}   TIME:${grossTime}`);
@@ -1699,7 +1725,22 @@ export function generateEscpSlipText(data = {}, template = '') {
     }
     return body.filter((_, i) => !removed.has(i));
   };
-  const printedLines = isBold ? [
+  const printedLines = isSpaced ? [
+    ...companyHeaderEscp,
+    line0,
+    line1,
+    line2,
+    line3,
+    line3Mid,
+    line4,
+    '',
+    line5,
+    '',
+    line6,
+    line7,
+    '',
+    line8
+  ] : isBold ? [
     ...companyHeaderEscp,
     ...buildBoldBody().map(boldLine)
   ] : [
@@ -2014,7 +2055,7 @@ export async function printTicket(data = {}, template = getSelectedTemplate(), c
   // operator asks for the dot matrix, so it goes down the raw path whatever the
   // output mode says — printing it through the driver would render the text as
   // graphics and lose the form feed that lands the next slip on its own form.
-  const isDotMatrixTemplate = template === 'RAW' || template === 'RAW_BOLD' || template === 'RAW_LARGE' || template === 'RAW - LARGE TEXT';
+  const isDotMatrixTemplate = template === 'RAW' || template === 'RAW_BOLD' || template === 'RAW_SPACED' || template === 'RAW_LARGE' || template === 'RAW - LARGE TEXT';
 
   // DIALOG mode never reaches the silent path: the whole point is that nothing
   // is sent to the printer until the operator has confirmed the settings.

@@ -11,9 +11,11 @@ import { captureCameraSnapshot } from '../utils/cameraSnapshot.js';
 import { useScale } from '../context/ScaleContext.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
 import { getVehicleOptionMode, filterVehiclesBySetting, cleanupVehicleOnWeighmentCompletion } from '../utils/vehicleFilterUtil.js';
+import { useThickFields } from '../utils/fieldDesign.js';
 
 
 export default function Boulders() {
+  useThickFields();
   // F1 opens the Boulders Report
   const navigate = useNavigate();
   useEffect(() => {

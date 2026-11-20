@@ -11,6 +11,7 @@ import { captureCameraSnapshot } from '../utils/cameraSnapshot.js';
 import { useScale } from '../context/ScaleContext.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
 import { getVehicleOptionMode, filterVehiclesBySetting, uniqueVehicleNumbers, fetchAllTransactions, cleanupVehicleOnWeighmentCompletion } from '../utils/vehicleFilterUtil.js';
+import { useThickFields } from '../utils/fieldDesign.js';
 import { PRINT_ONCE_MODES, getPrintOnceHideMode } from '../utils/duplicateBillUtil.js';
 
 
@@ -64,6 +65,7 @@ const isCashParty = (p) => {
 };
 
 export default function SalesWeighmentUnits() {
+  useThickFields();
   const { user } = useAuth();
   const [cameras, setCameras] = useState(null);
   const [previewCamera, setPreviewCamera] = useState(null);
@@ -79,7 +81,8 @@ export default function SalesWeighmentUnits() {
     vehicle, setVehicle,
     gross: scaleGross, setGross: setGrossVal,
     tare: scaleTare, setTare: setTareVal,
-    nett: scaleNett, setNett: setNettVal
+    nett: scaleNett, setNett: setNettVal,
+    setSuppressLiveGross
   } = useScale();
   // The scale context keeps updating gross on every live reading, even after
   // Save. Once saved, the form (and every amount derived from it) uses these
@@ -105,6 +108,12 @@ export default function SalesWeighmentUnits() {
   const userManuallyChangedMaterialRef = useRef(false);
   const userManuallyEditedSplitRef = useRef(false);
   const lastVehicleRef = useRef('');
+  // Gross / Tare / Nett stay empty until a vehicle is selected; the live scale
+  // reading is only pushed into them once there is a vehicle.
+  const vehicleSelectedRef = useRef(false);
+  // True once a live weight has been captured for the selected vehicle; from then
+  // on Gross / Tare are frozen and no longer follow the scale.
+  const weightCapturedRef = useRef(false);
   const [unitType, setUnitType] = useState('tonnes'); // tonnes or units
   const [unitsVal, setUnitsVal] = useState('');
   const [destination, setDestination] = useState('');
@@ -641,11 +650,22 @@ export default function SalesWeighmentUnits() {
     });
   }, [vehicle, party, material, transporter, destination]);
 
+  vehicleSelectedRef.current = !!(vehicle && vehicle.trim());
+
+  // This page controls Gross / Tare itself (empty until a vehicle is selected,
+  // then captured once and frozen), so the shared live-weight copy stays off.
+  useEffect(() => {
+    setSuppressLiveGross(true);
+    return () => setSuppressLiveGross(false);
+  }, []);
+
   // Auto-fill tare and transporter when vehicle is selected & perform order validation
   useEffect(() => {
     if (isSavedRef.current) return; // saved form stays as saved (see isSavedRef)
     if (!vehicle) {
+      weightCapturedRef.current = false;
       setSavedWeight('');
+      setGrossVal('');
       setTareVal('');
       lastVehicleRef.current = '';
       userManuallyChangedMaterialRef.current = false;
@@ -654,6 +674,7 @@ export default function SalesWeighmentUnits() {
     const cleanVehicle = vehicle.replace(/\s+/g, '').toUpperCase();
     const vehicleChanged = cleanVehicle !== lastVehicleRef.current;
     if (vehicleChanged) {
+      weightCapturedRef.current = false;
       lastVehicleRef.current = cleanVehicle;
       userManuallyChangedMaterialRef.current = false;
     }
@@ -730,6 +751,7 @@ export default function SalesWeighmentUnits() {
           const low = Math.min(currentScaleWeight, savedTareNum).toString();
           setGrossVal(high);
           setTareVal(low);
+          weightCapturedRef.current = true;
         } else {
           setTareVal(rawSavedWeight);
         }
@@ -738,6 +760,7 @@ export default function SalesWeighmentUnits() {
       setSavedWeight('');
       if (currentScaleWeight > 0) {
         setGrossVal(currentScaleWeight.toString());
+        weightCapturedRef.current = true;
       }
     }
   }, [vehicle, vehicleTares, allMaterials, party]);
@@ -832,6 +855,7 @@ export default function SalesWeighmentUnits() {
               const low = Math.min(currentScale, slipWeightNum).toString();
               setGrossVal(high);
               setTareVal(low);
+              weightCapturedRef.current = true;
             } else {
               setTareVal(rawSlipWeight);
             }
@@ -853,8 +877,9 @@ export default function SalesWeighmentUnits() {
         const numeric = data.value.replace(/[^0-9.-]/g, '');
         if (numeric) {
           setNetronWeight(numeric);
-          if (!manualMode && !isSavedRef.current) {
+          if (!manualMode && !isSavedRef.current && vehicleSelectedRef.current && !weightCapturedRef.current) {
             const liveNum = parseFloat(numeric) || 0;
+            if (liveNum > 0) weightCapturedRef.current = true;
             const savedNum = parseFloat(savedWeight) || 0;
             if (savedNum > 0 && liveNum > 0) {
               const high = Math.max(liveNum, savedNum).toString();
@@ -879,7 +904,8 @@ export default function SalesWeighmentUnits() {
   useEffect(() => {
     const g = parseFloat(grossVal) || 0;
     const t = parseFloat(tareVal) || 0;
-    setNettVal(Math.abs(g - t).toString());
+    // Nothing weighed yet (no vehicle selected): leave Nett empty, not "0"
+    setNettVal(g === 0 && t === 0 && !grossVal && !tareVal ? '' : Math.abs(g - t).toString());
   }, [grossVal, tareVal]);
 
   // Calculate Payment Details & Auto-balance Cash, UPI, and Credit
@@ -2217,7 +2243,7 @@ export default function SalesWeighmentUnits() {
                         ) : (
                           <label className="saas-label">Rate</label>
                         )}
-                        <input type="number" className="form-control saas-input fw-bold payment-num" value={rate} disabled={rateCheckboxEnabled && !showLocalRate} onChange={(e) => { userRateKeyRef.current = currentRateKeyRef.current; setRate(e.target.value); }} />
+                        <input type="number" className="form-control saas-input fw-bold payment-num" value={rate} disabled={rateCheckboxEnabled && !showLocalRate} onWheel={(e) => e.currentTarget.blur()} onChange={(e) => { userRateKeyRef.current = currentRateKeyRef.current; setRate(e.target.value); }} />
                       </div>
                     <div className="col-4">
                       <label className="saas-label mb-0.5">Amount</label>
@@ -2269,7 +2295,7 @@ export default function SalesWeighmentUnits() {
                         ) : (
                           <label className="saas-label">Rate</label>
                         )}
-                        <input type="number" className="form-control saas-input fw-bold payment-num" value={rate} disabled={rateCheckboxEnabled && !showLocalRate} onChange={(e) => { userRateKeyRef.current = currentRateKeyRef.current; setRate(e.target.value); }} />
+                        <input type="number" className="form-control saas-input fw-bold payment-num" value={rate} disabled={rateCheckboxEnabled && !showLocalRate} onWheel={(e) => e.currentTarget.blur()} onChange={(e) => { userRateKeyRef.current = currentRateKeyRef.current; setRate(e.target.value); }} />
                       </div>
                     <div className="col-6">
                       <label className="saas-label">Amount</label>

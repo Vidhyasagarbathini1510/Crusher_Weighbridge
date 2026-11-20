@@ -1459,3 +1459,17 @@ input.rate-check:checked::after {
   border-width: 0 3px 3px 0;
   transform: rotate(45deg) translate(-1px, -1px);
 }
+
+/* ---- Optional bold field text (Settings > Field Design) -------------------
+   Only active while <body> has .bold-fields, which the Boulders and Sales
+   Weighment (Units) pages add when the setting is on. Text only: a light bold
+   (600) on what is typed / selected in input boxes and dropdowns, and bold labels. Borders,
+   sizes and spacing are not touched. */
+body.bold-fields .form-control,
+body.bold-fields .form-select,
+body.bold-fields .saas-input.saas-input,
+body.bold-fields .saas-select.saas-select,
+body.bold-fields .ss-input { font-weight: 600 !important; }
+body.bold-fields .ss-item { font-weight: 600; }
+/* Field labels (VEHICLE, PARTY, ...) go bold too. */
+body.bold-fields .saas-label.saas-label { font-weight: 800 !important; }

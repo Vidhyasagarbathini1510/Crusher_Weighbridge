@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext.jsx';
-import norisLogo from '../assets/logo.jpg';
+import norisLogo from '../assets/app-icon.png';
+import { getSavedCompanyName } from '../utils/classicReportPrinter.js';
 
 export default function Login() {
   const { login } = useAuth();
@@ -70,10 +71,10 @@ export default function Login() {
       <aside className="noris-login__aside">
         <div className="noris-login__brand">
           <div className="noris-login__mark">
-            <img src={norisLogo} alt="Noris" />
+            <img src={norisLogo} alt="Logo" />
           </div>
           <div>
-            <b>NORIS</b>
+            <b>{getSavedCompanyName('').toUpperCase()}</b>
             <span>Weighbridge System</span>
           </div>
         </div>
@@ -173,7 +174,7 @@ export default function Login() {
           </div>
 
           <div className="noris-login__foot">
-            NORIS CCTV · Weighbridge Operations Console
+            {[getSavedCompanyName('').toUpperCase(), 'CCTV'].filter(Boolean).join(' ')} · Weighbridge Operations Console
           </div>
         </div>
       </main>
